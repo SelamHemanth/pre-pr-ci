@@ -16,10 +16,10 @@ The Patch Pre-Check CI Tool is an automated testing framework designed to valida
 
 ## Supported Distributions
 
-| Distribution | Target Kernel         | Kernel Versions     | Architectures  | Boot Testing |
-|--------------|-----------------------|---------------------|----------------|--------------|
-| OpenAnolis   | ANCK (Cloud Kernel)   | Multiple LTS        | x86_64, aarch64| ✅ Full      |
-| openEuler    | openEuler Kernel      | Multiple LTS        | x86_64, aarch64| 🚧 Planned   |
+| Distribution | Target Kernel         | Kernel Versions     | Architectures  | Boot Testing    |
+|--------------|-----------------------|---------------------|----------------|-----------------|
+| OpenAnolis   | ANCK (Cloud Kernel)   | Multiple LTS        | x86_64, aarch64| ✅ Full         |
+| openEuler    | openEuler Kernel      | Multiple LTS        | x86_64, aarch64| 🚧 Implementing |
 
 ## Installation & Setup
 
@@ -75,16 +75,16 @@ make test # Execute all tests
 
      **Test Options:**
 
-     | Test                        | Description                           | Purpose                                    |
-     |-----------------------------|---------------------------------------|--------------------------------------------|
-     | check_Kconfig               | Validate Kconfig settings             | Ensures config validity                    |
-     | build_allyes_config         | Build with allyesconfig               | Compile w/ all enabled options             |
-     | build_allno_config          | Build with allnoconfig                | Minimal kernel build                       |
-     | build_anolis_defconfig      | Build with anolis_defconfig           | Production default config                  |
-     | build_anolis_debug_defconfig| Build with debug config               | Enable debugging features                  |
-     | anck_rpm_build              | Build ANCK RPM packages               | RPMs for installation                      |
-     | check_kapi                  | Check KAPI compatibility              | ABI compatibility checks                   |
-     | boot_kernel_rpm             | **Automated VM boot test**            | **Install, boot, and verify kernel on VM** |
+     | Test                        | Description                  | Purpose                                  |
+     |-----------------------------|------------------------------|------------------------------------------|
+     | check_Kconfig               | Validate Kconfig settings    | Ensures config validity                  |
+     | build_allyes_config         | Build with allyesconfig      | Compile w/ all enabled options           |
+     | build_allno_config          | Build with allnoconfig       | Minimal kernel build                     |
+     | build_anolis_defconfig      | Build with anolis_defconfig  | Production default config                |
+     | build_anolis_debug_defconfig| Build with debug config      | Enable debugging features                |
+     | anck_rpm_build              | Build ANCK RPM packages      | RPMs for installation                    |
+     | check_kapi                  | Check KAPI compatibility     | ABI compatibility checks                 |
+     | boot_kernel_rpm             | Automated VM boot test       | Install, boot, and verify kernel on VM   |
 
      Enable: individual (e.g. 1,3,5), all, or none.
 
@@ -101,7 +101,39 @@ make test # Execute all tests
    - Used for: RPM transfer, installation, reboot, verification
 
    **openEuler:**
-   Similar options, tailored for openEuler kernel configuration, builds, packaging.
+     - Linux source code path
+     - Signed-off-by name/email
+     - Euler Bugzilla ID
+     - Patch category (deafult: feature)
+     - Number of patches to apply (from HEAD)
+     - Build threads (default: CPU cores)
+
+     **Test Options:**
+
+     | Test              | Description                       | Purpose                                |
+     |-------------------|-----------------------------------|----------------------------------------|
+     | check_licence     | Validate license headers          | Ensures proper licensing compliance    |
+     | build_oedefconfig | Build with openeuler_defconfig    | Production default config              |
+     | build_allmod      | Build with allmodconfig           | Compile with all modules enabled       |
+     | check_patch       | Run checkpatch.pl validation      | Verify coding style and patch format   |
+     | check_format      | Check code formatting             | Ensures code style consistency         |
+     | check_kabi        | Check KABI compatibility          | ABI compatibility checks               |
+     | rpm_build         | Build openEuler RPM packages      | RPMs for installation                  |
+     | boot_kernel       | Boot test (requires remote setup) | Install, boot, and verify kernel on VM |
+
+     Enable: individual (e.g. 1,3,5), all, or none.
+
+   **Password Configuration** (when RPM build or boot test enabled)
+
+   **Host Configuration:**
+   - Host sudo password (for installing build dependencies)
+   - Stored securely for unattended testing
+   - Used for: package installation, yum-builddep
+
+   **VM Configuration** (when boot test enabled):
+   - VM IP address (bridge or local network)
+   - VM root password (for SSH/SCP access)
+   - Used for: RPM transfer, installation, reboot, verification
 
 ## Make Targets
 
@@ -152,5 +184,3 @@ This tool is provided as-is for kernel development and testing purposes.
 - Issues via GitHub
 
 ---
-
-**Note:** OpenAnolis has full support including automated VM boot testing. For openEuler, support is currently being implemented.

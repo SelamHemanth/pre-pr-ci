@@ -67,12 +67,11 @@ help:
 
 # Configuration
 config:
-	@echo -e "$(BLUE)Starting configuration...$(NC)"
 	@DETECTED=$$($(MAKE) -s detect_distro); \
 	echo ""; \
-	echo "╔════════════════════════════════════════╗"; \
-	echo "║  Distribution Selection                ║"; \
-	echo "╚════════════════════════════════════════╝"; \
+	echo "╔══════════════════════════╗"; \
+	echo "║  Distribution Selection  ║"; \
+	echo "╚══════════════════════════╝"; \
 	echo ""; \
 	if [ "$$DETECTED" != "unknown" ]; then \
 		echo -e "$(GREEN)Detected Distribution: $$DETECTED$(NC)"; \

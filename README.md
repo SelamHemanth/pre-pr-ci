@@ -75,4 +75,4 @@ This project is licensed under the GPL-3.0 License - see the [LICENSE](https://g
 
 ## 📝 Note
 
-For **OpenEuler**, support is currently being implemented.
+For **OpenEuler**, support is currently being implemented. Now it supports `make config`,`make build`&`make clean`. `make test` is being implemented now.
