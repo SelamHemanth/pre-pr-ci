@@ -112,13 +112,6 @@ run_kernel_build() {
 
 # ---- TEST DEFINITIONS ----
 
-test_check_licence() {
-  echo -e "${BLUE}Test: check_licence${NC}"
-  echo "  → Implementation coming soon..."
-  skip "check_licence" "Not yet implemented"
-  echo ""
-}
-
 test_check_dependency() {
   echo -e "${BLUE}Test: check_dependency${NC}"
 
@@ -416,7 +409,6 @@ test_boot_kernel() {
 
 # ---- TEST EXECUTION ----
 
-[ "$TEST_CHECK_LICENCE" == "yes" ] && test_check_licence
 [ "${TEST_CHECK_DEPENDENCY:-no}" == "yes" ] && test_check_dependency
 [ "$TEST_BUILD_ALLMOD" == "yes" ] && test_build_allmod
 [ "$TEST_CHECK_PATCH" == "yes" ] && test_check_patch

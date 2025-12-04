@@ -23,6 +23,8 @@ This tool automates distribution detection, configuration, patch application, an
 
 ## ⚙️ Usage
 
+- Install Prerequisite packages (Check in [DOCUMENT.md](https://github.com/SelamHemanth/patch-precheck-ci/blob/main/DOCUMENT.md))
+
 ```bash
 # Clone repository
 git clone https://github.com/SelamHemanth/patch-precheck-ci.git

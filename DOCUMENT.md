@@ -32,6 +32,10 @@ OpenAnolis extra requirements
 ```bash
 sudo yum install -y audit-libs-devel binutils-devel libbpf-devel libcap-ng-devel libnl3-devel newt-devel pciutils-devel xmlto yum-utils
 ```
+openEuler extra requirements
+```bash
+sudo yum install -y python3
+```
 
 For VM boot testing:
 ```bash
@@ -112,7 +116,6 @@ make test # Execute all tests
 
      | Test              | Description                       | Purpose                                    |
      |-------------------|-----------------------------------|--------------------------------------------|
-     | check_licence     | Validate license headers          | Ensures proper licensing compliance        |
      | check_dependency  | Verify required dependencies      | Ensures all bug-fix commits are backported |
      | build_allmod      | Build with allmodconfig           | Compile with all modules enabled           |
      | check_patch       | Run checkpatch.pl validation      | Verify coding style and patch format       |

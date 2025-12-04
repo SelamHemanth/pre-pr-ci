@@ -82,14 +82,13 @@ echo ""
 echo "=== Test Configuration ==="
 echo ""
 echo "Available tests:"
-echo "  1) check_licence              - Validate license headers"
-echo "  2) check_dependency           - Check dependent commits"
-echo "  3) build_allmod               - Build with allmodconfig"
-echo "  4) check_patch                - Run checkpatch.pl validation"
-echo "  5) check_format               - Check code formatting"
-echo "  6) check_kabi                 - Check KABI compatibility"
-echo "  7) rpm_build                  - Build openEuler RPM packages"
-echo "  8) boot_kernel                - Boot test (requires remote setup)"
+echo "  1) check_dependency           - Check dependent commits"
+echo "  2) build_allmod               - Build with allmodconfig"
+echo "  3) check_patch                - Run checkpatch.pl validation"
+echo "  4) check_format               - Check code formatting"
+echo "  5) check_kabi                 - Check KABI compatibility"
+echo "  6) rpm_build                  - Build openEuler RPM packages"
+echo "  7) boot_kernel                - Boot test (requires remote setup)"
 echo ""
 
 read -r -p "Select tests to run (comma-separated, 'all', or 'none') [all]: " test_selection
@@ -98,7 +97,6 @@ TEST_SELECTION="${test_selection:-all}"
 # Parse test selection
 if [ "$TEST_SELECTION" == "all" ] || [ -z "$TEST_SELECTION" ]; then
   RUN_TESTS="yes"
-  TEST_CHECK_LICENCE="yes"
   TEST_CHECK_DEPENDENCY="yes"
   TEST_BUILD_ALLMOD="yes"
   TEST_CHECK_PATCH="yes"
@@ -108,7 +106,6 @@ if [ "$TEST_SELECTION" == "all" ] || [ -z "$TEST_SELECTION" ]; then
   TEST_BOOT_KERNEL="yes"
 elif [ "$TEST_SELECTION" == "none" ]; then
   RUN_TESTS="no"
-  TEST_CHECK_LICENCE="no"
   TEST_CHECK_DEPENDENCY="no"
   TEST_BUILD_ALLMOD="no"
   TEST_CHECK_PATCH="no"
@@ -118,7 +115,6 @@ elif [ "$TEST_SELECTION" == "none" ]; then
   TEST_BOOT_KERNEL="no"
 else
   RUN_TESTS="yes"
-  TEST_CHECK_LICENCE="no"
   TEST_CHECK_DEPENDENCY="no"
   TEST_BUILD_ALLMOD="no"
   TEST_CHECK_PATCH="no"
@@ -131,14 +127,13 @@ else
   IFS=',' read -ra SELECTED <<< "$TEST_SELECTION"
   for test_num in "${SELECTED[@]}"; do
     case "${test_num// /}" in
-      1) TEST_CHECK_LICENCE="yes" ;;
-      2) TEST_CHECK_DEPENDENCY="yes" ;;
-      3) TEST_BUILD_ALLMOD="yes" ;;
-      4) TEST_CHECK_PATCH="yes" ;;
-      5) TEST_CHECK_FORMAT="yes" ;;
-      6) TEST_CHECK_KABI="yes" ;;
-      7) TEST_RPM_BUILD="yes" ;;
-      8) TEST_BOOT_KERNEL="yes" ;;
+      1) TEST_CHECK_DEPENDENCY="yes" ;;
+      2) TEST_BUILD_ALLMOD="yes" ;;
+      3) TEST_CHECK_PATCH="yes" ;;
+      4) TEST_CHECK_FORMAT="yes" ;;
+      5) TEST_CHECK_KABI="yes" ;;
+      6) TEST_RPM_BUILD="yes" ;;
+      7) TEST_BOOT_KERNEL="yes" ;;
     esac
   done
 fi
@@ -186,7 +181,6 @@ BUILD_THREADS="${BUILD_THREADS}"
 
 # Test Configuration
 RUN_TESTS="${RUN_TESTS}"
-TEST_CHECK_LICENCE="${TEST_CHECK_LICENCE}"
 TEST_CHECK_DEPENDENCY="${TEST_CHECK_DEPENDENCY}"
 TEST_BUILD_ALLMOD="${TEST_BUILD_ALLMOD}"
 TEST_CHECK_PATCH="${TEST_CHECK_PATCH}"
@@ -219,5 +213,5 @@ echo "Patch category: ${PATCH_CATEGORY}"
 echo "Build threads: ${BUILD_THREADS}"
 echo "Tests enabled: ${RUN_TESTS}"
 echo ""
-echo -e "${BLUE}Next: Run 'make build' to build${NC}"
+echo -e "${YELLOW}Next: Run 'make build' to build${NC}"
 echo ""
