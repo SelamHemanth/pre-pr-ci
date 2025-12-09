@@ -386,13 +386,6 @@ test_check_format() {
   echo ""
 }
 
-test_check_kabi() {
-  echo -e "${BLUE}Test: check_kabi${NC}"
-  echo "  → Implementation coming soon..."
-  skip "check_kabi" "Not yet implemented"
-  echo ""
-}
-
 test_rpm_build() {
   echo -e "${BLUE}Test: rpm_build${NC}"
   echo "  → Implementation coming soon..."
@@ -413,7 +406,6 @@ test_boot_kernel() {
 [ "$TEST_BUILD_ALLMOD" == "yes" ] && test_build_allmod
 [ "$TEST_CHECK_PATCH" == "yes" ] && test_check_patch
 [ "$TEST_CHECK_FORMAT" == "yes" ] && test_check_format
-[ "$TEST_CHECK_KABI" == "yes" ] && test_check_kabi
 [ "$TEST_RPM_BUILD" == "yes" ] && test_rpm_build
 [ "$TEST_BOOT_KERNEL" == "yes" ] && test_boot_kernel
 

@@ -86,6 +86,89 @@ get_tag_version() {
   cd - >/dev/null
 }
 
+# Function to check if patch is KABI fix
+is_kabi_fix_patch() {
+  local patch_file="$1"
+  local upstream_commit=$(extract_upstream_commit "${patch_file}")
+  local subject=$(grep "^Subject:" "${patch_file}" | head -1 | sed 's/^Subject: //')
+
+  # Check if no upstream commit and subject contains KABI/kabi
+  if [ -z "${upstream_commit}" ] && [[ "${subject}" =~ KABI|kabi|KAPI|kapi ]]; then
+    return 0  # Is KABI fix
+  fi
+  return 1  # Not KABI fix
+}
+
+# Function to update check-kabi script (one-time operation)
+update_check_kabi_script() {
+  local check_kabi_script="${LINUX_SRC_PATH}/scripts/check-kabi"
+  local update_kabi_py="${SCRIPT_DIR}/update-kabi.py"
+  local kabi_marker="${LINUX_SRC_PATH}/scripts/.check-kabi-updated"
+
+  # Check if already updated
+  if [ -f "${kabi_marker}" ]; then
+    return 0
+  fi
+
+  # Check if update script exists
+  if [ ! -f "${update_kabi_py}" ]; then
+    echo -e "${RED}Error: update-kabi.py not found at ${update_kabi_py}${NC}"
+    return 1
+  fi
+
+  echo -e "${BLUE}Updating check-kabi script for Python 3 (one-time operation)...${NC}"
+
+  # Run 2to3
+  2to3 -w -n -f print "${check_kabi_script}" > /dev/null 2>&1
+
+  # Run update script
+  python3 "${update_kabi_py}" "${check_kabi_script}" > /dev/null 2>&1
+
+  # Create marker file
+  touch "${kabi_marker}"
+
+  echo -e "${GREEN}✓ check-kabi script updated${NC}"
+}
+
+# Function to perform KABI check
+check_kabi() {
+  local patch_file="$1"
+  local patch_name=$(basename "${patch_file}")
+  local kabi_log="${LOGS_DIR}/kabi_check.log"
+  local check_kabi_script="${LINUX_SRC_PATH}/scripts/check-kabi"
+
+  cd "${LINUX_SRC_PATH}"
+
+  # Check if Module.symvers_old exists (baseline)
+  if [ ! -f "Module.symvers_old" ]; then
+    echo "  → No baseline Module.symvers_old found, skipping KABI check" >> "${kabi_log}"
+    return 0
+  fi
+
+  # Check if check-kabi script exists
+  if [ ! -f "${check_kabi_script}" ]; then
+    echo "  → check-kabi script not found, skipping KABI check" >> "${kabi_log}"
+    return 0
+  fi
+
+  # Run KABI check
+  echo "" >> "${kabi_log}"
+  echo "KABI Check for: ${patch_name}" >> "${kabi_log}"
+  echo "----------------------------------------" >> "${kabi_log}"
+
+  local kabi_output=$(python3 "${check_kabi_script}" -k Module.symvers_old -s Module.symvers 2>&1)
+  echo "${kabi_output}" >> "${kabi_log}"
+
+  # Check for ABI breakage
+  if echo "${kabi_output}" | grep -q "ERROR - ABI BREAKAGE WAS DETECTED"; then
+    echo "  → KABI breakage detected!" >> "${kabi_log}"
+    return 1
+  else
+    echo "  → No KABI breakage" >> "${kabi_log}"
+    return 0
+  fi
+}
+
 # Save current HEAD id for later reset (full SHA)
 cd "${LINUX_SRC_PATH}"
 HEAD_ID="$(git rev-parse --verify HEAD)"
@@ -119,15 +202,10 @@ for p in "${PATCHES_DIR}"/*.patch; do
   [ -f "${p}" ] || continue
   cp -f "${p}" "${BKP_DIR}/$(basename "${p}")"
 
-  # Extract upstream commit from patch content (if exists)
-  upstream_commit=$(extract_upstream_commit "${p}")
-
-  if [ -n "$upstream_commit" ]; then
-    # Get tag version from Torvalds repo
-    tag_version=$(get_tag_version "$upstream_commit")
-
-    # Insert openEuler header after Subject
-    awk -v TAG="$tag_version" -v COMMIT="$upstream_commit" -v CAT="$PATCH_CATEGORY" -v BZ="$BUGZILLA_ID" '
+  # Check if this is a KABI fix patch
+  if is_kabi_fix_patch "${p}"; then
+    # Insert KABI fix header after Subject
+    awk -v CAT="$PATCH_CATEGORY" -v BZ="$BUGZILLA_ID" '
       BEGIN { in_sub=0; printed_header=0 }
       {
         if (!in_sub) {
@@ -136,14 +214,9 @@ for p in "${PATCHES_DIR}"/*.patch; do
         } else if (in_sub && !printed_header) {
           if ($0 ~ /^$/) {
             print ""
-            print "mainline inclusion"
-            print "from mainline-" TAG
-            print "commit " COMMIT
+            print "virt inclusion"
             print "category: " CAT
             print "bugzilla: https://gitee.com/openeuler/kernel/issues/" BZ
-            print "CVE: NA"
-            print ""
-            print "Reference: https://github.com/torvalds/linux/commit/" COMMIT
             print ""
             print "--------------------------------"
             print ""
@@ -160,19 +233,70 @@ for p in "${PATCHES_DIR}"/*.patch; do
       END {
         if (in_sub && !printed_header) {
           print ""
-          print "mainline inclusion"
-          print "from mainline-" TAG
-          print "commit " COMMIT
+          print "virt inclusion"
           print "category: " CAT
           print "bugzilla: https://gitee.com/openeuler/kernel/issues/" BZ
-          print "CVE: NA"
-          print ""
-          print "Reference: https://github.com/torvalds/linux/commit/" COMMIT
           print ""
           print "--------------------------------"
           print ""
         }
       }' "${p}" > "${p}.tmp" && mv "${p}.tmp" "${p}"
+  else
+    # Extract upstream commit from patch content
+    upstream_commit=$(extract_upstream_commit "${p}")
+
+    if [ -n "$upstream_commit" ]; then
+      # Get tag version from Torvalds repo
+      tag_version=$(get_tag_version "$upstream_commit")
+
+      # Insert openEuler header after Subject
+      awk -v TAG="$tag_version" -v COMMIT="$upstream_commit" -v CAT="$PATCH_CATEGORY" -v BZ="$BUGZILLA_ID" '
+        BEGIN { in_sub=0; printed_header=0 }
+        {
+          if (!in_sub) {
+            print $0
+            if ($0 ~ /^Subject:/) { in_sub=1; next }
+          } else if (in_sub && !printed_header) {
+            if ($0 ~ /^$/) {
+              print ""
+              print "mainline inclusion"
+              print "from mainline-" TAG
+              print "commit " COMMIT
+              print "category: " CAT
+              print "bugzilla: https://gitee.com/openeuler/kernel/issues/" BZ
+              print "CVE: NA"
+              print ""
+              print "Reference: https://github.com/torvalds/linux/commit/" COMMIT
+              print ""
+              print "--------------------------------"
+              print ""
+              printed_header=1
+              next
+            } else {
+              print $0
+              next
+            }
+          } else {
+            print $0
+          }
+        }
+        END {
+          if (in_sub && !printed_header) {
+            print ""
+            print "mainline inclusion"
+            print "from mainline-" TAG
+            print "commit " COMMIT
+            print "category: " CAT
+            print "bugzilla: https://gitee.com/openeuler/kernel/issues/" BZ
+            print "CVE: NA"
+            print ""
+            print "Reference: https://github.com/torvalds/linux/commit/" COMMIT
+            print ""
+            print "--------------------------------"
+            print ""
+          }
+        }' "${p}" > "${p}.tmp" && mv "${p}.tmp" "${p}"
+    fi
   fi
 
   # Insert Signed-off-by before first '---'
@@ -234,9 +358,30 @@ echo -e "Total patches to process: ${TOTAL_SELECTED}"
 echo -e "Build threads: ${BUILD_THREADS}"
 echo ""
 
+# Build baseline for KABI checking
+echo -e "${BLUE}Building baseline for KABI check...${NC}"
+cd "${LINUX_SRC_PATH}"
+make clean > /dev/null 2>&1
+if make openeuler_defconfig > /dev/null 2>&1 && make -j"${BUILD_THREADS}" modules > /dev/null 2>&1; then
+  if [ -f "Module.symvers" ]; then
+    cp Module.symvers Module.symvers_old
+    echo -e "${GREEN}✓ Baseline Module.symvers created${NC}"
+
+    # Update check-kabi script (one-time)
+    update_check_kabi_script
+  else
+    echo -e "${YELLOW}⚠ Module.symvers not created, KABI checks will be skipped${NC}"
+  fi
+else
+  echo -e "${YELLOW}⚠ Baseline build failed, KABI checks will be skipped${NC}"
+fi
+echo ""
+
 # Apply and build one patch at a time
 summary=()
+kabi_summary=()
 idx=0
+kabi_failed=0
 
 for pf in "${PATCH_LIST[@]}"; do
   idx=$((idx+1))
@@ -262,6 +407,42 @@ for pf in "${PATCH_LIST[@]}"; do
   if run_openeuler_build "${LINUX_SRC_PATH}" "${logfile}"; then
     echo -e "  Building   : ${name} : ${GREEN}✓ PASS${NC}"
     summary+=( "${name}:PASS" )
+
+    # KABI check
+    if [ -f "${LINUX_SRC_PATH}/Module.symvers_old" ]; then
+      echo -e "  KABI Check : ${name} ..."
+      if check_kabi "${pf}"; then
+        echo -e "  KABI Check : ${name} : ${GREEN}✓ PASS${NC}"
+        kabi_summary+=( "${name}:PASS" )
+      else
+        # Check if this is a KABI fix patch
+        if is_kabi_fix_patch "${pf}"; then
+          echo -e "  KABI Check : ${name} : ${YELLOW}⚠ KABI Fix Patch${NC}"
+          kabi_summary+=( "${name}:KABI_FIX" )
+        else
+          # Check if next patch is KABI fix
+          local next_idx=${idx}
+          if [ ${next_idx} -lt ${TOTAL_SELECTED} ]; then
+            local next_pf="${PATCH_LIST[$next_idx]}"
+            if is_kabi_fix_patch "${next_pf}"; then
+              echo -e "  KABI Check : ${name} : ${YELLOW}⚠ WARN (Next patch is KABI fix)${NC}"
+              kabi_summary+=( "${name}:WARN_HAS_FIX" )
+            else
+              echo -e "  KABI Check : ${name} : ${RED}✗ FAIL${NC}"
+              kabi_summary+=( "${name}:FAIL" )
+              kabi_failed=1
+            fi
+          else
+            echo -e "  KABI Check : ${name} : ${RED}✗ FAIL${NC}"
+            kabi_summary+=( "${name}:FAIL" )
+            kabi_failed=1
+          fi
+        fi
+      fi
+
+      # Update baseline for next iteration
+      cp "${LINUX_SRC_PATH}/Module.symvers" "${LINUX_SRC_PATH}/Module.symvers_old"
+    fi
   else
     echo -e "  Building   : ${name} : ${RED}✗ FAIL${NC}"
     summary+=( "${name}:FAIL" )
@@ -288,11 +469,57 @@ for i in "${!summary[@]}"; do
   [ "${status}" != "PASS" ] && color="${RED}" && symbol="✗"
   printf "  Patch-%d : %b%s %s%b\n" "${n}" "${color}" "${symbol}" "${status}" "${NC}"
 done
+
+# KABI summary
+if [ ${#kabi_summary[@]} -gt 0 ]; then
+  echo ""
+  echo -e "${GREEN}=============${NC}"
+  echo -e "${GREEN}KABI Summary${NC}"
+  echo -e "${GREEN}=============${NC}"
+  for i in "${!kabi_summary[@]}"; do
+    n=$((i+1))
+    patchname="${kabi_summary[i]%:*}"
+    status="${kabi_summary[i]#*:}"
+
+    case "${status}" in
+      PASS)
+        color="${GREEN}"
+        symbol="✓"
+        status_text="PASS"
+        ;;
+      KABI_FIX)
+        color="${YELLOW}"
+        symbol="⚠"
+        status_text="KABI Fix"
+        ;;
+      WARN_HAS_FIX)
+        color="${YELLOW}"
+        symbol="⚠"
+        status_text="WARN (has fix)"
+        ;;
+      FAIL)
+        color="${RED}"
+        symbol="✗"
+        status_text="FAIL"
+        ;;
+    esac
+
+    printf "  Patch-%d : %b%s %s%b\n" "${n}" "${color}" "${symbol}" "${status_text}" "${NC}"
+  done
+fi
+
 echo ""
 echo -e "${BLUE}Logs directory: ${LOGS_DIR}${NC}"
 echo -e "${BLUE}Patches directory: ${PATCHES_DIR}${NC}"
 echo -e "${BLUE}Backup directory: ${BKP_DIR}${NC}"
 echo ""
-echo -e "${GREEN}✓ openEuler build process completed successfully${NC}"
-echo -e "${YELLOW}Run 'make test' to execute openEuler-specific tests${NC}"
-exit 0
+
+if [ ${kabi_failed} -eq 1 ]; then
+  echo -e "${RED}✗ openEuler build completed with KABI failures${NC}"
+  echo -e "${YELLOW}Review KABI log: ${LOGS_DIR}/kabi_check.log${NC}"
+  exit 22
+else
+  echo -e "${GREEN}✓ openEuler build process completed successfully${NC}"
+  echo -e "${YELLOW}Run 'make test' to execute openEuler-specific tests${NC}"
+  exit 0
+fi

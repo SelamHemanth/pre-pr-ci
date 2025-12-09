@@ -86,9 +86,8 @@ echo "  1) check_dependency           - Check dependent commits"
 echo "  2) build_allmod               - Build with allmodconfig"
 echo "  3) check_patch                - Run checkpatch.pl validation"
 echo "  4) check_format               - Check code formatting"
-echo "  5) check_kabi                 - Check KABI compatibility"
-echo "  6) rpm_build                  - Build openEuler RPM packages"
-echo "  7) boot_kernel                - Boot test (requires remote setup)"
+echo "  5) rpm_build                  - Build openEuler RPM packages"
+echo "  6) boot_kernel                - Boot test (requires remote setup)"
 echo ""
 
 read -r -p "Select tests to run (comma-separated, 'all', or 'none') [all]: " test_selection
@@ -101,7 +100,6 @@ if [ "$TEST_SELECTION" == "all" ] || [ -z "$TEST_SELECTION" ]; then
   TEST_BUILD_ALLMOD="yes"
   TEST_CHECK_PATCH="yes"
   TEST_CHECK_FORMAT="yes"
-  TEST_CHECK_KABI="yes"
   TEST_RPM_BUILD="yes"
   TEST_BOOT_KERNEL="yes"
 elif [ "$TEST_SELECTION" == "none" ]; then
@@ -110,7 +108,6 @@ elif [ "$TEST_SELECTION" == "none" ]; then
   TEST_BUILD_ALLMOD="no"
   TEST_CHECK_PATCH="no"
   TEST_CHECK_FORMAT="no"
-  TEST_CHECK_KABI="no"
   TEST_RPM_BUILD="no"
   TEST_BOOT_KERNEL="no"
 else
@@ -119,7 +116,6 @@ else
   TEST_BUILD_ALLMOD="no"
   TEST_CHECK_PATCH="no"
   TEST_CHECK_FORMAT="no"
-  TEST_CHECK_KABI="no"
   TEST_RPM_BUILD="no"
   TEST_BOOT_KERNEL="no"
 
@@ -131,9 +127,8 @@ else
       2) TEST_BUILD_ALLMOD="yes" ;;
       3) TEST_CHECK_PATCH="yes" ;;
       4) TEST_CHECK_FORMAT="yes" ;;
-      5) TEST_CHECK_KABI="yes" ;;
-      6) TEST_RPM_BUILD="yes" ;;
-      7) TEST_BOOT_KERNEL="yes" ;;
+      5) TEST_RPM_BUILD="yes" ;;
+      6) TEST_BOOT_KERNEL="yes" ;;
     esac
   done
 fi
@@ -185,7 +180,6 @@ TEST_CHECK_DEPENDENCY="${TEST_CHECK_DEPENDENCY}"
 TEST_BUILD_ALLMOD="${TEST_BUILD_ALLMOD}"
 TEST_CHECK_PATCH="${TEST_CHECK_PATCH}"
 TEST_CHECK_FORMAT="${TEST_CHECK_FORMAT}"
-TEST_CHECK_KABI="${TEST_CHECK_KABI}"
 TEST_RPM_BUILD="${TEST_RPM_BUILD}"
 TEST_BOOT_KERNEL="${TEST_BOOT_KERNEL}"
 

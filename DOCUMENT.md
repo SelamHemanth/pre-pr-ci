@@ -120,7 +120,6 @@ make test # Execute all tests
      | build_allmod      | Build with allmodconfig           | Compile with all modules enabled           |
      | check_patch       | Run checkpatch.pl validation      | Verify coding style and patch format       |
      | check_format      | Check code formatting             | Ensures code style consistency             |
-     | check_kabi        | Check KABI compatibility          | ABI compatibility checks                   |
      | rpm_build         | Build openEuler RPM packages      | RPMs for installation                      |
      | boot_kernel       | Boot test (requires remote setup) | Install, boot, and verify kernel on VM     |
 
