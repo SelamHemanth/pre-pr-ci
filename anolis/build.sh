@@ -51,6 +51,19 @@ if [ ! -d "${LINUX_SRC_PATH}/.git" ]; then
 fi
 
 cd "${LINUX_SRC_PATH}"
+
+# Handle dubious ownership issue
+if ! git rev-parse --git-dir >/dev/null 2>&1; then
+	echo -e "${YELLOW}Warning: Git detected dubious ownership in repository${NC}" >&2
+	echo -e "${YELLOW}Attempting to add safe.directory exception...${NC}" >&2
+	git config --global --add safe.directory "${LINUX_SRC_PATH}" 2>/dev/null || {
+		echo -e "${RED}Failed to add safe.directory exception${NC}" >&2
+		echo -e "${RED}Please run manually: git config --global --add safe.directory ${LINUX_SRC_PATH}${NC}" >&2
+		exit 12
+	}
+	echo -e "${GREEN}Safe directory exception added successfully${NC}" >&2
+fi
+
 TOTAL_COMMITS="$(git rev-list --count HEAD 2>/dev/null || true)"
 if [ -z "${TOTAL_COMMITS}" ] || [ "${TOTAL_COMMITS}" -lt "${NUM_PATCHES}" ]; then
   echo -e "${RED}Repo has insufficient commits (${TOTAL_COMMITS}) for NUM_PATCHES=${NUM_PATCHES}${NC}" >&2
