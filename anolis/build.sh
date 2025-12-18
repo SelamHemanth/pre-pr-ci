@@ -205,6 +205,71 @@ for pf in "${PATCH_LIST[@]}"; do
     exit 20
   fi
 
+  # Check patch with checkpatch.pl
+  CHECKPATCH="${LINUX_SRC_PATH}/scripts/checkpatch.pl"
+  if [ -f "${CHECKPATCH}" ]; then
+    checkpatch_output_log="${LOGS_DIR}/${name}.checkpatch.log"
+
+    # Define ignore list
+    IGNORES_FOR_MAIN=(
+      AVOID_BUG
+      AVOID_EXTERNS
+      BAD_SIGN_OFF
+      BOOL_BITFIELD
+      BOOL_MEMBER
+      BUG_ON
+      COMMIT_LOG_LONG_LINE
+      COMMIT_MESSAGE
+      CONFIG_DESCRIPTION
+      DEVICE_ATTR_FUNCTIONS
+      DT_SPLIT_BINDING_PATCH
+      EXPORT_SYMBOL
+      FILE_PATH_CHANGES
+      GIT_COMMIT_ID
+      MACRO_ARG_PRECEDENCE
+      MACRO_ARG_REUSE
+      MISSING_SIGN_OFF
+      NO_AUTHOR_SIGN_OFF
+      NR_CPUS
+      PREFER_ALIGNED
+      PREFER_FALLTHROUGH
+      PREFER_PR_LEVEL
+      SPDX_LICENSE_TAG
+      SPLIT_STRING
+      UNKNOWN_COMMIT_ID
+      UNSPECIFIED_INT
+      VSPRINTF_SPECIFIER_PX
+      WAITQUEUE_ACTIVE
+    )
+
+    ignore_str=$(IFS=, ; echo "${IGNORES_FOR_MAIN[*]}")
+
+    # Run checkpatch and capture output
+    checkpatch_output=$("${CHECKPATCH}" --show-types --no-tree --ignore "${ignore_str}" "${pf}" 2>&1)
+    echo "${checkpatch_output}" > "${checkpatch_output_log}"
+
+    # Filter out specific error
+    filtered_output=$(echo "${checkpatch_output}" | grep -v "ERROR: Please use git commit description style")
+
+    # Count errors
+    errors=$(echo "${filtered_output}" | grep -c "^ERROR:" || true)
+    warnings=$(echo "${filtered_output}" | grep -c "^WARNING:" || true)
+
+    if [ ${errors} -gt 0 ]; then
+      echo -e "  Checkpatch : ${RED}✗ FAIL${NC} (${errors} error(s), ${warnings} warning(s))"
+      echo ""
+      echo -e "${RED}Error: Checkpatch failed for ${name}${NC}"
+      echo -e "${YELLOW}See log: ${checkpatch_output_log}${NC}"
+      exit 22
+    else
+      if [ ${warnings} -gt 0 ]; then
+        echo -e "  Checkpatch : ${GREEN}✓ PASS${NC} (${warnings} warning(s))"
+      else
+        echo -e "  Checkpatch : ${GREEN}✓ PASS${NC}"
+      fi
+    fi
+  fi
+
   # Build patch
   logfile="${LOGS_DIR}/${name}.log"
   if run_anolis_build "${LINUX_SRC_PATH}" "${logfile}"; then
