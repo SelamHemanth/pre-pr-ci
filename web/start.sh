@@ -12,41 +12,8 @@ echo "Web Directory: $WEB_DIR"
 echo "Project Root: $PROJECT_ROOT"
 echo ""
 
-# Check and configure firewall
-if command -v firewall-cmd &> /dev/null; then
-    echo "Checking firewall configuration..."
-
-    # Check if port 5000 is open
-    if ! sudo firewall-cmd --list-ports 2>/dev/null | grep -q "5000/tcp"; then
-        echo "Port 5000 not open in firewall. Opening..."
-
-        if sudo firewall-cmd --add-port=5000/tcp --permanent 2>/dev/null; then
-            sudo firewall-cmd --reload 2>/dev/null
-            echo "✓ Port 5000 opened in firewall"
-        else
-            echo "⚠ Could not open port 5000 automatically"
-            echo "  Please run manually: sudo firewall-cmd --add-port=5000/tcp --permanent"
-            echo "                       sudo firewall-cmd --reload"
-        fi
-    else
-        echo "✓ Port 5000 is already open in firewall"
-    fi
-    echo ""
-fi
-
 # Change to project root
 cd "$PROJECT_ROOT"
-
-# Check dependencies
-echo "Checking Python dependencies..."
-if ! python3 -c "import flask" 2>/dev/null; then
-    echo "Installing dependencies..."
-    pip3 install -r "$WEB_DIR/requirements.txt" --user
-    echo "✓ Dependencies installed"
-else
-    echo "✓ Dependencies already installed"
-fi
-echo ""
 
 # Start server
 echo "Starting web server..."

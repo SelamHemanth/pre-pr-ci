@@ -49,6 +49,50 @@ check_root() {
     fi
 }
 
+configure_firewall() {
+    print_info "Configuring firewall..."
+
+    # Check if firewall-cmd is available
+    if ! command -v firewall-cmd &> /dev/null; then
+        print_warning "firewall-cmd not found, skipping"
+        return 0
+    fi
+
+    # Check if port 5000 is open
+    if firewall-cmd --list-ports | grep -q "5000/tcp"; then
+        print_success "Port 5000 is already open in firewall"
+        return 0
+    fi
+
+    # Open port 5000
+    if firewall-cmd --add-port=5000/tcp --permanent; then
+        firewall-cmd --reload
+        print_success "Port 5000 opened in firewall"
+    else
+        print_warning "Could not open port automatically"
+    fi
+}
+
+install_dependencies() {
+    print_info "Checking Python dependencies..."
+
+    # Install dependencies as the actual user
+    print_info "Installing Python dependencies for user $ACTUAL_USER..."
+
+    # Try normal install
+    if su - "$ACTUAL_USER" -c "pip3 install flask flask_cors werkzeug --user"; then
+        print_success "Dependencies installed successfully"
+    else
+        # Try with --break-system-packages
+        if su - "$ACTUAL_USER" -c "pip3 install flask flask_cors werkzeug --user --break-system-packages"; then
+            print_success "Dependencies installed successfully"
+        else
+            print_error "Failed to install dependencies"
+            exit 1
+        fi
+    fi
+}
+
 detect_user() {
     # Detect the actual user (not root when using sudo)
     if [ -n "$SUDO_USER" ]; then
@@ -133,6 +177,13 @@ install_service() {
     
     # Check files
     check_web_files
+
+    # Configure firewall
+    configure_firewall
+
+    # Install dependencies
+    detect_user
+    install_dependencies
     
     # Create service file
     create_service_file
