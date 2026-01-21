@@ -215,7 +215,7 @@ def get_config_fields():
                 {'name': 'NUM_PATCHES', 'label': 'Number of patches', 'type': 'number', 'required': True, 'default': 10}
             ],
             'build': [
-                {'name': 'BUILD_THREADS', 'label': 'Build threads', 'type': 'number', 'required': True, 'default': 512}
+                {'name': 'BUILD_THREADS', 'label': 'Build threads', 'type': 'number', 'required': True, 'default': 256}
             ],
             'vm': [
                 {'name': 'VM_IP', 'label': 'VM IP address', 'type': 'text', 'required': True},

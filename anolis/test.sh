@@ -513,7 +513,7 @@ test_check_kapi() {
     fi
   else
     echo "  → Cloning kabi-whitelist repository (branch: ${KABI_BRANCH})..." >> "$KAPI_LOG"
-    if ! git clone -b "${KABI_BRANCH}" https://gitee.com/anolis/kabi-whitelist.git "${KABI_WHITELIST_DIR}" >> "${KAPI_LOG}" 2>&1; then
+    if ! git clone --depth 1 -b "${KABI_BRANCH}" https://gitee.com/anolis/kabi-whitelist.git "${KABI_WHITELIST_DIR}" >> "${KAPI_LOG}" 2>&1; then
       fail "check_kapi" "Failed to clone kabi-whitelist repository (branch ${KABI_BRANCH} may not exist)"
       return
     fi
