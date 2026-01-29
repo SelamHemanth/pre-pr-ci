@@ -463,135 +463,149 @@ test_boot_kernel_rpm() {
 test_check_kapi() {
   echo -e "${BLUE}Test-7: check_kapi${NC}"
 
-  local KAPI_TEST_DIR="/tmp/kapi_test"
+  local KAPI_TEST_DIR="${SCRIPT_DIR}"
   local KABI_DW_DIR="${KAPI_TEST_DIR}/kabi-dw"
   local KABI_WHITELIST_DIR="${KAPI_TEST_DIR}/kabi-whitelist"
   local KAPI_LOG="${LOGS_DIR}/kapi_test.log"
-  local COMPARE_LOG="${KAPI_TEST_DIR}/kapi_compare.log"
+  local KAPI_WITHOUT_BP="${KAPI_TEST_DIR}/kapiwithoutbp"
+  local KAPI_WITH_BP="${KAPI_TEST_DIR}/kapiwithbp"
+  local KAPI_DIFF_OUTPUT="${KAPI_TEST_DIR}/kapi_diff.txt"
+  local KAPI_OP_DIR="${KAPI_TEST_DIR}/outputs"
 
   # Determine kernel branch for kabi-whitelist
   local KERNEL_VERSION=$(grep "^VERSION = " "${LINUX_SRC_PATH}/Makefile" | awk '{print $3}')
   local PATCHLEVEL=$(grep "^PATCHLEVEL = " "${LINUX_SRC_PATH}/Makefile" | awk '{print $3}')
   local KABI_BRANCH="devel-${KERNEL_VERSION}.${PATCHLEVEL}"
 
-  echo "  → Checking KAPI for vmlinux..."
-  echo "  → Setting up KAPI test environment..." >> "$KAPI_LOG"
+  # Clean tools and previous outputs
+  rm -f "${KAPI_DIFF_OUTPUT}" "${KAPI_WITH_BP}" "${KAPI_WITHOUT_BP}"
+  rm -rf "${KAPI_OP_DIR}" "${KABI_DW_DIR}" "${KABI_WHITELIST_DIR}"
 
-  # Remove existed kabi tools, if it's exist
-  if [ -d "${KAPI_TEST_DIR}" ]; then
-    echo "  → Cleaning up existing kabi test directory..." >> "$KAPI_LOG"
-    rm -rf "${KAPI_TEST_DIR}"
-  fi
-
-  # Create test directory if it doesn't exist
-  mkdir -p "${KAPI_TEST_DIR}"
+  echo "  → Checking KAPI..." > "$KAPI_LOG"
 
   # Clone kabi-dw repo
   echo "  → Cloning kabi-dw repository..." >> "$KAPI_LOG"
   if ! git clone https://gitee.com/anolis/kabi-dw.git "${KABI_DW_DIR}" >> "${KAPI_LOG}" 2>&1; then
-	  fail "check_kapi" "Failed to clone kabi-dw repository"
-	  return
+    fail "check_kapi" "Failed to clone kabi-dw repository"
+    return
   fi
 
-  # Build kabi-dw tool
-  echo "  → Building kabi-dw tool..." >> "$KAPI_LOG"
+  # Clone kabi-whitelist repository
+  echo "  → Cloning kabi-whitelist repository (branch: ${KABI_BRANCH})..." >> "$KAPI_LOG"
+  if ! git clone --depth 1 -b "${KABI_BRANCH}" https://gitee.com/anolis/kabi-whitelist.git "${KABI_WHITELIST_DIR}" >> "${KAPI_LOG}" 2>&1; then
+    fail "check_kapi" "Failed to clone kabi-whitelist repository (branch ${KABI_BRANCH} may not exist)"
+    return
+  fi
+
+  # Clean and build kabi-dw tool
   cd "${KABI_DW_DIR}"
+  make clean >> "${KAPI_LOG}" 2>&1
   if ! make >> "${KAPI_LOG}" 2>&1; then
     fail "check_kapi" "Failed to build kabi-dw tool"
     return
   fi
 
-  # Check and clone kabi-whitelist repository if needed
-  echo "  → Cloning kabi-whitelist repository (branch: ${KABI_BRANCH})..." >> "$KAPI_LOG"
-  if ! git clone --depth 1 -b "${KABI_BRANCH}" https://gitee.com/anolis/kabi-whitelist.git "${KABI_WHITELIST_DIR}" >> "${KAPI_LOG}" 2>&1; then
-	  fail "check_kapi" "Failed to clone kabi-whitelist repository (branch ${KABI_BRANCH} may not exist)"
-	  return
-  fi
-
-  # Find vmlinux file in kernel source directory
-  echo "  → Locating vmlinux file..." >> "$KAPI_LOG"
-  local VMLINUX_PATH="${LINUX_SRC_PATH}/vmlinux"
-
-  # Remove and build the kernel
-  rm -rf "${VMLINUX_PATH}"
-  cd "${LINUX_SRC_PATH}"
-
-  if make mrproper >> "${KAPI_LOG}" 2>&1 \
-    && make anolis_defconfig >> "${KAPI_LOG}" 2>&1 \
-    && make -j"$(nproc)" >> "${KAPI_LOG}" 2>&1 \
-    && make modules -j"$(nproc)" >> "${KAPI_LOG}" 2>&1; then
-    echo "Building kernel completed and vmlinux found at ${VMLINUX_PATH}" >> "$KAPI_LOG"
-  else
-    fail "check_kapi" "Build kernel failed (see ${KAPI_LOG})"
-    return
-  fi
-
-  if [ ! -f "${VMLINUX_PATH}" ]; then
-	  fail "check_kapi" "vmlinux not found at ${VMLINUX_PATH}"
-	  return
-  fi
-
   # Determine architecture
   local KABI_ARCH=""
-  if [ "${kernel_arch}" == "x86" ]; then
+  if [ "${kernel_arch}" == "x86" ] || [ "${kernel_arch}" == "x86_64" ]; then
     KABI_ARCH="x86_64"
-  elif [ "${kernel_arch}" == "arm64" ]; then
+  elif [ "${kernel_arch}" == "arm64" ] || [ "${kernel_arch}" == "aarch64" ]; then
     KABI_ARCH="aarch64"
   else
     fail "check_kapi" "Unsupported architecture: ${kernel_arch}"
     return
   fi
 
-  # Set paths for whitelist and output
+  # Set whitelist file path
   local WHITELIST_FILE="${KABI_WHITELIST_DIR}/kabi_whitelist_${KABI_ARCH}"
-  local BASELINE_DIR="${KABI_WHITELIST_DIR}/kabi_dw_output/kabi_pre_${KABI_ARCH}"
-  local OUTPUT_FILE="${KAPI_TEST_DIR}/kapi_after_${KABI_ARCH}"
-
-  # Check if whitelist file exists
   if [ ! -f "${WHITELIST_FILE}" ]; then
     fail "check_kapi" "Whitelist file not found: ${WHITELIST_FILE}"
     return
   fi
 
-  # Check if baseline directory exists
-  if [ ! -d "${BASELINE_DIR}" ]; then
-    fail "check_kapi" "Baseline directory not found: ${BASELINE_DIR}"
+  # Get current HEAD commit ID
+  cd "${LINUX_SRC_PATH}"
+  local HEAD_SHAID=$(git log --oneline -1 | awk '{print $1}')
+  if [ -z "${HEAD_SHAID}" ]; then
+    fail "check_kapi" "Failed to get HEAD commit ID"
     return
   fi
 
-  # Copy vmlinux to test directory for easier access
-  local TEST_VMLINUX="${KAPI_TEST_DIR}/vmlinux"
-  cp "${VMLINUX_PATH}" "${TEST_VMLINUX}"
+  echo "  → Generating KAPI symbols..."
 
-  # Generate current kernel ABI symbols
-  echo "  → Generating current kernel ABI symbols..." >> "$KAPI_LOG"
-  if ! "${KABI_DW_DIR}/kabi-dw" generate \
-       -s "${WHITELIST_FILE}" \
-       -o "${OUTPUT_FILE}" \
-       "${TEST_VMLINUX}" >> "${KAPI_LOG}" 2>&1; then
-    fail "check_kapi" "Failed to generate ABI symbols (see ${KAPI_LOG})"
+  # Reset to base (without backport patches)
+  echo "  → Building kernel without backport patches..." >> "$KAPI_LOG"
+  git reset --hard HEAD~${NUM_PATCHES} >> "${KAPI_LOG}" 2>&1
+  make mrproper >> "${KAPI_LOG}" 2>&1
+  make anolis_defconfig >> "${KAPI_LOG}" 2>&1
+
+  if ! make -j"$(nproc)" >> "${KAPI_LOG}" 2>&1; then
+    fail "check_kapi" "Failed to build kernel without BP"
     return
   fi
 
-  # Compare current ABI with baseline
-  echo "  → Comparing ABI with baseline..." >> "$KAPI_LOG"
-  "${KABI_DW_DIR}/kabi-dw" compare \
-     -k "${BASELINE_DIR}" \
-     "${OUTPUT_FILE}" > "${COMPARE_LOG}" 2>&1
-
-  local COMPARE_EXIT=$?
-
-  # Check if comparison ran successfully (exit code doesn't matter for differences)
-  # Check for actual errors in the output
-  if grep -q "Error" "${COMPARE_LOG}"; then
-    fail "check_kapi" "ABI comparison encountered errors (see ${COMPARE_LOG})"
+  # Check if vmlinux exists
+  local VMLINUX_PATH="${LINUX_SRC_PATH}/vmlinux"
+  if [ ! -f "${VMLINUX_PATH}" ]; then
+    fail "check_kapi" "vmlinux not found (without BP)"
     return
   fi
 
-  # Copy compare log to logs directory
-  cp "${COMPARE_LOG}" "${LOGS_DIR}/"
+  # Generate kABI without backport patches
+  cd "${KAPI_TEST_DIR}"
+  mkdir -p outputs
+  "${KABI_DW_DIR}/kabi-dw" generate -s "${WHITELIST_FILE}" -o "${KAPI_OP_DIR}" "${VMLINUX_PATH}" > "${KAPI_WITHOUT_BP}" 2>&1
 
+  # Reset back to HEAD (with backport patches)
+  echo "  → Building kernel with backport patches..." >> "$KAPI_LOG"
+  cd "${LINUX_SRC_PATH}"
+  git reset --hard ${HEAD_SHAID} >> "${KAPI_LOG}" 2>&1
+  make mrproper >> "${KAPI_LOG}" 2>&1
+  make anolis_defconfig >> "${KAPI_LOG}" 2>&1
+
+  if ! make -j"$(nproc)" >> "${KAPI_LOG}" 2>&1; then
+    fail "check_kapi" "Failed to build kernel with BP"
+    return
+  fi
+
+  # Check if vmlinux exists
+  if [ ! -f "${VMLINUX_PATH}" ]; then
+    fail "check_kapi" "vmlinux not found (with BP)"
+    return
+  fi
+
+  # Generate kABI with backport patches
+  cd "${KAPI_TEST_DIR}"
+  "${KABI_DW_DIR}/kabi-dw" generate -s "${WHITELIST_FILE}" -o "${KAPI_OP_DIR}" "${VMLINUX_PATH}" > "${KAPI_WITH_BP}" 2>&1
+
+  # Compare the two kABI outputs
+  echo "  → Comparing kABI symbols..."
+  diff "${KAPI_WITH_BP}" "${KAPI_WITHOUT_BP}" > "${KAPI_DIFF_OUTPUT}" 2>&1
+  local diff_exit_code=$?
+
+  if [ ${diff_exit_code} -eq 0 ]; then
     pass "check_kapi"
+  else
+    # Extract only the symbol names from diff output (lines with "not found!")
+    local unknown_symbols=$(grep "not found!" "${KAPI_DIFF_OUTPUT}" | grep -E "^[<>]" | sed 's/^[<>] //' | sed 's/ not found!$//')
+
+    if [ -z "${unknown_symbols}" ]; then
+      pass "check_kapi"
+    else
+      echo ""
+      echo -e "${RED}  ✗ kABI symbols mismatch:${NC}"
+      echo "  ========================================"
+      echo "${unknown_symbols}"
+      echo "  ========================================"
+      echo ""
+
+      mv "${KAPI_WITHOUT_BP}" "${LOGS_DIR}/"
+      mv "${KAPI_WITH_BP}" "${LOGS_DIR}/"
+      mv "${KAPI_DIFF_OUTPUT}" "${LOGS_DIR}/"
+
+      fail "check_kapi" "kABI symbols mismatch detected"
+    fi
+  fi
 
   echo ""
 }
