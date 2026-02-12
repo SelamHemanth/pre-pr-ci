@@ -75,6 +75,9 @@ if [ "${1:-}" == "list" ] || [ "${1:-}" == "--list" ] || [ "${1:-}" == "-l" ]; t
 fi
 
 : "${LINUX_SRC_PATH:?missing in config}"
+: "${SIGNER_NAME:?missing in config}"
+: "${SIGNER_EMAIL:?missing in config}"
+: "${TORVALDS_REPO:?missing in config}"
 
 mkdir -p "${LOGS_DIR}"
 

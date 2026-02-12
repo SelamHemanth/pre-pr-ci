@@ -6,6 +6,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WORKDIR="$(dirname "$SCRIPT_DIR")"
 CONFIG_FILE="${SCRIPT_DIR}/.configure"
+TORVALDS_REPO="${WORKDIR}/.torvalds-linux"
 LOGS_DIR="${WORKDIR}/logs"
 
 # Colors
@@ -200,6 +201,23 @@ if [[ "${1:-}" == "--tests" ]]; then
 	exit 0
 fi
 
+# Clone Torvalds repo if not exists
+if [ ! -d "$TORVALDS_REPO" ]; then
+  echo -e "${BLUE}Cloning Torvalds Linux repository...${NC}"
+  git clone --bare https://github.com/torvalds/linux.git "$TORVALDS_REPO" 2>&1 | \
+    stdbuf -oL tr '\r' '\n' | \
+    grep -oP '\d+(?=%)' | \
+    awk '{printf "\rProgress: %d%%", $1; fflush()}' || \
+    git config --global --add safe.directory $TORVALDS_REPO
+    echo -e "\r${GREEN}Repository cloned successfully${NC}"
+  echo ""
+else
+  echo -e "${GREEN}Torvalds repository already exists${NC}"
+  echo -e "${BLUE}Updating repository...${NC}"
+  (cd "$TORVALDS_REPO" && git fetch --all --tags 2>&1 | grep -v "^From" || true)
+  echo -e "${GREEN}Repository updated${NC}"
+fi
+
 # General Configuration
 echo "=== General Configuration ==="
 read -r -p "Linux source code path: " linux_src
@@ -352,6 +370,9 @@ HOST_USER_PWD='${HOST_USER_PWD}'
 # VM Configuration
 VM_IP="${VM_IP}"
 VM_ROOT_PWD='${VM_ROOT_PWD}'
+
+# Repository Configuration
+TORVALDS_REPO="${TORVALDS_REPO}"
 EOF
 
 echo ""
