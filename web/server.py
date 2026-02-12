@@ -88,6 +88,7 @@ def get_test_log_file(test_name, distro):
     """Map test name to actual log file"""
     if distro == 'anolis':
         log_map = {
+            'check_dependency' : 'check_dependency.log',
             'check_kconfig': 'check_Kconfig.log',
             'build_allyes_config': 'build_allyes_config.log',
             'build_allno_config': 'build_allno_config.log',
@@ -310,7 +311,7 @@ def set_config():
             f.write('RUN_TESTS="yes"\n')
 
             if distro == 'anolis':
-                for test in ['CHECK_KCONFIG', 'BUILD_ALLYES', 'BUILD_ALLNO', 'BUILD_DEFCONFIG',
+                for test in ['CHECK_DEPENDENCY', 'CHECK_KCONFIG', 'BUILD_ALLYES', 'BUILD_ALLNO', 'BUILD_DEFCONFIG',
                             'BUILD_DEBUG', 'RPM_BUILD', 'CHECK_KAPI', 'BOOT_KERNEL']:
                     f.write(f'TEST_{test}="yes"\n')
             else:
@@ -342,6 +343,7 @@ def list_tests():
     distro = config.get('DISTRO')
     tests = {
         'anolis': [
+            {'name': 'check_dependency', 'description': 'Check patch dependencies'},
             {'name': 'check_kconfig', 'description': 'Validate kernel configuration'},
             {'name': 'build_allyes_config', 'description': 'Build with allyesconfig'},
             {'name': 'build_allno_config', 'description': 'Build with allnoconfig'},
