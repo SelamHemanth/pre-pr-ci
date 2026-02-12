@@ -48,14 +48,15 @@ list_tests() {
   echo ""
   echo -e "${GREEN}Test Name                    Description${NC}"
   echo -e "${GREEN}─────────────────────────────────────────────────────────${NC}"
-  echo -e "  1. check_kconfig           Validate kernel configuration"
-  echo -e "  2. build_allyes_config     Build with allyesconfig"
-  echo -e "  3. build_allno_config      Build with allnoconfig"
-  echo -e "  4. build_anolis_defconfig  Build with anolis_defconfig"
-  echo -e "  5. build_anolis_debug      Build with anolis-debug_defconfig"
-  echo -e "  6. anck_rpm_build          Build ANCK RPM packages"
-  echo -e "  7. check_kapi              Check kernel ABI compatibility"
-  echo -e "  8. boot_kernel_rpm         Boot VM with built kernel RPM"
+  echo -e "  1. check_dependency        Check commit dependencies"
+  echo -e "  2. check_kconfig           Validate kernel configuration"
+  echo -e "  3. build_allyes_config     Build with allyesconfig"
+  echo -e "  4. build_allno_config      Build with allnoconfig"
+  echo -e "  5. build_anolis_defconfig  Build with anolis_defconfig"
+  echo -e "  6. build_anolis_debug      Build with anolis-debug_defconfig"
+  echo -e "  7. anck_rpm_build          Build ANCK RPM packages"
+  echo -e "  8. check_kapi              Check kernel ABI compatibility"
+  echo -e "  9. boot_kernel_rpm         Boot VM with built kernel RPM"
   echo ""
   echo -e "${BLUE}Usage:${NC}"
   echo "  $0                         - Run all enabled tests"
@@ -142,8 +143,69 @@ run_kernel_build() {
 
 # ---- TEST DEFINITIONS ----
 
+test_check_dependency() {
+  echo -e "${BLUE}Test-1: check_dependency${NC}"
+  cd "${LINUX_SRC_PATH}"
+
+  # Get list of applied commits (those that are ahead of the reset point)
+  local applied_commits=()
+  mapfile -t applied_commits < <(git log --format=%H HEAD | head -n "${NUM_PATCHES:-10}")
+
+  if [ ${#applied_commits[@]} -eq 0 ]; then
+    skip "check_dependency" "No commits to check"
+    echo ""
+    return
+  fi
+
+  echo "  → Checking ${#applied_commits[@]} commits for dependencies..."
+
+  local commits_file="${SCRIPT_DIR}/.commits.txt"
+  local dep_log="${LOGS_DIR}/check_dependency.log"
+  local checkdepend_script="${SCRIPT_DIR}/checkdepend.py"
+
+  # Check if checkdepend.py exists
+  if [ ! -f "${checkdepend_script}" ]; then
+    fail "check_dependency" "checkdepend.py not found at ${checkdepend_script}"
+    echo ""
+    return
+  fi
+
+  # Extract upstream commit IDs and save to .commits.txt
+  > "${commits_file}"
+  for commit in "${applied_commits[@]}"; do
+    local commit_body=$(git log -1 --format=%B "${commit}")
+    # Extract upstream commit ID (full 40-char hash) from commit message
+    local upstream_commit=$(echo "${commit_body}" | grep -oP '(?<=^commit )[a-f0-9]{40}' | head -1)
+    if [ -n "${upstream_commit}" ]; then
+      # Save the full 40-character hash
+      echo "${upstream_commit}" >> "${commits_file}"
+    fi
+  done
+
+  # Check if we have any commits to check
+  local commit_count=$(wc -l < "${commits_file}")
+  if [ ${commit_count} -eq 0 ]; then
+    skip "check_dependency" "No upstream commit IDs found in patches"
+    echo ""
+    return
+  fi
+
+  if python3 "${checkdepend_script}" "${LINUX_SRC_PATH}" "${TORVALDS_REPO}" "${commits_file}" > "${dep_log}" 2>&1; then
+    # Check if there are any failures in the output
+    if grep -q "FAIL" "${dep_log}"; then
+      fail "check_dependency" "Some commits have unfixed dependencies (see ${dep_log})"
+    else
+      pass "check_dependency"
+    fi
+  else
+    fail "check_dependency" "checkdepend.py execution failed (see ${dep_log})"
+  fi
+
+  echo ""
+}
+
 test_check_kconfig() {
-  echo -e "${BLUE}Test-1: check_Kconfig${NC}"
+  echo -e "${BLUE}Test-2: check_Kconfig${NC}"
   cd "${LINUX_SRC_PATH}/anolis" 2>/dev/null || {
     skip "check_Kconfig" "anolis/ directory not found"
     return
@@ -199,27 +261,27 @@ test_check_kconfig() {
 }
 
 test_build_allyes_config() {
-  echo -e "${BLUE}Test-2: build_allyes_config${NC}"
+  echo -e "${BLUE}Test-3: build_allyes_config${NC}"
   run_kernel_build "build_allyes_config" "allyesconfig"
 }
 
 test_build_allno_config() {
-  echo -e "${BLUE}Test-3: build_allno_config${NC}"
+  echo -e "${BLUE}Test-4: build_allno_config${NC}"
   run_kernel_build "build_allno_config" "allnoconfig"
 }
 
 test_build_anolis_defconfig() {
-  echo -e "${BLUE}Test-4: build_anolis_defconfig${NC}"
+  echo -e "${BLUE}Test-5: build_anolis_defconfig${NC}"
   run_kernel_build "build_anolis_defconfig" "anolis_defconfig"
 }
 
 test_build_anolis_debug_defconfig() {
-  echo -e "${BLUE}Test-5: build_anolis_debug_defconfig${NC}"
+  echo -e "${BLUE}Test-6: build_anolis_debug_defconfig${NC}"
   run_kernel_build "build_anolis_debug_defconfig" "anolis-debug_defconfig"
 }
 
 test_anck_rpm_build() {
-  echo -e "${BLUE}Test-6: anck_rpm_build${NC}"
+  echo -e "${BLUE}Test-7: anck_rpm_build${NC}"
 
   # Check and install required build dependencies only if missing
   local packages="audit-libs-devel binutils-devel libbpf-devel libcap-ng-devel libnl3-devel newt-devel pciutils-devel xmlto yum-utils"
@@ -461,7 +523,7 @@ test_boot_kernel_rpm() {
 }
 
 test_check_kapi() {
-  echo -e "${BLUE}Test-7: check_kapi${NC}"
+  echo -e "${BLUE}Test-9: check_kapi${NC}"
 
   local KAPI_TEST_DIR="${SCRIPT_DIR}"
   local KABI_DW_DIR="${KAPI_TEST_DIR}/kabi-dw"
@@ -602,6 +664,9 @@ if [ -n "$SPECIFIC_TEST" ]; then
   echo ""
 
   case "$SPECIFIC_TEST" in
+    check_dependency)
+      test_check_dependency
+      ;;
     check_kconfig)
       test_check_kconfig
       ;;
@@ -630,6 +695,7 @@ if [ -n "$SPECIFIC_TEST" ]; then
       echo -e "${RED}Error: Unknown test '$SPECIFIC_TEST'${NC}"
       echo ""
       echo "Available tests:"
+      echo "  - check_dependency"
       echo "  - check_kconfig"
       echo "  - build_allyes_config"
       echo "  - build_allno_config"
@@ -645,6 +711,7 @@ if [ -n "$SPECIFIC_TEST" ]; then
   esac
 else
   # Run all enabled tests
+  [ "${TEST_CHECK_DEPENDENCY:-yes}" == "yes" ] && test_check_dependency
   [ "${TEST_CHECK_KCONFIG:-yes}" == "yes" ] && test_check_kconfig
   [ "${TEST_BUILD_ALLYES:-yes}" == "yes" ] && test_build_allyes_config
   [ "${TEST_BUILD_ALLNO:-yes}" == "yes" ] && test_build_allno_config
