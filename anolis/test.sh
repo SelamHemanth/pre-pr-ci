@@ -544,6 +544,21 @@ test_check_kapi() {
 
   echo "  → Checking KAPI..." > "$KAPI_LOG"
 
+  # Ensure submodules are initialized
+  if [ ! "$(ls "${KABI_DW_DIR}" 2>/dev/null)" ] || \
+	  [ ! "$(ls "${KABI_WHITELIST_DIR}" 2>/dev/null)" ]; then
+     echo "Initializing and updating submodules..." >> "$KAPI_LOG"
+     git submodule update --init --recursive >> "$KAPI_LOG" 2>&1
+     if [ $? -ne 0 ]; then
+	     fail "check_kapi" "Failed to init/update submodules"
+	     return
+     fi
+  fi
+
+  # Update submodules
+  echo "Updating submodules..." >> "$KAPI_LOG"
+  git submodule update --remote --recursive >> "$KAPI_LOG"
+
   # Clean and build kabi-dw tool
   cd "${KABI_DW_DIR}"
   make clean >> "${KAPI_LOG}" 2>&1
