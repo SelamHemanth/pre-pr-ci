@@ -4,3 +4,6 @@
 [submodule "anolis/kabi-whitelist"]
 	path = anolis/kabi-whitelist
 	url = https://gitee.com/anolis/kabi-whitelist.git
+[submodule "euler/kernel"]
+	path = euler/kernel
+	url = https://atomgit.com/src-openeuler/kernel.git

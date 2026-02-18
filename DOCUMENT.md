@@ -136,6 +136,7 @@ cd patch-precheck-ci/web
      |-------------------|-----------------------------------|--------------------------------------------|
      | check_dependency  | Verify required dependencies      | Ensures all bug-fix commits are backported |
      | build_allmod      | Build with allmodconfig           | Compile with all modules enabled           |
+     | check_kabi        | Check KABI whitelist              | Check KABI whitelist against Module.symvers|
      | check_patch       | Run checkpatch.pl validation      | Verify coding style and patch format       |
      | check_format      | Check code formatting             | Ensures code style consistency             |
      | rpm_build         | Build openEuler RPM packages      | RPMs for installation                      |

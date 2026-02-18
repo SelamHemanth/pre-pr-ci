@@ -35,6 +35,7 @@ update_tests() {
 	RUN_TESTS="no"
 	TEST_CHECK_DEPENDENCY="no"
 	TEST_BUILD_ALLMOD="no"
+	TEST_CHECK_KABI="no"
 	TEST_CHECK_PATCH="no"
 	TEST_CHECK_FORMAT="no"
 	TEST_RPM_BUILD="no"
@@ -44,10 +45,11 @@ update_tests() {
 	echo "Available tests:"
 	echo "  1) check_dependency           - Check dependent commits"
 	echo "  2) build_allmod               - Build with allmodconfig"
-	echo "  3) check_patch                - Run checkpatch.pl validation"
-	echo "  4) check_format               - Check code formatting"
-	echo "  5) rpm_build                  - Build openEuler RPM packages"
-	echo "  6) boot_kernel                - Boot test (requires remote setup)"
+	echo "  3) check_kabi          	      - Check KABI whitelist against Module.symvers"
+	echo "  4) check_patch                - Run checkpatch.pl validation"
+	echo "  5) check_format               - Check code formatting"
+	echo "  6) rpm_build                  - Build openEuler RPM packages"
+	echo "  7) boot_kernel                - Boot test (requires remote setup)"
 	echo ""
 
 	read -r -p "Select tests to run (comma-separated, 'all', or 'none') [all]: " test_selection
@@ -60,6 +62,7 @@ update_tests() {
 		RUN_TESTS="yes"
 		TEST_CHECK_DEPENDENCY="yes"
 		TEST_BUILD_ALLMOD="yes"
+		TEST_CHECK_KABI="yes"
 		TEST_CHECK_PATCH="yes"
 		TEST_CHECK_FORMAT="yes"
 		TEST_RPM_BUILD="yes"
@@ -73,10 +76,11 @@ update_tests() {
 			case "${test_num// /}" in
 				1) TEST_CHECK_DEPENDENCY="yes" ;;
 				2) TEST_BUILD_ALLMOD="yes" ;;
-				3) TEST_CHECK_PATCH="yes" ;;
-				4) TEST_CHECK_FORMAT="yes" ;;
-				5) TEST_RPM_BUILD="yes" ; RPM_BUILD_SELECTED="yes" ;;
-				6) TEST_BOOT_KERNEL="yes" ; BOOT_SELECTED="yes" ;;
+				3) TEST_CHECK_KABI="yes" ;;
+				4) TEST_CHECK_PATCH="yes" ;;
+				5) TEST_CHECK_FORMAT="yes" ;;
+				6) TEST_RPM_BUILD="yes" ; RPM_BUILD_SELECTED="yes" ;;
+				7) TEST_BOOT_KERNEL="yes" ; BOOT_SELECTED="yes" ;;
 			esac
 		done
 	fi
@@ -171,6 +175,7 @@ update_tests() {
 	sed -i "s|^RUN_TESTS=.*|RUN_TESTS=\"${RUN_TESTS}\"|" "${CONFIG_FILE}"
 	sed -i "s|^TEST_CHECK_DEPENDENCY=.*|TEST_CHECK_DEPENDENCY=\"${TEST_CHECK_DEPENDENCY}\"|" "${CONFIG_FILE}"
 	sed -i "s|^TEST_BUILD_ALLMOD=.*|TEST_BUILD_ALLMOD=\"${TEST_BUILD_ALLMOD}\"|" "${CONFIG_FILE}"
+	sed -i "s|^TEST_CHECK_KABI=.*|TEST_CHECK_KABI=\"${TEST_CHECK_KABI}\"|" "${CONFIG_FILE}"
 	sed -i "s|^TEST_CHECK_PATCH=.*|TEST_CHECK_PATCH=\"${TEST_CHECK_PATCH}\"|" "${CONFIG_FILE}"
 	sed -i "s|^TEST_CHECK_FORMAT=.*|TEST_CHECK_FORMAT=\"${TEST_CHECK_FORMAT}\"|" "${CONFIG_FILE}"
 	sed -i "s|^TEST_RPM_BUILD=.*|TEST_RPM_BUILD=\"${TEST_RPM_BUILD}\"|" "${CONFIG_FILE}"
@@ -250,10 +255,11 @@ echo ""
 echo "Available tests:"
 echo "  1) check_dependency           - Check dependent commits"
 echo "  2) build_allmod               - Build with allmodconfig"
-echo "  3) check_patch                - Run checkpatch.pl validation"
-echo "  4) check_format               - Check code formatting"
-echo "  5) rpm_build                  - Build openEuler RPM packages"
-echo "  6) boot_kernel                - Boot test (requires remote setup)"
+echo "  3) check_kabi          	      - Check KABI whitelist against Module.symvers"
+echo "  4) check_patch                - Run checkpatch.pl validation"
+echo "  5) check_format               - Check code formatting"
+echo "  6) rpm_build                  - Build openEuler RPM packages"
+echo "  7) boot_kernel                - Boot test (requires remote setup)"
 echo ""
 
 read -r -p "Select tests to run (comma-separated, 'all', or 'none') [all]: " test_selection
@@ -264,6 +270,7 @@ if [ "$TEST_SELECTION" == "all" ] || [ -z "$TEST_SELECTION" ]; then
   RUN_TESTS="yes"
   TEST_CHECK_DEPENDENCY="yes"
   TEST_BUILD_ALLMOD="yes"
+  TEST_CHECK_KABI="yes"
   TEST_CHECK_PATCH="yes"
   TEST_CHECK_FORMAT="yes"
   TEST_RPM_BUILD="yes"
@@ -272,6 +279,7 @@ elif [ "$TEST_SELECTION" == "none" ]; then
   RUN_TESTS="no"
   TEST_CHECK_DEPENDENCY="no"
   TEST_BUILD_ALLMOD="no"
+  TEST_CHECK_KABI="no"
   TEST_CHECK_PATCH="no"
   TEST_CHECK_FORMAT="no"
   TEST_RPM_BUILD="no"
@@ -280,6 +288,7 @@ else
   RUN_TESTS="yes"
   TEST_CHECK_DEPENDENCY="no"
   TEST_BUILD_ALLMOD="no"
+  TEST_CHECK_KABI="no"
   TEST_CHECK_PATCH="no"
   TEST_CHECK_FORMAT="no"
   TEST_RPM_BUILD="no"
@@ -291,10 +300,11 @@ else
     case "${test_num// /}" in
       1) TEST_CHECK_DEPENDENCY="yes" ;;
       2) TEST_BUILD_ALLMOD="yes" ;;
-      3) TEST_CHECK_PATCH="yes" ;;
-      4) TEST_CHECK_FORMAT="yes" ;;
-      5) TEST_RPM_BUILD="yes" ;;
-      6) TEST_BOOT_KERNEL="yes" ;;
+      3) TEST_CHECK_KABI="yes" ;;
+      4) TEST_CHECK_PATCH="yes" ;;
+      5) TEST_CHECK_FORMAT="yes" ;;
+      6) TEST_RPM_BUILD="yes" ;;
+      7) TEST_BOOT_KERNEL="yes" ;;
     esac
   done
 fi
@@ -344,6 +354,7 @@ BUILD_THREADS="${BUILD_THREADS}"
 RUN_TESTS="${RUN_TESTS}"
 TEST_CHECK_DEPENDENCY="${TEST_CHECK_DEPENDENCY}"
 TEST_BUILD_ALLMOD="${TEST_BUILD_ALLMOD}"
+TEST_CHECK_KABI="${TEST_CHECK_KABI}"
 TEST_CHECK_PATCH="${TEST_CHECK_PATCH}"
 TEST_CHECK_FORMAT="${TEST_CHECK_FORMAT}"
 TEST_RPM_BUILD="${TEST_RPM_BUILD}"

@@ -102,6 +102,7 @@ def get_test_log_file(test_name, distro):
         log_map = {
             'check_dependency': 'check_dependency.log',
             'build_allmod': 'build_allmod.log',
+            'check_kabi': 'check_kabi.log',
             'check_patch': 'check_patch.log',
             'check_format': 'check_format.log',
             'rpm_build': 'rpm_build.log',
@@ -315,7 +316,7 @@ def set_config():
                             'BUILD_DEBUG', 'RPM_BUILD', 'CHECK_KAPI', 'BOOT_KERNEL']:
                     f.write(f'TEST_{test}="yes"\n')
             else:
-                for test in ['CHECK_DEPENDENCY', 'BUILD_ALLMOD', 'CHECK_PATCH',
+                for test in ['CHECK_DEPENDENCY', 'BUILD_ALLMOD', 'CHECK_KABI', 'CHECK_PATCH',
                             'CHECK_FORMAT', 'RPM_BUILD', 'BOOT_KERNEL']:
                     f.write(f'TEST_{test}="yes"\n')
 
@@ -356,6 +357,7 @@ def list_tests():
         'euler': [
             {'name': 'check_dependency', 'description': 'Check patch dependencies'},
             {'name': 'build_allmod', 'description': 'Build with allmodconfig'},
+            {'name': 'check_kabi', 'description': 'Check KABI whitelist against Module.symvers'},
             {'name': 'check_patch', 'description': 'Run checkpatch.pl validation'},
             {'name': 'check_format', 'description': 'Check code formatting'},
             {'name': 'rpm_build', 'description': 'Build openEuler RPM packages'},

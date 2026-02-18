@@ -36,7 +36,7 @@ A modern, responsive web interface is available for easier interaction with the 
 
 ## ⚙️ Usage
 
-- Install Prerequisite packages (Check in [DOCUMENT.md](https://github.com/SelamHemanth/patch-precheck-ci/blob/main/DOCUMENT.md))
+- Install Prerequisite packages (Check in [DOCUMENT.md](https://github.com/SelamHemanth/patch-precheck-ci/blob/master/DOCUMENT.md))
 
 ```bash
 # Clone repository
@@ -72,7 +72,7 @@ Run the web interface as a system service:
 
 ## 📖 Documentation
 
-For detailed documentation, please refer to: [DOCUMENT.md](https://github.com/SelamHemanth/patch-precheck-ci/blob/main/DOCUMENT.md)
+For detailed documentation, please refer to: [DOCUMENT.md](https://github.com/SelamHemanth/patch-precheck-ci/blob/master/DOCUMENT.md)
 
 ---
 
@@ -90,7 +90,7 @@ Contributions are welcome! To contribute:
 
 ## 📄 License
 
-This project is licensed under the GPL-3.0 License - see the [LICENSE](https://github.com/SelamHemanth/patch-precheck-ci/blob/main/LICENSE) file for details.
+This project is licensed under the GPL-3.0 License - see the [LICENSE](https://github.com/SelamHemanth/patch-precheck-ci/blob/master/LICENSE) file for details.
 
 ---
 

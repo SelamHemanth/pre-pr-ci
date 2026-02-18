@@ -27,6 +27,10 @@ PATCHES_DIR="${WORKDIR}/patches"
 LOGS_DIR="${WORKDIR}/logs"
 TEST_LOG="${LOGS_DIR}/test_results.log"
 
+# KABI kernel submodule directory
+KABI_KERNEL_DIR="${SCRIPT_DIR}/kernel"
+KABI_BRANCH="openEuler-24.03-LTS-Next"
+
 # Export the variables so subshells can use them
 export HOST_USER_PWD
 export VM_IP
@@ -51,10 +55,11 @@ list_tests() {
   echo -e "${GREEN}─────────────────────────────────────────────────────────${NC}"
   echo -e "  1. check_dependency    Check patch dependencies"
   echo -e "  2. build_allmod        Build with allmodconfig"
-  echo -e "  3. check_patch         Run checkpatch.pl on patches"
-  echo -e "  4. check_format        Validate commit message format"
-  echo -e "  5. rpm_build           Build kernel RPM packages"
-  echo -e "  6. boot_kernel         Boot VM with built kernel"
+  echo -e "  3. check_kabi          Check KABI whitelist against Module.symvers"
+  echo -e "  4. check_patch         Run checkpatch.pl on patches"
+  echo -e "  5. check_format        Validate commit message format"
+  echo -e "  6. rpm_build           Build kernel RPM packages"
+  echo -e "  7. boot_kernel         Boot VM with built kernel"
   echo ""
   echo -e "${BLUE}Usage:${NC}"
   echo "  $0                     - Run all enabled tests"
@@ -215,8 +220,239 @@ test_build_allmod() {
   run_kernel_build "build_allmod" "allmodconfig"
 }
 
+test_check_kabi() {
+  echo -e "${BLUE}Test-3: check_kabi${NC}"
+
+  local kabi_log="${LOGS_DIR}/kabi_check.log"
+  local symvers="${LINUX_SRC_PATH}/Module.symvers"
+
+  # ---- Ensure kernel submodule is on the correct branch ----
+  if [ ! -d "${KABI_KERNEL_DIR}/.git" ] && [ ! -f "${KABI_KERNEL_DIR}/.git" ]; then
+    fail "check_kabi" "kernel submodule not found at ${KABI_KERNEL_DIR}."
+    echo ""
+    return
+  fi
+
+  local kabi_build_log="${LOGS_DIR}/kabi_build.log"
+  {
+    echo "KABI pre-build log"
+    echo "Date: $(date)"
+    echo ""
+  } > "${kabi_build_log}"
+
+  # Ensure submodules are initialized
+  if [ ! "$(ls "${KABI_KERNEL_DIR}" 2>/dev/null)" ]; then
+    echo "Initializing and updating submodules..." >> "${kabi_build_log}"
+    git submodule update --init --recursive >> "${kabi_build_log}" 2>&1
+    if [ $? -ne 0 ]; then
+	fail "check_kabi" "Failed to init/update submodules"
+	return
+    fi
+  fi
+
+  # Update submodules
+  echo "Updating submodules..." >> "${kabi_build_log}"
+  git submodule update --remote --recursive >> "${kabi_build_log}"
+
+  local current_branch
+  current_branch=$(git -C "${KABI_KERNEL_DIR}" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "DETACHED")
+
+  if [ "${current_branch}" != "${KABI_BRANCH}" ]; then
+    echo "  → kernel submodule is on '${current_branch}', switching to '${KABI_BRANCH}'..." >> "${kabi_build_log}"
+    if ! git -C "${KABI_KERNEL_DIR}" checkout "${KABI_BRANCH}" > /dev/null 2>&1; then
+      if git -C "${KABI_KERNEL_DIR}" fetch origin "${KABI_BRANCH}" > /dev/null 2>&1 \
+        && git -C "${KABI_KERNEL_DIR}" checkout "${KABI_BRANCH}" > /dev/null 2>&1; then
+        echo "  → Switched to '${KABI_BRANCH}' (fetched from remote)" >> "${kabi_build_log}"
+      else
+        fail "check_kabi" "Failed to checkout branch '${KABI_BRANCH}' in kernel submodule"
+        echo ""
+        return
+      fi
+    else
+      echo "  → Switched to '${KABI_BRANCH}'" >> "${kabi_build_log}"
+    fi
+  else
+    echo "  → kernel submodule is on correct branch: ${KABI_BRANCH}" >> "${kabi_build_log}"
+  fi
+
+  # ---- Select whitelist file based on arch ----
+  local kabi_ref_file
+  if [ "$(arch)" == "x86_64" ]; then
+    kabi_ref_file="${KABI_KERNEL_DIR}/Module.kabi_ext2_x86_64"
+  elif [ "$(arch)" == "aarch64" ]; then
+    kabi_ref_file="${KABI_KERNEL_DIR}/Module.kabi_ext2_aarch64"
+  else
+    fail "check_kabi" "Unsupported architecture: $(arch)"
+    echo ""
+    return
+  fi
+
+  # ---- Verify whitelist exists ----
+  if [ ! -f "${kabi_ref_file}" ]; then
+    fail "check_kabi" "KABI whitelist not found: ${kabi_ref_file}"
+    echo ""
+    return
+  fi
+
+  local symbol_count
+  symbol_count=$(grep -c $'\t' "${kabi_ref_file}" 2>/dev/null || echo 0)
+  echo "  → Whitelist : $(basename "${kabi_ref_file}") (${symbol_count} symbols)" >> "${kabi_build_log}"
+
+  # ---- Build kernel to produce a fresh Module.symvers ----
+  echo "  → Building kernel to generate Module.symvers..." | tee -a "${kabi_build_log}"
+  cd "${LINUX_SRC_PATH}"
+
+  echo "  → make mrproper..." >> "${kabi_build_log}"
+  if ! make mrproper >> "${kabi_build_log}" 2>&1; then
+    fail "check_kabi" "make mrproper failed (see ${kabi_build_log})"
+    echo ""
+    return
+  fi
+
+  echo "  → make openeuler_defconfig..." >> "${kabi_build_log}"
+  if ! make openeuler_defconfig >> "${kabi_build_log}" 2>&1; then
+    fail "check_kabi" "make openeuler_defconfig failed (see ${kabi_build_log})"
+    echo ""
+    return
+  fi
+
+  echo "  → make -j${BUILD_THREADS}..." >> "${kabi_build_log}"
+  if ! make -j"${BUILD_THREADS}" >> "${kabi_build_log}" 2>&1; then
+    fail "check_kabi" "kernel build failed (see ${kabi_build_log})"
+    echo ""
+    return
+  fi
+
+  if [ ! -f "${symvers}" ]; then
+    fail "check_kabi" "Module.symvers not produced after build (see ${kabi_build_log})"
+    echo ""
+    return
+  fi
+
+  echo "  → Symvers   : ${symvers}" >> "${kabi_build_log}"
+
+  # ---- Write log header ----
+  {
+    echo "openEuler KABI Whitelist Check"
+    echo "Date     : $(date)"
+    echo "Branch   : ${KABI_BRANCH}"
+    echo "Arch     : $(arch)"
+    echo "Whitelist: ${kabi_ref_file}"
+    echo "Symvers  : ${symvers}"
+    echo ""
+  } > "${kabi_log}"
+
+  # ---- Run the comparison ----
+  local kabi_output
+  kabi_output=$(python3 - "${symvers}" "${kabi_ref_file}" <<'PYEOF'
+import sys
+
+def load_symfile(path):
+    fields_map = {}
+    line_map = {}
+    with open(path, "r", encoding="utf-8", errors="replace") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            parts = line.split("\t")
+            if len(parts) < 2:
+                continue
+            symbol = parts[1]
+            fields_map[symbol] = parts
+            line_map[symbol] = line
+    return fields_map, line_map
+
+def compare(sym_fields, sym_lines, ref_fields, ref_lines):
+    changed, moved, lost = [], [], []
+    for symbol, ref_parts in ref_fields.items():
+        ref_hash   = ref_parts[0]
+        ref_module = ref_parts[2] if len(ref_parts) >= 3 else ""
+        if symbol in sym_fields:
+            sym_parts  = sym_fields[symbol]
+            sym_hash   = sym_parts[0]
+            sym_module = sym_parts[2] if len(sym_parts) >= 3 else ""
+            if ref_hash != sym_hash:
+                changed.append(symbol)
+            if ref_module != sym_module:
+                moved.append(symbol)
+        else:
+            lost.append(symbol)
+    return changed, moved, lost
+
+sym_fields, sym_lines = load_symfile(sys.argv[1])
+ref_fields, ref_lines = load_symfile(sys.argv[2])
+
+changed, moved, lost = compare(sym_fields, sym_lines, ref_fields, ref_lines)
+
+if changed:
+    print(f"*** ERROR - ABI BREAKAGE WAS DETECTED ***")
+    print(f"The following {len(changed)} whitelisted symbol(s) have a changed CRC:")
+    print("  [ current Module.symvers ]")
+    for s in changed:
+        print("    " + sym_lines.get(s, "<missing>"))
+    print("  [ reference whitelist ]")
+    for s in changed:
+        print("    " + ref_lines.get(s, "<missing>"))
+    print()
+
+if lost:
+    print(f"*** ERROR - ABI BREAKAGE WAS DETECTED ***")
+    print(f"The following {len(lost)} whitelisted symbol(s) are missing from the build:")
+    for s in lost:
+        print("    " + ref_lines.get(s, "<missing>"))
+    print()
+
+if moved:
+    print(f"*** WARNING - ABI SYMBOLS MOVED ***")
+    print(f"The following {len(moved)} whitelisted symbol(s) moved to a different module:")
+    print("  [ current Module.symvers ]")
+    for s in moved:
+        print("    " + sym_lines.get(s, "<missing>"))
+    print("  [ reference whitelist ]")
+    for s in moved:
+        print("    " + ref_lines.get(s, "<missing>"))
+    print()
+
+if not changed and not lost and not moved:
+    print(f"All {len(ref_fields)} whitelisted symbols OK.")
+
+if changed or lost:
+    sys.exit(1)
+elif moved:
+    sys.exit(2)
+else:
+    sys.exit(0)
+PYEOF
+  )
+  local py_exit=$?
+
+  echo "${kabi_output}" >> "${kabi_log}"
+
+  case ${py_exit} in
+    0)
+      echo "RESULT: PASSED" >> "${kabi_log}"
+      pass "check_kabi"
+      ;;
+    2)
+      echo "RESULT: WARN (symbols moved)" >> "${kabi_log}"
+      echo -e "  ${YELLOW}→ Some whitelisted symbols moved modules (see ${kabi_log})${NC}"
+      pass "check_kabi"
+      ;;
+    *)
+      echo "RESULT: FAILED" >> "${kabi_log}"
+      echo ""
+      echo "${kabi_output}" | grep -A3 "ERROR\|lost\|changed" | head -30 | sed 's/^/  /'
+      echo ""
+      fail "check_kabi" "KABI whitelist breakage detected (see ${kabi_log})"
+      ;;
+  esac
+
+  echo ""
+}
+
 test_check_patch() {
-  echo -e "${BLUE}Test-3: check_patch${NC}"
+  echo -e "${BLUE}Test-4: check_patch${NC}"
   
   # Check if checkpatch.pl exists
   local CHECKPATCH="${LINUX_SRC_PATH}/scripts/checkpatch.pl"
@@ -315,7 +551,7 @@ test_check_patch() {
 }
 
 test_check_format() {
-  echo -e "${BLUE}Test-4: check_format${NC}"
+  echo -e "${BLUE}Test-5: check_format${NC}"
   
   cd "${LINUX_SRC_PATH}"
   
@@ -444,7 +680,7 @@ test_check_format() {
 }
 
 test_rpm_build() {
-  echo -e "${BLUE}Test-5: rpm_build${NC}"
+  echo -e "${BLUE}Test-6: rpm_build${NC}"
 
   cd "${LINUX_SRC_PATH}"
 
@@ -514,7 +750,7 @@ test_rpm_build() {
 }
 
 test_boot_kernel() {
-  echo -e "${BLUE}Test-6: boot_kernel${NC}"
+  echo -e "${BLUE}Test-7: boot_kernel${NC}"
 
   local rpms_dir="$HOME/rpmbuild/RPMS/x86_64"
   local boot_log="${LOGS_DIR}/boot_kernel.log"
@@ -694,6 +930,9 @@ if [ -n "$SPECIFIC_TEST" ]; then
     build_allmod)
       test_build_allmod
       ;;
+    check_kabi)
+      test_check_kabi
+      ;;
     check_patch)
       test_check_patch
       ;;
@@ -712,6 +951,7 @@ if [ -n "$SPECIFIC_TEST" ]; then
       echo "Available tests:"
       echo "  - check_dependency"
       echo "  - build_allmod"
+      echo "  - check_kabi"
       echo "  - check_patch"
       echo "  - check_format"
       echo "  - rpm_build"
@@ -725,6 +965,7 @@ else
   # Run all enabled tests
   [ "${TEST_CHECK_DEPENDENCY:-yes}" == "yes" ] && test_check_dependency
   [ "${TEST_BUILD_ALLMOD:-yes}" == "yes" ] && test_build_allmod
+  [ "${TEST_CHECK_KABI:-yes}" == "yes" ] && test_check_kabi
   [ "${TEST_CHECK_PATCH:-yes}" == "yes" ] && test_check_patch
   [ "${TEST_CHECK_FORMAT:-yes}" == "yes" ] && test_check_format
   [ "${TEST_RPM_BUILD:-yes}" == "yes" ] && test_rpm_build
