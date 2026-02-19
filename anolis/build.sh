@@ -54,14 +54,14 @@ cd "${LINUX_SRC_PATH}"
 
 # Handle dubious ownership issue
 if ! git rev-parse --git-dir >/dev/null 2>&1; then
-	echo -e "${YELLOW}Warning: Git detected dubious ownership in repository${NC}" >&2
-	echo -e "${YELLOW}Attempting to add safe.directory exception...${NC}" >&2
-	git config --global --add safe.directory "${LINUX_SRC_PATH}" 2>/dev/null || {
-		echo -e "${RED}Failed to add safe.directory exception${NC}" >&2
-		echo -e "${RED}Please run manually: git config --global --add safe.directory ${LINUX_SRC_PATH}${NC}" >&2
-		exit 12
-	}
-	echo -e "${GREEN}Safe directory exception added successfully${NC}" >&2
+        echo -e "${YELLOW}Warning: Git detected dubious ownership in repository${NC}" >&2
+        echo -e "${YELLOW}Attempting to add safe.directory exception...${NC}" >&2
+        git config --global --add safe.directory "${LINUX_SRC_PATH}" 2>/dev/null || {
+                echo -e "${RED}Failed to add safe.directory exception${NC}" >&2
+                echo -e "${RED}Please run manually: git config --global --add safe.directory ${LINUX_SRC_PATH}${NC}" >&2
+                exit 12
+        }
+        echo -e "${GREEN}Safe directory exception added successfully${NC}" >&2
 fi
 
 TOTAL_COMMITS="$(git rev-list --count HEAD 2>/dev/null || true)"
@@ -70,87 +70,113 @@ if [ -z "${TOTAL_COMMITS}" ] || [ "${TOTAL_COMMITS}" -lt "${NUM_PATCHES}" ]; the
   exit 11
 fi
 
-# Save current HEAD id for later reset (full SHA)
-HEAD_ID="$(git rev-parse --verify HEAD)"
-printf "%s\n" "${HEAD_ID}" > "${HEAD_ID_FILE}"
-echo -e "${BLUE}Saved HEAD commit: ${HEAD_ID}${NC}"
+# Check if commits are already tagged with ANBZ and Signed-off-by
+ANBZ_TAG="ANBZ: #${ANBZ_ID}"
+SOB_TAG="Signed-off-by: ${SIGNER_NAME} <${SIGNER_EMAIL}>"
 
-TMP_FORMAT_DIR="$(mktemp -d "${WORKDIR}/formatpatches.XXXX")"
-echo -e "${BLUE}Generating ${NUM_PATCHES} patches...${NC}"
-git -c core.quiet=true format-patch -${NUM_PATCHES} -o "${TMP_FORMAT_DIR}" "HEAD~${NUM_PATCHES}..HEAD" >/dev/null 2>&1 || {
-  git format-patch -${NUM_PATCHES} -o "${TMP_FORMAT_DIR}" "HEAD~${NUM_PATCHES}..HEAD"
-}
+echo -e "${BLUE}Checking if commits are already tagged with metadata...${NC}"
 
-# Backup existing patches and move new ones
-mkdir -p "${BKP_DIR}"
-for ex in "${PATCHES_DIR}"/*.patch; do
-  [ -f "${ex}" ] || continue
-  cp -f "${ex}" "${BKP_DIR}/$(basename "${ex}").bak-$(date +%s)"
-done
-rm -f "${PATCHES_DIR}"/*.patch || true
-mv "${TMP_FORMAT_DIR}"/*.patch "${PATCHES_DIR}/" 2>/dev/null || true
-rm -rf "${TMP_FORMAT_DIR}"
+SKIP_APPLY=false
+all_tagged=true
+while IFS= read -r commit_hash; do
+  commit_msg="$(git log -1 --format="%B" "${commit_hash}")"
+  if ! echo "${commit_msg}" | grep -qF "${ANBZ_TAG}" || \
+     ! echo "${commit_msg}" | grep -qF "${SOB_TAG}"; then
+    all_tagged=false
+    break
+  fi
+done < <(git log --format="%H" -n "${NUM_PATCHES}" HEAD)
 
-# Reset repo back by NUM_PATCHES commits so we can re-apply
-git reset --hard "HEAD~${NUM_PATCHES}" >/dev/null 2>&1 || true
-echo -e "${YELLOW}HEAD is now at $(git rev-parse --short HEAD) $(git log -1 --pretty=%s)${NC}"
+if [ "${all_tagged}" = true ]; then
+  echo -e "${GREEN}All ${NUM_PATCHES} commits already contain ANBZ and Signed-off-by tags.${NC}"
+  echo -e "${YELLOW}Skipping format-patch, reset, modify, and apply steps.${NC}"
+  echo ""
+  SKIP_APPLY=true
+else
+  echo -e "${BLUE}Commits not fully tagged. Running full patch generation and modification...${NC}"
 
-echo -e "${BLUE}Modifying patches with ANBZ and Signed-off-by tags...${NC}"
-# Modify patches in-place with required formatting
-for p in "${PATCHES_DIR}"/*.patch; do
-  [ -f "${p}" ] || continue
-  cp -f "${p}" "${BKP_DIR}/$(basename "${p}")"
+  # Save current HEAD id for later reset (full SHA)
+  HEAD_ID="$(git rev-parse --verify HEAD)"
+  printf "%s\n" "${HEAD_ID}" > "${HEAD_ID_FILE}"
+  echo -e "${BLUE}Saved HEAD commit: ${HEAD_ID}${NC}"
 
-  # Insert ANBZ after Subject
-  awk -v ANBZ="ANBZ: #${ANBZ_ID}" '
-    BEGIN { in_sub=0; printed_anbz=0 }
-    {
-      if (!in_sub) {
-        print $0
-        if ($0 ~ /^Subject:/) { in_sub=1; next }
-      } else if (in_sub && !printed_anbz) {
-        if ($0 ~ /^$/) {
+  TMP_FORMAT_DIR="$(mktemp -d "${WORKDIR}/formatpatches.XXXX")"
+  echo -e "${BLUE}Generating ${NUM_PATCHES} patches...${NC}"
+  git -c core.quiet=true format-patch -${NUM_PATCHES} -o "${TMP_FORMAT_DIR}" "HEAD~${NUM_PATCHES}..HEAD" >/dev/null 2>&1 || {
+    git format-patch -${NUM_PATCHES} -o "${TMP_FORMAT_DIR}" "HEAD~${NUM_PATCHES}..HEAD"
+  }
+
+  # Backup existing patches and move new ones
+  mkdir -p "${BKP_DIR}"
+  for ex in "${PATCHES_DIR}"/*.patch; do
+    [ -f "${ex}" ] || continue
+    cp -f "${ex}" "${BKP_DIR}/$(basename "${ex}").bak-$(date +%s)"
+  done
+  rm -f "${PATCHES_DIR}"/*.patch || true
+  mv "${TMP_FORMAT_DIR}"/*.patch "${PATCHES_DIR}/" 2>/dev/null || true
+  rm -rf "${TMP_FORMAT_DIR}"
+
+  # Reset repo back by NUM_PATCHES commits so we can re-apply
+  git reset --hard "HEAD~${NUM_PATCHES}" >/dev/null 2>&1 || true
+  echo -e "${YELLOW}HEAD is now at $(git rev-parse --short HEAD) $(git log -1 --pretty=%s)${NC}"
+
+  echo -e "${BLUE}Modifying patches with ANBZ and Signed-off-by tags...${NC}"
+  # Modify patches in-place with required formatting
+  for p in "${PATCHES_DIR}"/*.patch; do
+    [ -f "${p}" ] || continue
+    cp -f "${p}" "${BKP_DIR}/$(basename "${p}")"
+
+    # Insert ANBZ after Subject
+    awk -v ANBZ="ANBZ: #${ANBZ_ID}" '
+      BEGIN { in_sub=0; printed_anbz=0 }
+      {
+        if (!in_sub) {
+          print $0
+          if ($0 ~ /^Subject:/) { in_sub=1; next }
+        } else if (in_sub && !printed_anbz) {
+          if ($0 ~ /^$/) {
+            print ""
+            print ANBZ
+            print ""
+            printed_anbz=1
+            next
+          } else {
+            print $0
+            next
+          }
+        } else {
+          print $0
+        }
+      }
+      END {
+        if (in_sub && !printed_anbz) {
           print ""
           print ANBZ
           print ""
-          printed_anbz=1
-          next
-        } else {
-          print $0
-          next
         }
-      } else {
+      }' "${p}" > "${p}.tmp" && mv "${p}.tmp" "${p}"
+
+    # Insert Signed-off-by before first '---'
+    SOB_LINE="Signed-off-by: ${SIGNER_NAME} <${SIGNER_EMAIL}>"
+    if ! grep -qF "${SOB_LINE}" "${p}"; then
+    awk -v SOB="Signed-off-by: ${SIGNER_NAME} <${SIGNER_EMAIL}>" '
+      BEGIN { inserted=0 }
+      {
+        if (!inserted && $0 ~ /^---$/) {
+          print SOB
+          inserted=1
+        }
         print $0
       }
-    }
-    END {
-      if (in_sub && !printed_anbz) {
-        print ""
-        print ANBZ
-        print ""
-      }
-    }' "${p}" > "${p}.tmp" && mv "${p}.tmp" "${p}"
-
-  # Insert Signed-off-by before first '---'
-  SOB_LINE="Signed-off-by: ${SIGNER_NAME} <${SIGNER_EMAIL}>"
-  if ! grep -qF "${SOB_LINE}" "${p}"; then  
-  awk -v SOB="Signed-off-by: ${SIGNER_NAME} <${SIGNER_EMAIL}>" '
-    BEGIN { inserted=0 }
-    {
-      if (!inserted && $0 ~ /^---$/) {
-        print SOB
-        inserted=1
-      }
-      print $0
-    }
-    END {
-      if (!inserted) {
-        print ""
-        print SOB
-      }
-    }' "${p}" > "${p}.tmp" && mv "${p}.tmp" "${p}"
-  fi
-done
+      END {
+        if (!inserted) {
+          print ""
+          print SOB
+        }
+      }' "${p}" > "${p}.tmp" && mv "${p}.tmp" "${p}"
+    fi
+  done
+fi
 
 # Ensure repo clean
 if [ -n "$(git status --porcelain)" ]; then
@@ -160,6 +186,15 @@ fi
 
 git config user.name "${SIGNER_NAME}"
 git config user.email "${SIGNER_EMAIL}"
+
+if [ "${SKIP_APPLY}" = true ]; then
+  echo -e "${GREEN}Patches already applied — skipping git am step.${NC}"
+  echo -e "${YELLOW}Proceeding to next process (make test)...${NC}"
+  echo ""
+  echo -e "${GREEN}✓ OpenAnolis build process completed successfully${NC}"
+  echo -e "Run ${YELLOW}'make test'${NC} to execute OpenAnolis-specific tests"
+  exit 0
+fi
 
 # Build function for OpenAnolis
 run_anolis_build() {
