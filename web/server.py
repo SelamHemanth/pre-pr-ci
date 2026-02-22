@@ -338,9 +338,9 @@ def set_config():
             f.write(f'VM_IP="{config_data.get("VM_IP", "")}"\n')
             f.write(f'VM_ROOT_PWD=\'{config_data.get("VM_ROOT_PWD", "")}\'\n')
 
-            if distro == 'euler':
-                f.write('\n# Repository\n')
-                f.write(f'TORVALDS_REPO="{os.path.join(PROJECT_ROOT, ".torvalds-linux")}"\n')
+
+            f.write('\n# Repository\n')
+            f.write(f'TORVALDS_REPO="{os.path.join(PROJECT_ROOT, ".torvalds-linux")}"\n')
 
         return jsonify({'message': 'Configuration saved', 'distro': distro})
     except Exception as e:
