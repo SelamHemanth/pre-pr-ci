@@ -93,7 +93,7 @@ pipeline {
         
         choice(
             name: 'Anolis_Selected_tests',
-            choices: ['none', 'check_Kconfig', 'build_allyes_config', 'build_allno_config', 'build_anolis_defconfig', 'build_anolis_debug', 'anck_rpm_build', 'check_kapi', 'boot_kernel_rpm', 'all'],
+            choices: ['none', 'check_dependency', 'check_Kconfig', 'build_allyes_config', 'build_allno_config', 'build_anolis_defconfig', 'build_anolis_debug', 'anck_rpm_build', 'check_kapi', 'boot_kernel_rpm', 'all'],
             description: 'If your selected distro is anolis, select the test cases'
         )
         
@@ -301,6 +301,9 @@ def run_distro_specific_operations(system_distro, d) {
         
         // Clone repository if not exists
         clone_repository()
+
+	//Clone torvalds repository
+	clone_torvalds_repo()
         
         // Create distro configuration file
         create_distro_config(d.system)
@@ -326,6 +329,19 @@ def clone_repository() {
             if (isGitRepo == 'false') {
                 error("❌ Directory exists but is not a valid git repository")
             }
+
+	     // Valid git repository exists - Update it
+            echo "→ Updating existing repository..."
+
+            sh """
+                set -e
+                cd ${repoDir}
+                git fetch --all
+                git pull origin master
+            """
+
+            echo "✔ Repository updated successfully"
+
         } else {
             echo "Directory not found - cloning repository..."
             sh """
@@ -343,6 +359,98 @@ def clone_repository() {
         }
     } catch (Exception e) {
         error("❌ Repository clone failed: ${e.message}")
+    }
+}
+
+def clone_torvalds_repo() {
+    try {
+        def torvaldsDir = "${env.WORKSPACE}/patch-precheck-ci/.torvalds-linux"
+        def linuxRepoDir = "${torvaldsDir}/linux"
+
+        echo "=========== TORVALDS REPO SETUP START ==========="
+
+        if (!fileExists(torvaldsDir)) {
+
+            echo "⚠ Directory '.torvalds-linux' not found"
+            echo "→ Creating directory: ${torvaldsDir}"
+
+            sh """
+                set -e
+                mkdir -p ${torvaldsDir}
+            """
+
+            // Verify directory was created successfully
+            if (!fileExists(torvaldsDir)) {
+                error("❌ Failed to create directory: ${torvaldsDir}")
+            }
+
+            echo "✔ Directory '.torvalds-linux' created successfully"
+
+        } else {
+            echo "✔ Directory '.torvalds-linux' already exists - skipping creation"
+        }
+
+        if (!fileExists(linuxRepoDir)) {
+
+            // Linux repo directory does NOT exist - Clone fresh
+            echo "⚠ Linux repository not found inside '.torvalds-linux'"
+            echo "→ Cloning linux repository from torvalds..."
+
+            sh """
+                set -e
+                cd ${torvaldsDir}
+                git clone https://github.com/torvalds/linux.git
+            """
+
+            // Verify clone was successful
+            if (!fileExists(linuxRepoDir)) {
+                error("❌ Failed to clone linux repository into: ${torvaldsDir}")
+            }
+
+            // Verify it's a valid git repository
+            def isValidRepo = sh(
+                script: "cd ${linuxRepoDir} && git rev-parse --git-dir > /dev/null 2>&1 && echo 'true' || echo 'false'",
+                returnStdout: true
+            ).trim()
+
+            if (isValidRepo == 'false') {
+                error("❌ Cloned directory is not a valid git repository: ${linuxRepoDir}")
+            }
+
+            echo "✔ Linux repository cloned successfully"
+
+        } else {
+
+            // Linux repo directory EXISTS - Check if it's a valid git repository
+            echo "✔ Linux repository directory already exists: ${linuxRepoDir}"
+
+            def isValidRepo = sh(
+                script: "cd ${linuxRepoDir} && git rev-parse --git-dir > /dev/null 2>&1 && echo 'true' || echo 'false'",
+                returnStdout: true
+            ).trim()
+
+            if (isValidRepo == 'false') {
+                // Directory exists but NOT a valid git repository
+                error("❌ Directory exists but is not a valid git repository: ${linuxRepoDir}")
+            }
+
+            // Valid git repository exists - Update it
+            echo "→ Updating existing linux repository..."
+
+            sh """
+                set -e
+                cd ${linuxRepoDir}
+                git fetch --all
+                git pull origin master
+            """
+
+            echo "✔ Linux repository updated successfully"
+        }
+
+        echo "=========== TORVALDS REPO SETUP COMPLETE ==========="
+
+    } catch (Exception e) {
+        error("❌ Torvalds repo setup failed: ${e.message}")
     }
 }
 
@@ -435,6 +543,7 @@ BUILD_THREADS="${params.BUILD_THREADS != 'none' ? params.BUILD_THREADS.toInteger
 
 # Test Configuration    
 RUN_TESTS="yes"
+TEST_CHECK_DEPENDENCY="yes"
 TEST_CHECK_KCONFIG="yes"
 TEST_BUILD_ALLYES="yes"
 TEST_BUILD_ALLNO="yes"
@@ -450,6 +559,9 @@ HOST_USER_PWD="${params.Host_configuration}"
 # VM Configuration
 VM_IP="${params.VM_ip}"
 VM_ROOT_PWD="${params.VM_root_pwd}"
+
+# Repository Configuration
+TORVALDS_REPO="${env.WORKSPACE}/patch-precheck-ci/.torvalds-linux"
 EOF
         """
         
@@ -605,6 +717,9 @@ def anolis_test_configuration() {
             case "all":
                 cmd = "make test"
                 break
+	    case "check_dependency":
+                cmd = "make anolis-test=check_dependency"
+                break 
             case "check_Kconfig":
                 cmd = "make anolis-test=check_kconfig"
                 break
@@ -706,7 +821,7 @@ void MyArchive() {
     try {
         echo "Starting artifact archival..."
         
-        def result_dir = "${env.WORKSPACE}/../${JOB_NAME}/${env.BUILD_NUMBER}"
+        def result_dir = "${env.WORKSPACE}/../result_logs/${JOB_NAME}/${env.BUILD_NUMBER}"
         def logs_dir = "${env.WORKSPACE}/patch-precheck-ci/logs"
         
         echo "Result directory: ${result_dir}"
