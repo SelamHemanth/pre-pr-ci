@@ -35,6 +35,15 @@ def file_read(path: str) -> str:
         return f.read()
 
 # ---------- git helpers ----------
+def has_real_fixes_reference(short7: str, text: str) -> bool:
+    """
+    Return True if commit message contains:
+        Fixes: <hash>
+    where <hash> matches short7 (case-insensitive).
+    """
+    pattern = rf'^\s*Fixes:\s*{short7}\b'
+    return bool(re.search(pattern, text, re.IGNORECASE | re.MULTILINE))
+
 def git_show_full_commit(user_repo: str, commitish: str) -> Tuple[str, str]:
     """
     Return (full_hash, subject) for a commit-ish in user_repo.
@@ -139,13 +148,13 @@ def main():
     write_file(user_log_path, user_log)
     user_log_txt = user_log  # Keep in memory for checking
 
-    # 3) resolve each provided commit in user repo to full hash+subject
+    # 3) resolve each provided commit in stable repo to full hash+subject
     write_file(full_commits_path, "")
     resolved = []
     for c in commits:
-        full_hash, subject = git_show_full_commit(user_repo, c)
+        full_hash, subject = git_show_full_commit(stable_repo, c)
         if not full_hash:
-            print(f"Warning: couldn't resolve commit '{c}' in user repo. Skipping.")
+            print(f"Warning: couldn't resolve commit '{c}' in stable repo. Skipping.")
             continue
         append_file(full_commits_path, f"{full_hash} {subject}\n")
         resolved.append((full_hash, subject))
@@ -171,18 +180,21 @@ def main():
 
             # Check that the occurrence is not commented out:
             combined_text = st_subject + "\n" + st_body
-            if not short7_in_text_non_commented(short7, combined_text):
-                continue
 
-            deps_found.append((st_full, st_subject))
+            # REAL dependency
+            if has_real_fixes_reference(short7, combined_text):
+                deps_found.append(("REAL", st_full, st_subject))
+            # AMIGOS (mentions hash but not Fixes:)
+            elif short7_in_text_non_commented(short7, combined_text):
+                deps_found.append(("AMIGOS", st_full, st_subject))
 
         # deduplicate by full hash
         unique = []
         seen = set()
-        for h, s in deps_found:
+        for dep_type, h, s in deps_found:
             if h not in seen:
                 seen.add(h)
-                unique.append((h, s))
+                unique.append((dep_type, h, s))
 
         if not unique:
             print("  \033[32mPASS\033[0m -> No dependencies found\n")
@@ -191,27 +203,30 @@ def main():
         # Check each dependency and track if all are fixed
         all_fixed = True
         dep_status = []
-        for st_full, st_subject in unique:
+        for dep_type, st_full, st_subject in unique:
             dep14 = st_full[:14]
             dep_entry = f"{dep14} {st_subject}"
             append_file(dep_log_path, dep_entry + "\n")
 
             # Check if this dependency is already fixed in user repo
             is_fixed = bool(re.search(re.escape(st_subject), user_log_txt))
-            dep_status.append((dep_entry, is_fixed))
-            if not is_fixed:
+            dep_status.append((dep_type, dep_entry, is_fixed))
+            if dep_type == "REAL" and not is_fixed:
                 all_fixed = False
 
         # Print result based on whether all dependencies are fixed
         if all_fixed:
-            print("  \033[32mPASS\033[0m -> All dependencies fixed\n")
+            print("  \033[32mPASS\033[0m -> All required dependencies fixed\n")
         else:
             print("  \033[31mFAIL\033[0m -> new bugfix needed")
-            for dep_entry, is_fixed in dep_status:
-                if is_fixed:
-                    print(f"    \033[35m*\033[0m \033[1;33m{dep_entry}\033[0m \033[32m-> Fixed\033[0m")
+            for dep_type, dep_entry, is_fixed in dep_status:
+                if dep_type == "REAL":
+                    if is_fixed:
+                        print(f"    \033[35m*\033[0m \033[1;33m{dep_entry}\033[0m \033[32m-> Fixed (REAL)\033[0m")
+                    else:
+                        print(f"    \033[35m*\033[0m \033[1;33m{dep_entry}\033[0m \033[32m-> Missing (REAL)\033[0m")
                 else:
-                    print(f"    \033[35m*\033[0m \033[1;33m{dep_entry}\033[0m")
+                    print(f"    \033[35m*\033[0m \033[1;33m{dep_entry}\033[0m \033[32m-> Amigos (non-Fixes reference)\033[0m")
             print()
 
     print("\033[1;32mDone.\033[0m\n")
