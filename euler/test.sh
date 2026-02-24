@@ -226,13 +226,6 @@ test_check_kabi() {
   local kabi_log="${LOGS_DIR}/kabi_check.log"
   local symvers="${LINUX_SRC_PATH}/Module.symvers"
 
-  # ---- Ensure kernel submodule is on the correct branch ----
-  if [ ! -d "${KABI_KERNEL_DIR}/.git" ] && [ ! -f "${KABI_KERNEL_DIR}/.git" ]; then
-    fail "check_kabi" "kernel submodule not found at ${KABI_KERNEL_DIR}."
-    echo ""
-    return
-  fi
-
   local kabi_build_log="${LOGS_DIR}/kabi_build.log"
   {
     echo "KABI pre-build log"
@@ -253,6 +246,13 @@ test_check_kabi() {
   # Update submodules
   echo "Updating submodules..." >> "${kabi_build_log}"
   git submodule update --remote --recursive >> "${kabi_build_log}"
+
+  # ---- Ensure kernel submodule is on the correct branch ----
+  if [ ! -d "${KABI_KERNEL_DIR}/.git" ] && [ ! -f "${KABI_KERNEL_DIR}/.git" ]; then
+    fail "check_kabi" "kernel submodule not found at ${KABI_KERNEL_DIR}."
+    echo ""
+    return
+  fi
 
   local current_branch
   current_branch=$(git -C "${KABI_KERNEL_DIR}" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "DETACHED")
