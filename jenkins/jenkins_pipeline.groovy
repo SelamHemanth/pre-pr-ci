@@ -365,93 +365,71 @@ def clone_repository() {
 def clone_torvalds_repo() {
     try {
         def torvaldsDir = "${env.WORKSPACE}/patch-precheck-ci/.torvalds-linux"
-        def linuxRepoDir = "${torvaldsDir}/linux"
 
         echo "=========== TORVALDS REPO SETUP START ==========="
 
         if (!fileExists(torvaldsDir)) {
-
+            // Directory does NOT exist - Clone fresh
             echo "⚠ Directory '.torvalds-linux' not found"
-            echo "→ Creating directory: ${torvaldsDir}"
-
+            echo "→ Cloning linux repository from torvalds into '.torvalds-linux'..."
             sh """
                 set -e
-                mkdir -p ${torvaldsDir}
+		mkdir -p ${env.WORKSPACE}/patch-precheck-ci
+                cd ${env.WORKSPACE}/patch-precheck-ci
+                git clone --bare https://github.com/torvalds/linux.git .torvalds-linux
+                git config --global --add safe.directory ${torvaldsDir}
             """
-
-            // Verify directory was created successfully
-            if (!fileExists(torvaldsDir)) {
-                error("❌ Failed to create directory: ${torvaldsDir}")
-            }
-
-            echo "✔ Directory '.torvalds-linux' created successfully"
-
-        } else {
-            echo "✔ Directory '.torvalds-linux' already exists - skipping creation"
-        }
-
-        if (!fileExists(linuxRepoDir)) {
-
-            // Linux repo directory does NOT exist - Clone fresh
-            echo "⚠ Linux repository not found inside '.torvalds-linux'"
-            echo "→ Cloning linux repository from torvalds..."
-
-            sh """
-                set -e
-                cd ${torvaldsDir}
-                git clone https://github.com/torvalds/linux.git
-            """
-
             // Verify clone was successful
-            if (!fileExists(linuxRepoDir)) {
+            if (!fileExists(torvaldsDir)) {
                 error("❌ Failed to clone linux repository into: ${torvaldsDir}")
             }
-
-            // Verify it's a valid git repository
+	    // Verify it's a valid git repository
             def isValidRepo = sh(
-                script: "cd ${linuxRepoDir} && git rev-parse --git-dir > /dev/null 2>&1 && echo 'true' || echo 'false'",
+                script: "cd ${torvaldsDir} && git rev-parse --git-dir > /dev/null 2>&1 && echo 'true' || echo 'false'",
                 returnStdout: true
             ).trim()
 
-            if (isValidRepo == 'false') {
-                error("❌ Cloned directory is not a valid git repository: ${linuxRepoDir}")
+	    if (isValidRepo == 'false') {
+                error("❌ Cloned directory is not a valid git repository: ${torvaldsDir}")
             }
-
-            echo "✔ Linux repository cloned successfully"
-
-        } else {
-
-            // Linux repo directory EXISTS - Check if it's a valid git repository
-            echo "✔ Linux repository directory already exists: ${linuxRepoDir}"
-
+	    echo "✔ Linux repository cloned successfully into '.torvalds-linux'"
+	 } else {
+            // Directory EXISTS - Check if it's a valid git repository
+            echo "✔ Directory '.torvalds-linux' already exists: ${torvaldsDir}"
+            
             def isValidRepo = sh(
-                script: "cd ${linuxRepoDir} && git rev-parse --git-dir > /dev/null 2>&1 && echo 'true' || echo 'false'",
+                script: "cd ${torvaldsDir} && git rev-parse --git-dir > /dev/null 2>&1 && echo 'true' || echo 'false'",
                 returnStdout: true
             ).trim()
-
+            
             if (isValidRepo == 'false') {
-                // Directory exists but NOT a valid git repository
-                error("❌ Directory exists but is not a valid git repository: ${linuxRepoDir}")
+                // Directory exists but NOT a valid git repository - Remove and re-clone
+                echo "⚠ Directory exists but is not a valid git repository"
+                echo "→ Removing invalid directory and re-cloning..."
+                sh """
+                    set -e
+                    rm -rf ${torvaldsDir}
+                    cd ${env.WORKSPACE}/patch-precheck-ci
+                    git clone --bare https://github.com/torvalds/linux.git .torvalds-linux
+                    git config --global --add safe.directory ${torvaldsDir}
+                """
+                echo "✔ Linux repository re-cloned successfully"
+            } else {
+                // Valid git repository exists - Update it
+                echo "→ Updating existing linux repository..."
+                sh """
+                    set -e
+                    cd ${torvaldsDir}
+                    git fetch --all --prune
+                """
+                echo "✔ Linux repository updated successfully"
             }
-
-            // Valid git repository exists - Update it
-            echo "→ Updating existing linux repository..."
-
-            sh """
-                set -e
-                cd ${linuxRepoDir}
-                git fetch --all
-                git pull origin master
-            """
-
-            echo "✔ Linux repository updated successfully"
         }
-
-        echo "=========== TORVALDS REPO SETUP COMPLETE ==========="
-
-    } catch (Exception e) {
+	
+	echo "=========== TORVALDS REPO SETUP COMPLETE ==========="
+     } catch (Exception e) {
         error("❌ Torvalds repo setup failed: ${e.message}")
-    }
+       }
 }
 
 def create_distro_config(distro) {
