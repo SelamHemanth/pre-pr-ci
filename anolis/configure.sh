@@ -201,6 +201,41 @@ if [[ "${1:-}" == "--tests" ]]; then
 	exit 0
 fi
 
+CONFIG_FILE="anolis/.configure"
+
+# Extract HOST_USER_PWD safely
+get_host_password() {
+  if [ -f "$CONFIG_FILE" ]; then
+    HOST_PASS=$(grep "^HOST_USER_PWD=" "$CONFIG_FILE" | cut -d"'" -f2)
+    echo "$HOST_PASS"
+  fi
+}
+
+delete_repo() {
+  if [ -d "$TORVALDS_REPO" ]; then
+    echo -e "${BLUE}Removing corrupted repository...${NC}"
+
+    OWNER=$(stat -c '%U' "$TORVALDS_REPO")
+
+    if [ "$OWNER" = "root" ]; then
+      echo -e "${YELLOW}Repository owned by root.${NC}"
+
+      HOST_PASS=$(get_host_password)
+
+      if [ -n "$HOST_PASS" ]; then
+        echo "$HOST_PASS" | sudo -S rm -rf "$TORVALDS_REPO"
+      else
+        echo -e "${RED}Root password not found in config.${NC}"
+        read -s -p "Enter sudo password to remove repo: " HOST_PASS
+        echo ""
+        echo "$HOST_PASS" | sudo -S rm -rf "$TORVALDS_REPO"
+      fi
+    else
+      rm -rf "$TORVALDS_REPO"
+    fi
+  fi
+}
+
 # Clone Torvalds repo if not exists
 if [ ! -d "$TORVALDS_REPO" ]; then
   echo -e "${BLUE}Cloning Torvalds Linux repository...${NC}"
@@ -209,13 +244,24 @@ if [ ! -d "$TORVALDS_REPO" ]; then
     grep -oP '\d+(?=%)' | \
     awk '{printf "\rProgress: %d%%", $1; fflush()}' || \
     git config --global --add safe.directory $TORVALDS_REPO
-    echo -e "\r${GREEN}Repository cloned successfully${NC}"
+  echo -e "\r${GREEN}Repository cloned successfully${NC}"
   echo ""
 else
   echo -e "${GREEN}Torvalds repository already exists${NC}"
   echo -e "${BLUE}Updating repository...${NC}"
-  (cd "$TORVALDS_REPO" && git fetch --all --tags 2>&1 | grep -v "^From" || true)
-  echo -e "${GREEN}Repository updated${NC}"
+  if ! (cd "$TORVALDS_REPO" && git fetch --all --tags 2>&1 | grep -v "^From"); then
+    echo -e "${RED}Fetch failed. Re-cloning repository...${NC}"
+    delete_repo # Delete existing torvalds linux repo
+    echo -e "${BLUE}Re-cloning Torvalds Linux repository...${NC}"
+    git clone --bare https://github.com/torvalds/linux.git "$TORVALDS_REPO" 2>&1 | \
+      stdbuf -oL tr '\r' '\n' | \
+      grep -oP '\d+(?=%)' | \
+      awk '{printf "\rProgress: %d%%", $1; fflush()}' || \
+      git config --global --add safe.directory $TORVALDS_REPO
+    echo -e "${GREEN}Repository re-cloned successfully${NC}"
+  else
+    echo -e "${GREEN}Repository updated${NC}"
+  fi
 fi
 
 # General Configuration
