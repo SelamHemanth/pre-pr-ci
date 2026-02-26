@@ -367,8 +367,10 @@ def run_make_command(command, job_id):
         # the file handle is still valid and flushable.
         with open(live_log, 'w') as lf:
 
-            # ── For build jobs: sync Torvalds repo first, logging all output ──
-            if command == 'make build':
+            # ── Sync Torvalds repo for build and check_dependency tests ──
+            is_check_dep = ('anolis-test=check_dependency' in command or
+                            'euler-test=check_dependency'  in command)
+            if command == 'make build' or is_check_dep:
                 _sync_torvalds_repo_to_log(lf)
 
             process = subprocess.Popen(
