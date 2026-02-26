@@ -91,7 +91,7 @@ install_dependencies() {
     print_info "Installing Python dependencies for user $ACTUAL_USER..."
 
     # Try normal install
-    if su - "$ACTUAL_USER" -c "pip3 install flask flask_cors werkzeug --user"; then
+    if su - "$ACTUAL_USER" -c "pip3 install flask flask_cors werkzeug flask-sock --user"; then
         print_success "Dependencies installed successfully"
     else
         # Try with --break-system-packages

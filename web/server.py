@@ -18,6 +18,7 @@ Place this file in: pre-pr-ci/web/server.py
 """
 
 import os
+import pty
 import shutil
 import stat
 import subprocess
@@ -27,15 +28,31 @@ import uuid
 import signal
 import json
 import re
+import select
+import termios
+import struct
+import fcntl
 from datetime import datetime
 from flask import Flask, jsonify, request, send_from_directory
 from flask_cors import CORS
 
+# flask-sock provides a simple WebSocket API
+try:
+    from flask_sock import Sock
+    HAS_WEBSOCKET = True
+except ImportError:
+    HAS_WEBSOCKET = False
+    print("[WARN] flask-sock not installed. Terminal WebSocket support disabled.")
+    print("[WARN] Install with: pip install flask-sock")
+
 app = Flask(__name__)
 CORS(app)
 
-# Auto-detect project root (parent of web directory)
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+if HAS_WEBSOCKET:
+    sock = Sock(app)
+
+# ── Project paths ────────────────────────────────────────────────────────────
+SCRIPT_DIR   = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)
 
 print(f"[INFO] Server running from: {SCRIPT_DIR}")
@@ -51,8 +68,198 @@ job_lock      = threading.Lock()
 job_processes = {}   # pid handles — never persisted
 
 
+# ════════════════════════════════════════════════════════════════════════════
+#  PERSISTENT TERMINAL SESSION
+# ════════════════════════════════════════════════════════════════════════════
+
+class TerminalSession:
+    """
+    Holds a single persistent PTY/shell session.
+    Multiple WebSocket connections can attach/detach freely; the underlying
+    shell process keeps running across page refreshes.
+    """
+
+    def __init__(self):
+        self.pid       = None      # shell PID
+        self.master_fd = None      # master side of the PTY
+        self._lock     = threading.Lock()
+        self._clients  = []        # list of (ws, thread) tuples currently connected
+        self._reader   = None      # background thread that reads PTY output
+        self._alive    = False
+
+    # ── Lifecycle ─────────────────────────────────────────────────────────
+
+    def start(self):
+        """Spawn the shell in a PTY if not already running."""
+        with self._lock:
+            if self._alive and self._check_alive():
+                return  # already running
+
+            shell = os.environ.get('SHELL', '/bin/bash')
+            cols, rows = 220, 50
+
+            # Fork a new PTY + shell
+            self.pid, self.master_fd = pty.fork()
+
+            if self.pid == 0:
+                # ── child: set up environment and exec shell ──────────────
+                os.environ['TERM']     = 'xterm-256color'
+                os.environ['COLUMNS']  = str(cols)
+                os.environ['LINES']    = str(rows)
+                os.chdir(PROJECT_ROOT)
+                os.execvp(shell, [shell, '--login'])
+                sys.exit(1)
+
+            # ── parent: set initial terminal size ────────────────────────
+            self._set_winsize(self.master_fd, rows, cols)
+            self._alive = True
+
+            # Start the background reader thread
+            self._reader = threading.Thread(target=self._read_loop, daemon=True)
+            self._reader.start()
+
+            print(f"[terminal] Shell started (pid={self.pid}, fd={self.master_fd})")
+
+    def _check_alive(self):
+        """Return True if the shell process is still running."""
+        if self.pid is None:
+            return False
+        try:
+            os.kill(self.pid, 0)
+            return True
+        except OSError:
+            return False
+
+    def _set_winsize(self, fd, rows, cols):
+        """Push a TIOCSWINSZ ioctl to resize the PTY."""
+        try:
+            winsize = struct.pack('HHHH', rows, cols, 0, 0)
+            fcntl.ioctl(fd, termios.TIOCSWINSZ, winsize)
+        except Exception:
+            pass
+
+    # ── I/O ───────────────────────────────────────────────────────────────
+
+    def _read_loop(self):
+        """
+        Continuously read PTY output and broadcast to all connected clients.
+        Runs in a daemon thread for the lifetime of the shell process.
+        """
+        while True:
+            try:
+                r, _, _ = select.select([self.master_fd], [], [], 0.05)
+                if r:
+                    data = os.read(self.master_fd, 4096)
+                    if data:
+                        self._broadcast(data)
+            except OSError:
+                # PTY closed — shell exited
+                self._alive = False
+                print("[terminal] Shell process ended.")
+                break
+            except Exception as exc:
+                print(f"[terminal] read_loop error: {exc}")
+                break
+
+    def _broadcast(self, data: bytes):
+        """Send raw PTY bytes to every connected WebSocket client."""
+        dead = []
+        with self._lock:
+            clients = list(self._clients)
+        for ws in clients:
+            try:
+                ws.send(data)
+            except Exception:
+                dead.append(ws)
+        if dead:
+            with self._lock:
+                self._clients = [c for c in self._clients if c not in dead]
+
+    def write(self, data: bytes):
+        """Write keyboard input from a client into the PTY master."""
+        if self.master_fd is not None:
+            try:
+                os.write(self.master_fd, data)
+            except OSError:
+                pass
+
+    def resize(self, rows: int, cols: int):
+        """Resize the PTY (called when the xterm.js viewport changes)."""
+        if self.master_fd is not None:
+            self._set_winsize(self.master_fd, rows, cols)
+
+    def attach(self, ws):
+        """Register a new WebSocket client."""
+        with self._lock:
+            self._clients.append(ws)
+        print(f"[terminal] Client attached (total={len(self._clients)})")
+
+    def detach(self, ws):
+        """Unregister a WebSocket client."""
+        with self._lock:
+            self._clients = [c for c in self._clients if c is not ws]
+        print(f"[terminal] Client detached (total={len(self._clients)})")
+
+
+# Global singleton terminal session — persists for the server lifetime
+terminal_session = TerminalSession()
+
+
+if HAS_WEBSOCKET:
+    @sock.route('/ws/terminal')
+    def terminal_ws(ws):
+        """
+        WebSocket endpoint for the xterm.js client.
+
+        Protocol (JSON messages from client → server):
+            {"type": "input",  "data": "<base64-or-raw text>"}
+            {"type": "resize", "rows": N, "cols": N}
+
+        Server → client: raw PTY bytes (binary or text frames).
+        """
+        # Ensure the shell is running
+        terminal_session.start()
+        terminal_session.attach(ws)
+
+        try:
+            while True:
+                message = ws.receive()
+                if message is None:
+                    break  # client disconnected
+
+                if isinstance(message, str):
+                    try:
+                        msg = json.loads(message)
+                        if msg.get('type') == 'input':
+                            terminal_session.write(msg['data'].encode('utf-8', errors='replace'))
+                        elif msg.get('type') == 'resize':
+                            rows = int(msg.get('rows', 24))
+                            cols = int(msg.get('cols', 80))
+                            terminal_session.resize(rows, cols)
+                    except (json.JSONDecodeError, KeyError):
+                        # Treat as raw input
+                        terminal_session.write(message.encode('utf-8', errors='replace'))
+                elif isinstance(message, bytes):
+                    terminal_session.write(message)
+
+        except Exception as exc:
+            print(f"[terminal] WebSocket error: {exc}")
+        finally:
+            terminal_session.detach(ws)
+
+
+@app.route('/api/terminal/status')
+def terminal_status():
+    """Return whether the terminal shell is currently alive."""
+    alive = terminal_session._alive and terminal_session._check_alive()
+    return jsonify({'alive': alive, 'pid': terminal_session.pid})
+
+
+# ════════════════════════════════════════════════════════════════════════════
+#  JOB MANAGEMENT  (unchanged from original)
+# ════════════════════════════════════════════════════════════════════════════
+
 def _load_jobs():
-    """Load jobs from disk. Returns a dict keyed by job_id."""
     try:
         if os.path.exists(JOBS_FILE):
             with open(JOBS_FILE, 'r') as f:
@@ -62,18 +269,14 @@ def _load_jobs():
     return {}
 
 def _save_jobs(jobs_dict):
-    """Persist the jobs dict to disk (called while job_lock is held)."""
     try:
         with open(JOBS_FILE, 'w') as f:
             json.dump(jobs_dict, f, indent=2)
     except Exception as exc:
         print(f"[WARN] Could not persist jobs: {exc}")
 
-# Bootstrap in-memory dict from disk so restarts are transparent.
 jobs = _load_jobs()
 
-# Any job that was 'running' or 'queued' when the server last died is now
-# orphaned — mark it as failed so the UI doesn't show it stuck forever.
 _changed = False
 for _jid, _job in jobs.items():
     if _job.get('status') in ('running', 'queued'):
@@ -86,7 +289,6 @@ if _changed:
 
 
 def clean_ansi_codes(text):
-    """Remove ANSI color codes and escape sequences from text."""
     text = re.sub(r'\x1b\[[0-9;]*[mGKHfJ]', '', text)
     text = re.sub(r'\x1b\[[\d;]*[A-Za-z]', '', text)
     text = re.sub(r'\x1b\].*?\x07', '', text)
@@ -96,7 +298,6 @@ def clean_ansi_codes(text):
 
 
 def _get_dir_owner_uid(path):
-    """Return the uid of the given path, or None on error."""
     try:
         return os.stat(path).st_uid
     except Exception:
@@ -104,36 +305,15 @@ def _get_dir_owner_uid(path):
 
 
 def _remove_torvalds_repo(repo_path):
-    """
-    Remove the Torvalds bare-clone directory.
-
-    • If the directory is owned by root (uid == 0) → prompt the user for their
-      sudo password and invoke ``sudo rm -rf``.
-    • Otherwise → remove it directly with shutil.rmtree (no prompt shown).
-
-    Returns True on success, False on failure.
-    """
     uid = _get_dir_owner_uid(repo_path)
     is_root_owned = (uid == 0)
-
     if is_root_owned:
-        print(
-            f"[INFO] '{repo_path}' is owned by root. "
-            "Sudo privileges are required to remove it."
-        )
+        print(f"[INFO] '{repo_path}' is owned by root. Sudo privileges are required to remove it.")
         try:
-            # Let sudo read the password from the real TTY by inheriting stdin.
-            result = subprocess.run(
-                ['sudo', 'rm', '-rf', repo_path],
-                stdin=sys.stdin,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-            )
+            result = subprocess.run(['sudo', 'rm', '-rf', repo_path],
+                                    stdin=sys.stdin, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             if result.returncode != 0:
-                print(
-                    f"[ERROR] 'sudo rm -rf' failed: "
-                    f"{result.stderr.decode(errors='replace').strip()}"
-                )
+                print(f"[ERROR] 'sudo rm -rf' failed: {result.stderr.decode(errors='replace').strip()}")
                 return False
             print(f"[INFO] '{repo_path}' removed successfully (via sudo).")
             return True
@@ -141,7 +321,6 @@ def _remove_torvalds_repo(repo_path):
             print(f"[ERROR] Exception while removing with sudo: {exc}")
             return False
     else:
-        # Not root-owned — remove silently without bothering the user.
         try:
             shutil.rmtree(repo_path)
             print(f"[INFO] '{repo_path}' removed successfully.")
@@ -152,56 +331,32 @@ def _remove_torvalds_repo(repo_path):
 
 
 def clone_torvalds_repo_silent():
-    """
-    Ensure the Torvalds bare-clone is present and up to date.
-
-    Behaviour:
-      1. Repo does NOT exist  → clone it fresh (bare clone).
-      2. Repo DOES exist:
-         a. Run ``git fetch --all --tags`` inside the bare repo.
-         b. If fetch succeeds → done.
-         c. If fetch FAILS    → remove the stale repo (prompting for sudo only
-            when the directory is root-owned) and re-clone from scratch.
-    """
     CLONE_URL = 'https://github.com/torvalds/linux.git'
 
     def _clone():
         print(f"[INFO] Cloning Torvalds Linux repo into '{TORVALDS_REPO}' ...")
-        result = subprocess.run(
-            ['git', 'clone', '--bare', CLONE_URL, TORVALDS_REPO],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            check=False,
-        )
+        result = subprocess.run(['git', 'clone', '--bare', CLONE_URL, TORVALDS_REPO],
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
         if result.returncode != 0:
             print("[WARN] Clone failed (possible network issue). Continuing without it.")
         else:
             print("[INFO] Clone completed successfully.")
 
     if not os.path.exists(TORVALDS_REPO):
-        # ── Case 1: Repo absent → fresh clone ───────────────────────────────
         _clone()
         return
 
-    # ── Case 2: Repo present → fetch latest tags ────────────────────────────
     print(f"[INFO] Torvalds repo found at '{TORVALDS_REPO}'. Fetching latest tags ...")
-    fetch_result = subprocess.run(
-        ['git', 'fetch', '--all', '--tags'],
-        cwd=TORVALDS_REPO,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.PIPE,
-        check=False,
-    )
-
+    fetch_result = subprocess.run(['git', 'fetch', '--all', '--tags'],
+                                  cwd=TORVALDS_REPO, stdout=subprocess.DEVNULL,
+                                  stderr=subprocess.PIPE, check=False)
     if fetch_result.returncode == 0:
         print("[INFO] Fetch completed successfully.")
         return
 
-    # Fetch failed → attempt removal + re-clone
     err_msg = fetch_result.stderr.decode(errors='replace').strip()
     print(f"[WARN] 'git fetch --all --tags' failed: {err_msg}")
     print("[INFO] Removing stale repo and re-cloning ...")
-
     if _remove_torvalds_repo(TORVALDS_REPO):
         _clone()
     else:
@@ -209,15 +364,6 @@ def clone_torvalds_repo_silent():
 
 
 def _sync_torvalds_repo_to_log(log_file):
-    """
-    Called from inside the build background thread.
-    Runs the same clone/fetch logic as clone_torvalds_repo_silent() but
-    writes all status lines to *log_file* so the user can watch progress
-    in the live log viewer.
-
-    Any exception is caught and logged — a failure here must never prevent
-    the actual `make build` from running.
-    """
     def _log(msg):
         log_file.write(msg + '\n')
         log_file.flush()
@@ -226,17 +372,13 @@ def _sync_torvalds_repo_to_log(log_file):
 
     def _clone():
         _log(f"[repo-sync] Cloning Torvalds Linux repo into '{TORVALDS_REPO}' ...")
-        result = subprocess.run(
-            ['git', 'clone', '--bare', CLONE_URL, TORVALDS_REPO],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            universal_newlines=True,
-            check=False,
-        )
+        result = subprocess.run(['git', 'clone', '--bare', CLONE_URL, TORVALDS_REPO],
+                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                universal_newlines=True, check=False)
         for line in (result.stdout or '').splitlines():
             _log(f"[repo-sync] {line}")
         if result.returncode != 0:
-            _log("[repo-sync] WARNING: Clone failed (possible network issue). Continuing anyway.")
+            _log("[repo-sync] WARNING: Clone failed. Continuing anyway.")
         else:
             _log("[repo-sync] Clone completed successfully.")
 
@@ -246,14 +388,9 @@ def _sync_torvalds_repo_to_log(log_file):
             return
 
         _log("[repo-sync] Torvalds repo found. Fetching latest tags ...")
-        fetch_result = subprocess.run(
-            ['git', 'fetch', '--all', '--tags'],
-            cwd=TORVALDS_REPO,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            universal_newlines=True,
-            check=False,
-        )
+        fetch_result = subprocess.run(['git', 'fetch', '--all', '--tags'],
+                                      cwd=TORVALDS_REPO, stdout=subprocess.PIPE,
+                                      stderr=subprocess.STDOUT, universal_newlines=True, check=False)
         for line in (fetch_result.stdout or '').splitlines():
             _log(f"[repo-sync] {line}")
 
@@ -261,19 +398,15 @@ def _sync_torvalds_repo_to_log(log_file):
             _log("[repo-sync] Fetch completed successfully.")
             return
 
-        _log(f"[repo-sync] WARNING: 'git fetch --all --tags' failed (exit {fetch_result.returncode}).")
+        _log(f"[repo-sync] WARNING: fetch failed (exit {fetch_result.returncode}).")
         _log("[repo-sync] Removing stale repo and re-cloning ...")
 
         uid = _get_dir_owner_uid(TORVALDS_REPO)
         if uid == 0:
             _log("[repo-sync] Directory is root-owned — using sudo rm -rf ...")
-            rm_result = subprocess.run(
-                ['sudo', 'rm', '-rf', TORVALDS_REPO],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                universal_newlines=True,
-                check=False,
-            )
+            rm_result = subprocess.run(['sudo', 'rm', '-rf', TORVALDS_REPO],
+                                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                       universal_newlines=True, check=False)
             if rm_result.returncode != 0:
                 _log("[repo-sync] ERROR: sudo rm failed. Skipping re-clone.")
                 return
@@ -283,11 +416,10 @@ def _sync_torvalds_repo_to_log(log_file):
                 shutil.rmtree(TORVALDS_REPO)
                 _log("[repo-sync] Removed successfully.")
             except Exception as exc:
-                _log(f"[repo-sync] ERROR: Could not remove stale repo: {exc}. Skipping re-clone.")
+                _log(f"[repo-sync] ERROR: {exc}. Skipping re-clone.")
                 return
 
         _clone()
-
     except Exception as exc:
         _log(f"[repo-sync] Unexpected error: {exc}. Skipping repo sync.")
 
@@ -307,7 +439,6 @@ def get_distro_config():
 
 
 def get_test_log_file(test_name, distro):
-    """Map a test name to its expected log file path inside LOGS_DIR."""
     if distro == 'anolis':
         log_map = {
             'check_dependency':       'check_dependency.log',
@@ -334,17 +465,6 @@ def get_test_log_file(test_name, distro):
 
 
 def resolve_live_log_file(job_id, command):
-    """
-    Determine the log file path that will be written during the job.
-
-    For individual tests the Makefile writes to a named file in LOGS_DIR.
-    For build / test-all / clean / reset we capture all stdout ourselves
-    into <job_id>_command.log in the same directory.
-
-    This is called BEFORE the process starts so the path can be stored on
-    the job record immediately, allowing the /log endpoint to serve live
-    content while the process is still running.
-    """
     config = get_distro_config()
     distro = config.get('DISTRO') if config else None
 
@@ -361,10 +481,6 @@ def resolve_live_log_file(job_id, command):
 
 
 def run_make_command(command, job_id):
-    """Run a make command in a background thread, writing output live to disk."""
-
-    # Resolve log path before the process starts so the /log endpoint
-    # can serve it immediately while the job is running.
     live_log = resolve_live_log_file(job_id, command)
 
     with job_lock:
@@ -374,42 +490,28 @@ def run_make_command(command, job_id):
         _save_jobs(jobs)
 
     try:
-        # Open the log file early so clone/fetch output is captured too.
-        # Keep it open for the entire lifetime of the process so that
-        # process.wait() and the final status update all happen while
-        # the file handle is still valid and flushable.
         with open(live_log, 'w') as lf:
-
-            # ── Sync Torvalds repo for build and check_dependency tests ──
             is_check_dep = ('anolis-test=check_dependency' in command or
                             'euler-test=check_dependency'  in command)
             if command == 'make build' or is_check_dep:
                 _sync_torvalds_repo_to_log(lf)
 
             process = subprocess.Popen(
-                command,
-                shell=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                cwd=PROJECT_ROOT,
-                universal_newlines=True,
-                bufsize=1,
-                preexec_fn=os.setsid
+                command, shell=True,
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                cwd=PROJECT_ROOT, universal_newlines=True,
+                bufsize=1, preexec_fn=os.setsid
             )
 
             with job_lock:
                 job_processes[job_id] = process
 
-            # Stream every output line to disk immediately (line-buffered).
             for line in process.stdout:
                 lf.write(line)
                 lf.flush()
 
-            # Wait for the process to fully exit (stdout already drained above).
             process.wait()
             exit_code = process.returncode
-
-            # Write a trailing separator so the log viewer shows a clean finish.
             lf.write(f'\n--- process exited with code {exit_code} ---\n')
             lf.flush()
 
@@ -429,10 +531,14 @@ def run_make_command(command, job_id):
             jobs[job_id]['status']   = 'failed'
             jobs[job_id]['error']    = str(e)
             jobs[job_id]['end_time'] = datetime.now().isoformat()
-            jobs[job_id]['log_file'] = live_log   # still point to the file even on error
+            jobs[job_id]['log_file'] = live_log
             job_processes.pop(job_id, None)
             _save_jobs(jobs)
 
+
+# ════════════════════════════════════════════════════════════════════════════
+#  HTTP ROUTES  (all unchanged from original)
+# ════════════════════════════════════════════════════════════════════════════
 
 @app.route('/static/<path:filename>')
 def static_files(filename):
@@ -534,7 +640,6 @@ def get_current_config():
 
 @app.route('/api/config', methods=['POST'])
 def set_config():
-    """Save configuration including per-test enable/disable flags."""
     data        = request.json
     distro      = data.get('distro')
     config_data = data.get('config', {})
@@ -587,7 +692,6 @@ def set_config():
             f.write('# VM\n')
             f.write(f'VM_IP="{config_data.get("VM_IP", "")}"\n')
             f.write(f'VM_ROOT_PWD=\'{config_data.get("VM_ROOT_PWD", "")}\'\n')
-
             f.write('\n# Repository\n')
             f.write(f'TORVALDS_REPO="{os.path.join(PROJECT_ROOT, ".torvalds-linux")}"\n')
 
@@ -737,19 +841,11 @@ def get_job(job_id):
 
 @app.route('/api/jobs/<job_id>/log')
 def get_job_log(job_id):
-    """
-    Serve job log whether queued, running, or finished.
-
-    While running  → reads live_log_file which is flushed line-by-line.
-    After finish   → reads the same file (stored as log_file too).
-    While queued   → returns a placeholder message.
-    """
     with job_lock:
         if job_id not in jobs:
             return jsonify({'error': 'Job not found'}), 404
-        job = dict(jobs[job_id])  # snapshot; release lock fast
+        job = dict(jobs[job_id])
 
-    # Prefer live_log_file (set at start), fall back to log_file (set at end)
     log_path = job.get('live_log_file') or job.get('log_file')
 
     if log_path and os.path.exists(log_path):
@@ -760,19 +856,25 @@ def get_job_log(job_id):
         except Exception as e:
             return jsonify({'error': f'Read error: {str(e)}'}), 500
 
-    # Graceful placeholders so the frontend always gets a 200
     if job.get('status') == 'queued':
         return jsonify({'log': 'Job is queued, waiting to start...'})
-
     if job.get('status') == 'running':
         return jsonify({'log': 'Process is starting...'})
 
     return jsonify({'error': 'No log available'}), 404
 
 
+# ════════════════════════════════════════════════════════════════════════════
+#  ENTRY POINT
+# ════════════════════════════════════════════════════════════════════════════
+
 if __name__ == '__main__':
     print("\n╔══════════════════════════╗")
     print("║   Pre-PR CI Web Server   ║")
     print("╚══════════════════════════╝\n")
     print(f"Access at: http://$(hostname -I | awk '{{print $1}}'):5000\n")
-    app.run(host='0.0.0.0', port=5000, debug=True, threaded=True)
+    if not HAS_WEBSOCKET:
+        print("[WARN] Terminal WebSocket disabled. Run: pip install flask-sock\n")
+    # NOTE: debug=True uses the Werkzeug reloader which forks the process;
+    # use debug=False (or --no-reload) to keep the terminal PTY stable.
+    app.run(host='0.0.0.0', port=5000, debug=False, threaded=True)

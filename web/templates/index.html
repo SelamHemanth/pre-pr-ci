@@ -20,6 +20,11 @@
     <script src="https://cdn.jsdelivr.net/npm/vue@3/dist/vue.global.prod.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/axios/dist/axios.min.js"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <!-- xterm.js for the embedded terminal -->
+    <link  rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.css">
+    <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-web-links@0.11.0/lib/addon-web-links.js"></script>
     <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -79,6 +84,106 @@
         }
         .card-header i  { font-size: 1.5rem; color: #667eea; }
         .card-header h2 { color: #2d3748; font-size: 1.3rem; font-weight: 700; }
+
+        /* ── Right-panel tab bar ── */
+        .right-panel { background: white; border-radius: 16px; box-shadow: 0 10px 40px rgba(0,0,0,0.1); display: flex; flex-direction: column; }
+
+        .tab-bar {
+            display: flex; border-bottom: 2px solid #e2e8f0;
+            padding: 0 20px; border-radius: 16px 16px 0 0;
+            background: #f7fafc; flex-shrink: 0;
+        }
+        .tab-btn {
+            display: inline-flex; align-items: center; gap: 8px;
+            padding: 16px 22px; border: none; background: none; cursor: pointer;
+            font-size: 0.95rem; font-weight: 600; color: #718096;
+            border-bottom: 3px solid transparent; margin-bottom: -2px;
+            transition: all 0.25s; border-radius: 8px 8px 0 0; white-space: nowrap;
+        }
+        .tab-btn:hover { color: #667eea; background: rgba(102,126,234,0.06); }
+        .tab-btn.active { color: #667eea; border-bottom-color: #667eea; background: white; }
+        .tab-btn i { font-size: 1rem; }
+
+        /* Terminal badge */
+        .term-live-dot {
+            width: 8px; height: 8px; border-radius: 50%; background: #48bb78;
+            display: inline-block; box-shadow: 0 0 0 2px rgba(72,187,120,0.3);
+            animation: term-pulse 2s ease-in-out infinite;
+        }
+        .term-live-dot.offline { background: #fc8181; box-shadow: 0 0 0 2px rgba(252,129,129,0.3); animation: none; }
+        @keyframes term-pulse {
+            0%, 100% { box-shadow: 0 0 0 2px rgba(72,187,120,0.3); }
+            50%       { box-shadow: 0 0 0 5px rgba(72,187,120,0.0); }
+        }
+
+        .tab-content { flex: 1; padding: 20px; min-height: 0; position: relative; }
+
+        /* IMPORTANT: never use display:none on xterm's ancestor — it breaks the canvas.
+           Instead hide inactive panes with visibility+pointer-events while keeping them
+           in the render tree so xterm always has a live DOM node. */
+        .tab-pane {
+            position: absolute; inset: 20px;   /* match padding of tab-content */
+            visibility: hidden; pointer-events: none;
+            opacity: 0; transition: opacity 0.15s;
+            display: flex; flex-direction: column;
+            overflow: hidden;
+        }
+        .tab-pane.active {
+            visibility: visible; pointer-events: auto; opacity: 1;
+        }
+
+        /* ── Terminal container ── */
+        .terminal-wrapper {
+            background: #0d1117; border-radius: 12px; overflow: hidden;
+            flex: 1; display: flex; flex-direction: column;
+            min-height: 420px;
+            box-shadow: inset 0 2px 12px rgba(0,0,0,0.4);
+        }
+        .terminal-titlebar {
+            display: flex; align-items: center; justify-content: space-between;
+            padding: 10px 16px; background: #161b22; border-bottom: 1px solid #21262d;
+            flex-shrink: 0;
+        }
+        .terminal-dots { display: flex; gap: 6px; }
+        .terminal-dot { width: 12px; height: 12px; border-radius: 50%; }
+        .terminal-dot.red    { background: #ff5f57; }
+        .terminal-dot.yellow { background: #febc2e; }
+        .terminal-dot.green  { background: #28c840; }
+        .terminal-title { font-size: 0.8rem; color: #6e7681; font-family: monospace; }
+        .terminal-actions { display: flex; gap: 8px; }
+        .terminal-ctrl-btn {
+            background: #21262d; border: 1px solid #30363d; color: #8b949e;
+            padding: 4px 10px; border-radius: 6px; font-size: 0.75rem; cursor: pointer;
+            transition: all 0.2s; display: inline-flex; align-items: center; gap: 5px;
+        }
+        .terminal-ctrl-btn:hover { background: #30363d; color: #e6edf3; }
+
+        #xterm-container {
+            flex: 1; padding: 8px;
+            /* xterm.js manages its own sizing */
+        }
+        #xterm-container .xterm { height: 100%; }
+
+        .terminal-status-bar {
+            padding: 6px 16px; background: #161b22; border-top: 1px solid #21262d;
+            display: flex; align-items: center; justify-content: space-between;
+            flex-shrink: 0;
+        }
+        .terminal-status-text { font-size: 0.72rem; color: #6e7681; font-family: monospace; }
+        .terminal-status-text span { color: #3fb950; }
+
+        .terminal-offline-msg {
+            flex: 1; display: flex; flex-direction: column; align-items: center;
+            justify-content: center; color: #6e7681; padding: 40px;
+        }
+        .terminal-offline-msg i { font-size: 2.5rem; margin-bottom: 12px; color: #30363d; }
+        .terminal-offline-msg p { font-size: 0.9rem; margin-bottom: 16px; }
+        .terminal-offline-msg button {
+            background: linear-gradient(135deg, #667eea, #764ba2);
+            color: white; border: none; padding: 10px 22px; border-radius: 8px;
+            font-weight: 600; cursor: pointer; font-size: 0.9rem; transition: all 0.3s;
+        }
+        .terminal-offline-msg button:hover { transform: translateY(-2px); box-shadow: 0 5px 15px rgba(102,126,234,0.4); }
 
         /* Buttons */
         .action-section { margin-bottom: 20px; }
@@ -312,6 +417,11 @@
             .footer-left, .footer-center, .footer-right { text-align: center; width: 100%; }
             .contact { justify-content: center; }
         }
+
+        /* xterm overrides */
+        .xterm-viewport::-webkit-scrollbar       { width: 6px; }
+        .xterm-viewport::-webkit-scrollbar-track { background: #0d1117; }
+        .xterm-viewport::-webkit-scrollbar-thumb { background: #30363d; border-radius: 6px; }
     </style>
 </head>
 <body>
@@ -439,49 +549,109 @@
                 </div>
             </div>
 
-            <!-- Right column: Available Tests -->
-            <div class="card">
-                <div class="card-header"><i class="fas fa-list-check"></i><h2>Available Tests</h2></div>
+            <!-- ══ Right column: tabbed panel ══ -->
+            <div class="right-panel">
 
-                <div v-if="loading" class="loading">
-                    <div class="spinner"></div><p>Loading tests...</p>
+                <!-- Tab bar -->
+                <div class="tab-bar">
+                    <button class="tab-btn" :class="{active: activeTab === 'tests'}" @click="switchTab('tests')">
+                        <i class="fas fa-list-check"></i>
+                        Available Tests
+                    </button>
+                    <button class="tab-btn" :class="{active: activeTab === 'terminal'}" @click="switchTab('terminal')">
+                        <i class="fas fa-terminal"></i>
+                        Terminal
+                        <span class="term-live-dot" :class="{offline: !termConnected}" style="margin-left:4px;"></span>
+                    </button>
                 </div>
 
-                <div v-else-if="!systemStatus.configured" class="empty-state">
-                    <i class="fas fa-info-circle"></i>
-                    <p>Please configure the system to see available tests</p>
-                </div>
+                <!-- Tab content -->
+                <div class="tab-content">
 
-                <div v-else-if="tests.length > 0" class="test-grid">
-                    <div v-for="test in tests" :key="test.name" class="test-item">
-                        <div class="test-info">
-                            <div class="test-name">{{ test.name }}</div>
-                            <div class="test-desc">{{ test.description }}</div>
+                    <!-- ── Available Tests pane ── -->
+                    <div class="tab-pane" :class="{active: activeTab === 'tests'}">
+
+                        <div v-if="loading" class="loading">
+                            <div class="spinner"></div><p>Loading tests...</p>
                         </div>
-                        <div class="test-actions">
-                            <div v-if="testJobs[test.name]" class="test-status-icon" :class="testJobs[test.name].status">
-                                <i v-if="testJobs[test.name].status === 'running'"   class="fas fa-spinner fa-spin"></i>
-                                <i v-else-if="testJobs[test.name].status === 'completed'" class="fas fa-check"></i>
-                                <i v-else-if="testJobs[test.name].status === 'failed'"    class="fas fa-times"></i>
-                                <i v-else-if="testJobs[test.name].status === 'killed'"    class="fas fa-ban"></i>
+
+                        <div v-else-if="!systemStatus.configured" class="empty-state">
+                            <i class="fas fa-info-circle"></i>
+                            <p>Please configure the system to see available tests</p>
+                        </div>
+
+                        <div v-else-if="tests.length > 0" class="test-grid">
+                            <div v-for="test in tests" :key="test.name" class="test-item">
+                                <div class="test-info">
+                                    <div class="test-name">{{ test.name }}</div>
+                                    <div class="test-desc">{{ test.description }}</div>
+                                </div>
+                                <div class="test-actions">
+                                    <div v-if="testJobs[test.name]" class="test-status-icon" :class="testJobs[test.name].status">
+                                        <i v-if="testJobs[test.name].status === 'running'"   class="fas fa-spinner fa-spin"></i>
+                                        <i v-else-if="testJobs[test.name].status === 'completed'" class="fas fa-check"></i>
+                                        <i v-else-if="testJobs[test.name].status === 'failed'"    class="fas fa-times"></i>
+                                        <i v-else-if="testJobs[test.name].status === 'killed'"    class="fas fa-ban"></i>
+                                    </div>
+                                    <button class="btn btn-small" @click="runTest(test.name)"
+                                            :disabled="testJobs[test.name] && testJobs[test.name].status === 'running'">
+                                        <i class="fas fa-play"></i>
+                                    </button>
+                                    <button v-if="testJobs[test.name]" class="btn btn-small btn-warning"
+                                            @click="showLog(testJobs[test.name].id)">
+                                        <i class="fas fa-file-alt"></i>
+                                    </button>
+                                </div>
                             </div>
-                            <button class="btn btn-small" @click="runTest(test.name)"
-                                    :disabled="testJobs[test.name] && testJobs[test.name].status === 'running'">
-                                <i class="fas fa-play"></i>
-                            </button>
-                            <button v-if="testJobs[test.name]" class="btn btn-small btn-warning"
-                                    @click="showLog(testJobs[test.name].id)">
-                                <i class="fas fa-file-alt"></i>
-                            </button>
+                        </div>
+
+                        <div v-else class="empty-state">
+                            <i class="fas fa-inbox"></i><p>No tests available</p>
                         </div>
                     </div>
-                </div>
 
-                <div v-else class="empty-state">
-                    <i class="fas fa-inbox"></i><p>No tests available</p>
-                </div>
-            </div>
-        </div>
+                    <!-- ── Terminal pane ── -->
+                    <div class="tab-pane" :class="{active: activeTab === 'terminal'}">
+                        <div class="terminal-wrapper">
+
+                            <!-- title bar -->
+                            <div class="terminal-titlebar">
+                                <div class="terminal-dots">
+                                    <div class="terminal-dot red"></div>
+                                    <div class="terminal-dot yellow"></div>
+                                    <div class="terminal-dot green"></div>
+                                </div>
+                                <span class="terminal-title">bash — pre-pr-ci</span>
+                                <div class="terminal-actions">
+                                    <button class="terminal-ctrl-btn" @click="termClear" title="Clear screen">
+                                        <i class="fas fa-eraser"></i> Clear
+                                    </button>
+                                    <button class="terminal-ctrl-btn" @click="termReconnect" title="Reconnect">
+                                        <i class="fas fa-plug"></i> {{ termConnected ? 'Reconnect' : 'Connect' }}
+                                    </button>
+                                </div>
+                            </div>
+
+                            <!-- xterm mount point -->
+                            <div id="xterm-container" style="flex:1;min-height:0;"></div>
+
+                            <!-- status bar -->
+                            <div class="terminal-status-bar">
+                                <span class="terminal-status-text">
+                                    <span>●</span> {{ termConnected ? 'Connected' : 'Disconnected' }}
+                                    &nbsp;|&nbsp; Session persists across page refreshes
+                                </span>
+                                <span class="terminal-status-text" style="color:#6e7681;">
+                                    ws://{{ termWsHost }}/ws/terminal
+                                </span>
+                            </div>
+                        </div>
+                    </div>
+
+                </div><!-- /tab-content -->
+            </div><!-- /right-panel -->
+
+        </div><!-- /main-grid -->
 
         <!-- Footer -->
         <div class="footer">
@@ -505,9 +675,7 @@
             </div>
         </div>
 
-        <!-- ══════════════════════════════════
-             Configuration Modal
-             ══════════════════════════════════ -->
+        <!-- ══ Configuration Modal ══ -->
         <div v-if="showConfigModal" class="modal-overlay" @click.self="closeConfigModal">
             <div class="modal">
                 <div class="modal-header">
@@ -517,13 +685,10 @@
                     </h3>
                     <button class="modal-close" @click="closeConfigModal"><i class="fas fa-times"></i></button>
                 </div>
-
                 <div v-if="loadingFields" class="loading">
                     <div class="spinner"></div><p>Loading configuration fields...</p>
                 </div>
-
                 <form v-else @submit.prevent="submitConfig">
-                    <!-- General -->
                     <div class="form-section">
                         <div class="form-section-title"><i class="fas fa-file-alt"></i> General Configuration</div>
                         <div v-for="field in configFields.general" :key="field.name" class="form-group">
@@ -538,8 +703,6 @@
                                    class="form-input" :required="field.required" />
                         </div>
                     </div>
-
-                    <!-- Build -->
                     <div class="form-section">
                         <div class="form-section-title"><i class="fas fa-hammer"></i> Build Configuration</div>
                         <div v-for="field in configFields.build" :key="field.name" class="form-group">
@@ -549,8 +712,6 @@
                                    class="form-input" :required="field.required" />
                         </div>
                     </div>
-
-                    <!-- VM -->
                     <div class="form-section">
                         <div class="form-section-title"><i class="fas fa-desktop"></i> VM Configuration</div>
                         <div v-for="field in configFields.vm" :key="field.name" class="form-group">
@@ -559,8 +720,6 @@
                                    class="form-input" :required="field.required" />
                         </div>
                     </div>
-
-                    <!-- Host -->
                     <div class="form-section">
                         <div class="form-section-title"><i class="fas fa-lock"></i> Host Configuration</div>
                         <div v-for="field in configFields.host" :key="field.name" class="form-group">
@@ -569,40 +728,26 @@
                                    class="form-input" :required="field.required" />
                         </div>
                     </div>
-
-                    <!-- Test Selection -->
                     <div class="form-section">
                         <div class="form-section-title">
                             <i class="fas fa-vial"></i>
                             Test Selection
-                            <span style="font-size:0.75rem;font-weight:400;color:#718096;margin-left:6px;">
-                                (all enabled by default)
-                            </span>
+                            <span style="font-size:0.75rem;font-weight:400;color:#718096;margin-left:6px;">(all enabled by default)</span>
                         </div>
-
                         <div class="test-toggle-header">
-                            <span style="font-size:0.85rem;color:#4a5568;">
-                                {{ enabledTestCount }} / {{ testToggles.length }} tests enabled
-                            </span>
+                            <span style="font-size:0.85rem;color:#4a5568;">{{ enabledTestCount }} / {{ testToggles.length }} tests enabled</span>
                             <div class="test-toggle-bulk">
-                                <button type="button" class="btn-bulk btn-bulk-enable" @click="enableAllTests">
-                                    <i class="fas fa-check-double"></i> Enable All
-                                </button>
-                                <button type="button" class="btn-bulk btn-bulk-disable" @click="disableAllTests">
-                                    <i class="fas fa-times"></i> Disable All
-                                </button>
+                                <button type="button" class="btn-bulk btn-bulk-enable" @click="enableAllTests"><i class="fas fa-check-double"></i> Enable All</button>
+                                <button type="button" class="btn-bulk btn-bulk-disable" @click="disableAllTests"><i class="fas fa-times"></i> Disable All</button>
                             </div>
                         </div>
-
                         <div class="test-toggle-grid">
                             <div v-for="t in testToggles" :key="t.key"
                                  class="test-toggle-item" :class="t.enabled ? 'enabled' : 'disabled'">
                                 <div class="test-toggle-label">
                                     <div class="test-toggle-name">{{ t.label }}</div>
                                     <div class="test-toggle-desc">{{ t.desc }}</div>
-                                    <span class="enabled-badge" :class="t.enabled ? 'on' : 'off'">
-                                        {{ t.enabled ? 'ENABLED' : 'DISABLED' }}
-                                    </span>
+                                    <span class="enabled-badge" :class="t.enabled ? 'on' : 'off'">{{ t.enabled ? 'ENABLED' : 'DISABLED' }}</span>
                                 </div>
                                 <label class="toggle-switch">
                                     <input type="checkbox" v-model="t.enabled" />
@@ -611,7 +756,6 @@
                             </div>
                         </div>
                     </div>
-
                     <div class="btn-group">
                         <button type="button" class="btn" style="background:#cbd5e0;color:#2d3748;" @click="closeConfigModal">
                             <i class="fas fa-times"></i> Cancel
@@ -624,9 +768,7 @@
             </div>
         </div>
 
-        <!-- ══════════════════════════════════
-             Config Info Modal
-             ══════════════════════════════════ -->
+        <!-- ══ Config Info Modal ══ -->
         <div v-if="showConfigInfoModal" class="modal-overlay" @click.self="showConfigInfoModal = false">
             <div class="modal">
                 <div class="modal-header">
@@ -645,9 +787,7 @@
             </div>
         </div>
 
-        <!-- ══════════════════════════════════
-             Log Viewer Modal  (live streaming)
-             ══════════════════════════════════ -->
+        <!-- ══ Log Viewer Modal ══ -->
         <div v-if="showLogModal" class="modal-overlay log-modal" @click.self="closeLogModal">
             <div class="modal">
                 <div class="modal-header">
@@ -668,7 +808,6 @@
                         </button>
                     </div>
                 </div>
-
                 <div v-if="loadingLog" class="loading">
                     <div class="spinner"></div><p>Loading log...</p>
                 </div>
@@ -709,6 +848,160 @@ const TEST_DEFS = {
     ]
 };
 
+/* ══════════════════════════════════════════════════════════════════════════
+   Terminal manager — lives outside Vue so the xterm instance
+   and WebSocket survive tab switches and page refreshes.
+══════════════════════════════════════════════════════════════════════════ */
+const TerminalManager = (() => {
+    let term       = null;   // xterm.Terminal
+    let fitAddon   = null;
+    let ws         = null;
+    let connected  = false;
+    let onConnectChange = null;  // callback(bool)
+
+    function wsUrl() {
+        const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+        return `${proto}://${location.host}/ws/terminal`;
+    }
+
+    function init(container) {
+        if (term) {
+            // Already initialised — xterm is already mounted in this same container
+            // (it never left the DOM because we use visibility:hidden, not display:none).
+            // Just refit so the canvas matches the now-visible size.
+            requestAnimationFrame(() => {
+                fitAddon.fit();
+                // Re-send resize so the server PTY matches
+                if (ws && ws.readyState === WebSocket.OPEN) {
+                    const { rows, cols } = term;
+                    ws.send(JSON.stringify({ type: 'resize', rows, cols }));
+                }
+                term.focus();
+            });
+            return;
+        }
+
+        term = new Terminal({
+            theme: {
+                background:  '#0d1117',
+                foreground:  '#e6edf3',
+                cursor:      '#58a6ff',
+                black:       '#0d1117',
+                red:         '#ff7b72',
+                green:       '#3fb950',
+                yellow:      '#d29922',
+                blue:        '#58a6ff',
+                magenta:     '#bc8cff',
+                cyan:        '#39c5cf',
+                white:       '#b1bac4',
+                brightBlack: '#6e7681',
+                brightWhite: '#f0f6fc',
+            },
+            fontFamily: '"Cascadia Code", "Fira Code", "JetBrains Mono", "Courier New", monospace',
+            fontSize:   13,
+            lineHeight: 1.4,
+            cursorBlink: true,
+            cursorStyle: 'block',
+            allowTransparency: false,
+            scrollback: 5000,
+        });
+
+        fitAddon = new FitAddon.FitAddon();
+        term.loadAddon(fitAddon);
+        term.loadAddon(new WebLinksAddon.WebLinksAddon());
+        term.open(container);
+        // Use rAF so the browser has painted the container before we measure it
+        requestAnimationFrame(() => {
+            fitAddon.fit();
+            term.focus();
+        });
+
+        // Keyboard input → WebSocket
+        term.onData(data => {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: 'input', data }));
+            }
+        });
+
+        // Resize → WebSocket
+        term.onResize(({ rows, cols }) => {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: 'resize', rows, cols }));
+            }
+        });
+
+        connect();
+    }
+
+    function connect() {
+        if (ws && ws.readyState === WebSocket.OPEN) return;
+
+        ws = new WebSocket(wsUrl());
+
+        ws.onopen = () => {
+            connected = true;
+            onConnectChange && onConnectChange(true);
+            // Push current terminal size so the server PTY matches.
+            // Only fit if the terminal is currently visible (tab is active).
+            if (term && fitAddon) {
+                const el = document.getElementById('xterm-container');
+                if (el && el.offsetParent !== null) fitAddon.fit();
+                const { rows, cols } = term;
+                ws.send(JSON.stringify({ type: 'resize', rows, cols }));
+            }
+        };
+
+        ws.onmessage = evt => {
+            if (term) {
+                if (typeof evt.data === 'string') {
+                    term.write(evt.data);
+                } else {
+                    // Blob — read and write
+                    evt.data.text().then(t => term && term.write(t));
+                }
+            }
+        };
+
+        ws.onclose = () => {
+            connected = false;
+            onConnectChange && onConnectChange(false);
+        };
+
+        ws.onerror = () => {
+            connected = false;
+            onConnectChange && onConnectChange(false);
+        };
+    }
+
+    function reconnect() {
+        if (ws) { try { ws.close(); } catch(_) {} }
+        connect();
+    }
+
+    function clear() {
+        if (term) term.clear();
+    }
+
+    function fit() {
+        if (!fitAddon) return;
+        fitAddon.fit();
+        if (term && ws && ws.readyState === WebSocket.OPEN) {
+            const { rows, cols } = term;
+            ws.send(JSON.stringify({ type: 'resize', rows, cols }));
+        }
+    }
+
+    function isConnected() { return connected; }
+
+    function setOnConnectChange(fn) { onConnectChange = fn; }
+
+    return { init, connect, reconnect, clear, fit, isConnected, setOnConnectChange, wsUrl };
+})();
+
+
+/* ══════════════════════════════════════════════════════════════════════════
+   Vue app
+══════════════════════════════════════════════════════════════════════════ */
 createApp({
     data() {
         return {
@@ -721,6 +1014,11 @@ createApp({
             testAllJob:          {},
             loading:             false,
             pollInterval:        null,
+            /* tabs */
+            activeTab:           'tests',
+            termConnected:       false,
+            termWsHost:          location.host,
+            /* modals */
             showConfigModal:     false,
             showConfigInfoModal: false,
             showLogModal:        false,
@@ -737,7 +1035,7 @@ createApp({
             logPollInterval:     null,
             currentLogJobId:     null,
             logIsLive:           false,
-            logAutoScroll:       true
+            logAutoScroll:       true,
         };
     },
 
@@ -760,6 +1058,10 @@ createApp({
     },
 
     mounted() {
+        /* Register terminal connect-change callback */
+        TerminalManager.setOnConnectChange(v => { this.termConnected = v; });
+        this.termConnected = TerminalManager.isConnected();
+
         this.loadStatus();
         this.loadTests();
         this.loadJobs();
@@ -767,6 +1069,12 @@ createApp({
             this.loadJobs();
             this.updateJobProgress();
         }, 2000);
+
+        /* Handle window resize → refit terminal */
+        window.addEventListener('resize', () => {
+            const el = document.getElementById('xterm-container');
+            if (el && el.offsetParent !== null) TerminalManager.fit();
+        });
     },
 
     beforeUnmount() {
@@ -775,6 +1083,21 @@ createApp({
     },
 
     methods: {
+
+        /* ── Tab switching ── */
+
+        switchTab(tab) {
+            this.activeTab = tab;
+            if (tab === 'terminal') {
+                // The terminal div is always in the DOM (visibility:hidden when inactive).
+                // init() will either open xterm for the first time, or just refit+focus.
+                const el = document.getElementById('xterm-container');
+                if (el) TerminalManager.init(el);
+            }
+        },
+
+        termClear()     { TerminalManager.clear(); },
+        termReconnect() { TerminalManager.reconnect(); },
 
         /* ── Status / Tests / Jobs ── */
 
@@ -867,7 +1190,7 @@ createApp({
                 this.currentLog = r.data.log || '';
                 await this.$nextTick();
                 if (this.logAutoScroll) this.scrollLogBottom();
-            } catch (_) { /* ignore transient poll errors */ }
+            } catch (_) {}
         },
 
         stopLogPoll() {
@@ -879,21 +1202,12 @@ createApp({
         },
 
         startLogPoll(jobId) {
-            if (!this.isJobRunning(jobId)) {
-                this.logIsLive = false;
-                return;
-            }
+            if (!this.isJobRunning(jobId)) { this.logIsLive = false; return; }
             this.logIsLive = true;
             this.logPollInterval = setInterval(async () => {
-                if (!this.showLogModal || this.currentLogJobId !== jobId) {
-                    this.stopLogPoll();
-                    return;
-                }
+                if (!this.showLogModal || this.currentLogJobId !== jobId) { this.stopLogPoll(); return; }
                 await this.fetchLog(jobId);
-                if (!this.isJobRunning(jobId)) {
-                    this.stopLogPoll();
-                    await this.fetchLog(jobId); /* capture final tail */
-                }
+                if (!this.isJobRunning(jobId)) { this.stopLogPoll(); await this.fetchLog(jobId); }
             }, 1500);
         },
 
@@ -904,10 +1218,8 @@ createApp({
             this.logAutoScroll   = true;
             this.showLogModal    = true;
             this.loadingLog      = true;
-
             await this.fetchLog(jobId);
             this.loadingLog = false;
-
             this.startLogPoll(jobId);
         },
 
@@ -926,7 +1238,6 @@ createApp({
         onLogScroll() {
             const el = this.$refs.logOutputEl;
             if (!el) return;
-            /* re-enable auto-scroll when user scrolls back to bottom */
             this.logAutoScroll = (el.scrollHeight - el.scrollTop - el.clientHeight) < 40;
         },
 
@@ -966,9 +1277,7 @@ createApp({
 
         async submitConfig() {
             const testFlags = {};
-            this.testToggles.forEach(t => {
-                testFlags[`TEST_${t.key}`] = t.enabled ? 'yes' : 'no';
-            });
+            this.testToggles.forEach(t => { testFlags[`TEST_${t.key}`] = t.enabled ? 'yes' : 'no'; });
             try {
                 await axios.post('/api/config', {
                     distro:     this.selectedDistro,
@@ -1003,61 +1312,39 @@ createApp({
 
         async runBuild() {
             if (!this.canRunBuild) return;
-            try {
-                this.buildJob = {};
-                await axios.post('/api/build');
-                this.loadJobs();
-            } catch (_) { alert('Failed to start build'); }
+            try { this.buildJob = {}; await axios.post('/api/build'); this.loadJobs(); }
+            catch (_) { alert('Failed to start build'); }
         },
 
         async runAllTests() {
-            try {
-                this.testAllJob = {};
-                await axios.post('/api/test/all');
-                this.loadJobs();
-            } catch (_) { alert('Failed to start tests'); }
+            try { this.testAllJob = {}; await axios.post('/api/test/all'); this.loadJobs(); }
+            catch (_) { alert('Failed to start tests'); }
         },
 
         async runTest(testName) {
-            try {
-                await axios.post(`/api/test/${testName}`);
-                this.loadJobs();
-            } catch (_) { alert('Failed to start test'); }
+            try { await axios.post(`/api/test/${testName}`); this.loadJobs(); }
+            catch (_) { alert('Failed to start test'); }
         },
 
         async runClean() {
-            if (!confirm(
-                '⚠️ Clean Operation\n\nThis will remove:\n' +
-                '• logs/ directory\n• patches/ directory\n• Build artifacts\n\nDo you want to continue?'
-            )) return;
-            try {
-                await axios.post('/api/clean');
-                alert('✓ Clean operation started successfully!');
-                this.loadJobs();
-            } catch (e) { alert('❌ Failed to start clean operation: ' + e.message); }
+            if (!confirm('⚠️ Clean Operation\n\nThis will remove:\n• logs/ directory\n• patches/ directory\n• Build artifacts\n\nDo you want to continue?')) return;
+            try { await axios.post('/api/clean'); alert('✓ Clean operation started successfully!'); this.loadJobs(); }
+            catch (e) { alert('❌ Failed to start clean operation: ' + e.message); }
         },
 
         async runReset() {
             if (!this.canRunReset) return;
-            if (!confirm(
-                '⚠️ Reset Operation\n\nThis will reset the git repository to the saved HEAD commit.\n' +
-                'All uncommitted changes will be lost!\n\nAre you absolutely sure?'
-            )) return;
+            if (!confirm('⚠️ Reset Operation\n\nThis will reset the git repository to the saved HEAD commit.\nAll uncommitted changes will be lost!\n\nAre you absolutely sure?')) return;
             if (!confirm('⚠️ FINAL CONFIRMATION\n\nThis action cannot be undone.\nClick OK to proceed with reset.')) return;
             try {
-                this.buildHasRun = false;
-                this.buildJob    = {};
+                this.buildHasRun = false; this.buildJob = {};
                 await axios.post('/api/reset');
-                alert('✓ Reset operation started successfully!');
-                this.loadJobs();
+                alert('✓ Reset operation started successfully!'); this.loadJobs();
             } catch (e) { alert('❌ Failed to start reset operation: ' + e.message); }
         },
 
         async stopRunningProcess() {
-            if (!confirm(
-                '⚠️ STOP RUNNING PROCESS\n\n' +
-                'This will terminate the currently running process immediately.\n\nDo you want to continue?'
-            )) return;
+            if (!confirm('⚠️ STOP RUNNING PROCESS\n\nThis will terminate the currently running process immediately.\n\nDo you want to continue?')) return;
             if (!confirm('⚠️ FINAL CONFIRMATION\n\nClick OK to stop the process.')) return;
             try {
                 let runningJobId = null;
@@ -1070,8 +1357,7 @@ createApp({
                 }
                 if (!runningJobId) { alert('No running process found'); return; }
                 await axios.post(`/api/jobs/${runningJobId}/kill`);
-                alert('✓ Process stopped successfully!');
-                this.loadJobs();
+                alert('✓ Process stopped successfully!'); this.loadJobs();
             } catch (e) {
                 alert('❌ Failed to stop process: ' + (e.response?.data?.error || e.message));
             }
