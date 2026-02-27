@@ -64,13 +64,6 @@ pipeline {
         )
         
         string(
-            name: 'BUILD_THREADS',
-            defaultValue: 'none',
-            trim: true,
-            description: 'Enter the number of CPUs'
-        )
-        
-        string(
             name: 'Host_configuration',
             defaultValue: 'none',
             trim: true,
@@ -313,6 +306,20 @@ def run_distro_specific_operations(system_distro, d) {
     }
 }
 
+def calculate_threads() {
+    try {
+        int cores = sh(script: "nproc", returnStdout: true).trim().toInteger()
+        int threads = Math.max(1, (int)(cores * 0.9))
+        echo "====================================="
+        echo "Total CPU cores detected: ${cores}"
+        echo "Using 90% cores: ${threads}"
+        echo "====================================="
+        return threads
+    } catch (Exception e) {
+        error("❌ Failed to calculate CPU threads: ${e.message}")
+    }
+}
+
 def clone_repository() {
     try {
         def repoDir = "${env.WORKSPACE}/pre-pr-ci"
@@ -505,7 +512,6 @@ def anolis_general_configuration() {
         // Validate required parameters
         validate_required_params([
             'PATCH_DIR': params.PATCH_DIR,
-            'BUILD_THREADS': params.BUILD_THREADS
         ])
         
         // Check if directory exists
@@ -519,6 +525,8 @@ def anolis_general_configuration() {
             echo "⚠ Configuration file already exists - will be overwritten"
         }
         
+        def threads = calculate_threads()
+
         // Create configuration file
         sh """
             cd "${configDir}"
@@ -531,7 +539,7 @@ ANBZ_ID="${params.BUGZILLA_ID != 'none' ? params.BUGZILLA_ID.toInteger() : 0}"
 NUM_PATCHES="${params.NO_OF_PATCHES != 'none' ? params.NO_OF_PATCHES.toInteger() : 0}"
 
 # Build Configuration
-BUILD_THREADS="${params.BUILD_THREADS != 'none' ? params.BUILD_THREADS.toInteger() : 1}"
+BUILD_THREADS="${threads}"
 
 # Test Configuration    
 RUN_TESTS="yes"
@@ -576,7 +584,6 @@ def euler_general_configuration() {
         // Validate required parameters
         validate_required_params([
             'PATCH_DIR': params.PATCH_DIR,
-            'BUILD_THREADS': params.BUILD_THREADS,
             'Patch_category': params.Patch_category
         ])
         
@@ -591,6 +598,8 @@ def euler_general_configuration() {
             echo "⚠ Configuration file already exists - will be overwritten"
         }
         
+        def threads = calculate_threads()
+
         // Create configuration file
         sh """
             cd "${configDir}"
@@ -604,7 +613,7 @@ PATCH_CATEGORY="${params.Patch_category}"
 NUM_PATCHES="${params.NO_OF_PATCHES != 'none' ? params.NO_OF_PATCHES.toInteger() : 0}"
 
 # Build Configuration
-BUILD_THREADS="${params.BUILD_THREADS != 'none' ? params.BUILD_THREADS.toInteger() : 1}"
+BUILD_THREADS="${threads}"
 
 # Test Configuration    
 RUN_TESTS="yes"
