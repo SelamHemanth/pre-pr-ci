@@ -725,7 +725,7 @@ def anolis_test_configuration() {
             return
         }
 
-        def workspaceDir = "${env.WORKSPACE}/patch-precheck-ci"
+        def workspaceDir = "${env.WORKSPACE}/pre-pr-ci"
 
         def commandMap = [
             "check_dependency"       : "make anolis-test=check_dependency",
@@ -761,11 +761,9 @@ def anolis_test_configuration() {
 
                 def cmd = commandMap[testName]
 				
-				echo "▶ Running test: ${cmd}"
-
                 sh """
                     set +e
-                    ${cmd} || true
+                    ${cmd} 
                 """
             }
         }
@@ -787,7 +785,7 @@ def euler_test_configuration() {
         }
 
 		  
-        def workspaceDir = "${env.WORKSPACE}/patch-precheck-ci"
+        def workspaceDir = "${env.WORKSPACE}/pre-pr-ci"
 
         def commandMap = [
             "check_dependency" : "make euler-test=check_dependency",
@@ -819,13 +817,10 @@ def euler_test_configuration() {
 
                 def cmd = commandMap[testName]
 				
-				echo "▶ Running test: ${cmd}"
-
                 sh """
                     set +e
-                    ${cmd} || true
+                    ${cmd} 
                 """
-                
             }
         }
 
