@@ -105,7 +105,7 @@ pipeline {
            multiSelectDelimiter: ',',
            visibleItemCount: 8,
            description: 'Select one or more Euler test cases',
-           value: 'check_dependency,build_allmod,check_patch,check_format,rpm_build,boot_kernel,all'
+           value: 'check_dependency,build_allmod,check_kabi,check_patch,check_format,rpm_build,boot_kernel,all'
         ) 
 
 }
@@ -626,6 +626,7 @@ BUILD_THREADS="${threads}"
 RUN_TESTS="yes"
 TEST_CHECK_DEPENDENCY="yes"
 TEST_BUILD_ALLMOD="yes"
+TEST_CHECK_KABI="yes"
 TEST_CHECK_PATCH="yes"
 TEST_CHECK_FORMAT="yes"
 TEST_RPM_BUILD="yes"    
@@ -790,6 +791,7 @@ def euler_test_configuration() {
         def commandMap = [
             "check_dependency" : "make euler-test=check_dependency",
             "build_allmod"     : "make euler-test=build_allmod",
+	    "check_kabi"       : "make euler-test=check_kabi",
             "check_patch"      : "make euler-test=check_patch",
             "check_format"     : "make euler-test=check_format",
             "rpm_build"        : "make euler-test=rpm_build",
