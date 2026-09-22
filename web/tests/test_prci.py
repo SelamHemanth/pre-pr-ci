@@ -121,6 +121,36 @@ class TestRegistryMatchesScripts(unittest.TestCase):
                         self.assertIsNone(field['default'])
 
 
+    def test_detection_folds_case(self):
+        """openEuler writes ID="openEuler"; matching "openeuler" missed it."""
+        import tempfile
+        from unittest import mock
+        cases = {
+            'ID="openEuler"\n': 'euler',
+            'ID=openeuler\n': 'euler',
+            'ID="anolis"\n': 'anolis',
+            'ID="Anolis"\n': 'anolis',
+            'ID="ubuntu"\n': None,
+            'NAME="nothing"\n': None,
+        }
+        for content, expected in cases.items():
+            with tempfile.NamedTemporaryFile('w', suffix='.os', delete=False) as f:
+                f.write('NAME="x"\n' + content)
+                name = f.name
+            try:
+                real_open = open
+
+                def fake_open(path, *a, **kw):
+                    if path == '/etc/os-release':
+                        return real_open(name, *a, **kw)
+                    return real_open(path, *a, **kw)
+
+                with mock.patch('prci.registry.open', fake_open, create=True):
+                    self.assertEqual(registry.detect_distro(), expected,
+                                     'os-release %r' % content)
+            finally:
+                os.unlink(name)
+
     def test_pipeline_dispatches_real_test_names(self):
         """A typo here silently skips the test instead of failing."""
         pipeline = read_file('jenkins', 'jenkins_pipeline.groovy')

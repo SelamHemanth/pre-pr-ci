@@ -119,6 +119,9 @@ def api_status():
         'distro': distro,
         'distro_label': registry.DISTROS.get(distro),
         'distros': [{'id': k, 'label': v} for k, v in registry.DISTROS.items()],
+        # Lets a first-time visitor's distro picker default to this host
+        # instead of guessing, the way the make wizard already does.
+        'detected_distro': registry.detect_distro(),
         'active_jobs': store.active(),
         'terminal_alive': terminal.alive,
         'mirror_present': os.path.isdir(TORVALDS_REPO),

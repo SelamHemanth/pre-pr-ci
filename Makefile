@@ -81,7 +81,7 @@ NC := \033[0m
 detect_distro:
 	@if [ -f /etc/os-release ]; then \
 		. /etc/os-release; \
-		case "$$ID" in \
+		case "$$(echo "$$ID" | tr '[:upper:]' '[:lower:]')" in \
 			anolis) echo "anolis" ;; \
 			opencloudos) echo "cloud" ;; \
 			openeuler) echo "euler" ;; \

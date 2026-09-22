@@ -140,6 +140,28 @@ SECRET_KEYS = frozenset(
 )
 
 
+# /etc/os-release ID values, lowercased, mapped to our directory names.
+# openEuler writes ID="openEuler" with a capital E, so always fold the case
+# before looking it up here.
+_OS_RELEASE_IDS = {
+    'anolis': 'anolis',
+    'openeuler': 'euler',
+}
+
+
+def detect_distro():
+    """Which distro this host looks like, or None if we do not support it."""
+    try:
+        with open('/etc/os-release', 'r') as handle:
+            for line in handle:
+                if line.startswith('ID='):
+                    ident = line.partition('=')[2].strip().strip('"\'')
+                    return _OS_RELEASE_IDS.get(ident.lower())
+    except OSError:
+        pass
+    return None
+
+
 def is_distro(distro):
     return distro in DISTROS
 

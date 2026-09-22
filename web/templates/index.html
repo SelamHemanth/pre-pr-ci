@@ -766,7 +766,7 @@ footer a:hover { text-decoration: underline; }
               </select>
               <input v-else v-model="form.values[f.name]"
                      :type="f.type === 'password' ? 'password' : (f.type === 'number' ? 'number' : 'text')"
-                     :placeholder="f.secret ? 'unchanged' : (f.default !== null ? String(f.default) : '')"
+                     :placeholder="f.secret ? secretPlaceholder(f) : (f.default !== null ? String(f.default) : '')"
                      :class="{ bad: errors[f.name] }"
                      autocomplete="off" spellcheck="false">
               <div class="err" v-if="errors[f.name]">{{ errors[f.name] }}</div>
@@ -866,6 +866,8 @@ createApp({
       fieldTests: [],
       errors: {},
       form: { distro: 'euler', values: {}, tests: [] },
+      // Names of the secret fields the server already has a value for.
+      storedSecrets: [],
 
       logJob: null,
       logWhich: 'job',
@@ -1169,7 +1171,12 @@ createApp({
 
     async openConfig() {
       this.errors = {};
-      this.form.distro = this.status.distro || this.form.distro;
+      // Configured distro first, then whatever this host looks like, and
+      // only then the fallback -- a first-time visitor should not have to
+      // correct a guess.
+      this.form.distro = this.status.distro
+        || this.status.detected_distro
+        || this.form.distro;
       await this.loadFields(this.form.distro);
       this.configOpen = true;
     },
@@ -1182,9 +1189,14 @@ createApp({
 
         const current = await this.api(`/api/config?distro=${distro}`);
         const values = {};
+        const stored = [];
         for (const section of data.sections) {
           for (const field of section.fields) {
             const existing = current.config ? current.config[field.name] : null;
+            // The server sends a mask instead of a stored secret, and nothing
+            // at all when there is none, which is how the placeholder knows
+            // whether "unchanged" would be a lie.
+            if (field.secret && existing) { stored.push(field.name); }
             // Never seed a password box with the mask: submitting it back
             // would overwrite the stored value with placeholder characters.
             values[field.name] = field.secret
@@ -1195,6 +1207,7 @@ createApp({
           }
         }
         this.form.values = values;
+        this.storedSecrets = stored;
 
         const enabled = current.enabled_tests || {};
         this.form.tests = data.tests
@@ -1326,6 +1339,15 @@ createApp({
     distroLabel(id) {
       const found = (this.status.distros || []).find(d => d.id === id);
       return found ? found.label : id;
+    },
+
+    // Password boxes are deliberately left empty rather than seeded with the
+    // mask, so the placeholder has to say which of the two situations it is:
+    // "unchanged" is only true once something is actually stored.
+    secretPlaceholder(field) {
+      return this.storedSecrets.includes(field.name)
+        ? 'unchanged'
+        : 'not set yet';
     },
 
     pretty(key) {
