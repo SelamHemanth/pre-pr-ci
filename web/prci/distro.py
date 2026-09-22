@@ -24,6 +24,7 @@ import logging
 import os
 import re
 import shlex
+import subprocess
 import tempfile
 from datetime import datetime
 
@@ -133,7 +134,11 @@ class Workspace:
 
     def write_config(self, distro, values, test_flags, torvalds_repo):
         """Validate and persist a configuration, raising ConfigError on bad
-        input rather than writing a file that fails 20 minutes into a build."""
+        input rather than writing a file that fails 20 minutes into a build.
+
+        Returns advisory notes about the saved configuration: things that are
+        legal but probably not intended.
+        """
         if not registry.is_distro(distro):
             raise ConfigError({'distro': 'unknown distribution'})
 
@@ -183,6 +188,7 @@ class Workspace:
             mode=0o644,
         )
         log.info('wrote configuration for %s', distro)
+        return advisories(cleaned)
 
     def _validate(self, distro, values, test_flags):
         errors = {}
@@ -223,16 +229,9 @@ class Workspace:
                 return test_flags.get(test.config_key, 'yes') != 'no'
         return False
 
-    @staticmethod
-    def _check_field(field, value):
+    def _check_field(self, field, value):
         if field.name == 'LINUX_SRC_PATH':
-            if not os.path.isabs(value):
-                return 'must be an absolute path'
-            if not os.path.isdir(value):
-                return 'no such directory on this host'
-            if not os.path.isdir(os.path.join(value, '.git')):
-                return 'not a git checkout (no .git directory)'
-            return None
+            return self._check_source_tree(value)
 
         if field.type == 'email' and not _EMAIL_RE.match(value):
             return 'does not look like an email address'
@@ -253,6 +252,127 @@ class Workspace:
             return 'must be one of: %s' % ', '.join(field.options)
 
         return None
+
+    def _check_source_tree(self, value):
+        """Reject a kernel path that will only fail much later, or damage us.
+
+        Everything here was reachable before and surfaced as a confusing
+        failure some minutes into a run, or as a command operating on the
+        wrong tree entirely.
+        """
+        if not os.path.isabs(value):
+            return 'must be an absolute path'
+        if not os.path.isdir(value):
+            return 'no such directory on this host'
+        if not os.path.exists(os.path.join(value, '.git')):
+            # A worktree or submodule has .git as a file, not a directory.
+            return 'not a git checkout (no .git)'
+
+        source = os.path.realpath(value)
+        project = os.path.realpath(self.root)
+
+        # `make clean` runs `make clean` inside this path.  Pointed at our own
+        # checkout that recurses into this Makefile and never terminates; the
+        # ancestor case is worse, since the tool would be inside the tree the
+        # clean and reset targets operate on.  A kernel tree *underneath* the
+        # project is fine and expected -- euler/kernel is exactly that.
+        if source == project:
+            return 'this is the Pre-PR CI checkout, not a kernel tree'
+        if project.startswith(source + os.sep):
+            return 'contains the Pre-PR CI checkout; clean and reset would ' \
+                   'operate on this tool'
+
+        if not _looks_like_kernel_tree(source):
+            return 'does not look like a Linux source tree (no Makefile ' \
+                   'with VERSION and PATCHLEVEL)'
+
+        # Patches are applied and the build runs in place.
+        if not os.access(source, os.W_OK):
+            return 'not writable by the user running this server'
+
+        return None
+
+
+def _looks_like_kernel_tree(path):
+    """True when ``path`` has a Linux top-level Makefile.
+
+    Every Linux Makefile since forever opens with VERSION/PATCHLEVEL, and
+    they appear in the first few lines, so this reads only the head of the
+    file rather than the whole thing.
+    """
+    try:
+        with open(os.path.join(path, 'Makefile'), 'r', errors='replace') as fh:
+            head = [next(fh, '') for _ in range(12)]
+    except OSError:
+        return False
+
+    text = ''.join(head)
+    return bool(re.search(r'^\s*VERSION\s*=', text, re.M)
+                and re.search(r'^\s*PATCHLEVEL\s*=', text, re.M))
+
+
+def _git_line(args, cwd, timeout=10):
+    """One line of git output, or None if git is slow, missing or unhappy.
+
+    Used only for advisory checks, so every failure means 'say nothing'
+    rather than blocking a save on a sluggish filesystem.
+    """
+    try:
+        done = subprocess.run(['git'] + args, cwd=cwd, timeout=timeout,
+                              stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                              universal_newlines=True, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return done.stdout.strip() if done.returncode == 0 else None
+
+
+def advisories(values):
+    """Things worth saying about a valid configuration, but not worth
+    refusing it for.
+
+    These are judgement calls about the host and the tree rather than errors:
+    the configuration is well formed, it just may not do what was intended.
+    """
+    notes = []
+    source = values.get('LINUX_SRC_PATH')
+
+    threads = values.get('BUILD_THREADS')
+    if threads and threads.isdigit():
+        cpus = os.cpu_count() or 1
+        if int(threads) > cpus * 2:
+            notes.append(
+                'BUILD_THREADS is %s on a %d-CPU host; beyond about %d the '
+                'build gets slower, not faster.' % (threads, cpus, cpus))
+
+    if not (source and os.path.isdir(source)):
+        return notes
+
+    wanted = values.get('NUM_PATCHES')
+    if wanted and wanted.isdigit():
+        # Capped so this stays instant on a tree with a million commits.
+        have = _git_line(['rev-list', '--count', '-n', str(int(wanted) + 1),
+                          'HEAD'], cwd=source)
+        if have and have.isdigit() and int(have) < int(wanted):
+            notes.append(
+                'NUM_PATCHES is %s but the current branch has only %s commit(s).'
+                % (wanted, have))
+
+    # --untracked-files=no keeps this off the slow path: enumerating untracked
+    # files in an object directory takes seconds and tells us nothing here.
+    dirty = _git_line(['status', '--porcelain', '--untracked-files=no'],
+                      cwd=source)
+    if dirty:
+        notes.append(
+            'The kernel tree has uncommitted changes; patches are generated '
+            'from commits, so those edits will not be included.')
+
+    branch = _git_line(['rev-parse', '--abbrev-ref', 'HEAD'], cwd=source)
+    if branch == 'HEAD':
+        notes.append(
+            'The kernel tree has a detached HEAD; check out a branch before '
+            'generating patches.')
+
+    return notes
 
 
 def redact(config):

@@ -208,8 +208,14 @@ class TestConfigFile(unittest.TestCase):
             os.makedirs(os.path.join(self.root, distro))
         self.workspace = Workspace(self.root)
 
+        # A plausible kernel tree, not just a directory with a .git in it:
+        # the path check looks for a top-level Makefile carrying VERSION and
+        # PATCHLEVEL, because pointing this at the wrong repository used to
+        # be accepted here and fail much later during the build.
         self.src = os.path.join(self.root, 'linux')
         os.makedirs(os.path.join(self.src, '.git'))
+        with open(os.path.join(self.src, 'Makefile'), 'w') as fh:
+            fh.write('VERSION = 6\nPATCHLEVEL = 12\nSUBLEVEL = 0\n')
 
     def tearDown(self):
         self.tmp.cleanup()

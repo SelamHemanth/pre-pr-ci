@@ -29,6 +29,7 @@ import argparse
 import logging
 import os
 import sys
+import threading
 
 from flask import Flask, jsonify, request, send_file, send_from_directory
 from flask_sock import Sock
@@ -40,6 +41,7 @@ if WEB_DIR not in sys.path:
 
 from prci import registry                                    # noqa: E402
 from prci import repo                                        # noqa: E402
+from prci import submodules                                  # noqa: E402
 from prci import system                                      # noqa: E402
 from prci.distro import ConfigError, Workspace, redact        # noqa: E402
 from prci.jobs import JobStore                                # noqa: E402
@@ -125,6 +127,7 @@ def api_status():
         'active_jobs': store.active(),
         'terminal_alive': terminal.alive,
         'mirror_present': os.path.isdir(TORVALDS_REPO),
+        'submodules': submodules.status(PROJECT_ROOT),
     })
 
 
@@ -194,11 +197,11 @@ def api_config_post():
             flags[key] = 'yes' if key in selected else 'no'
 
     try:
-        workspace.write_config(distro, values, flags, TORVALDS_REPO)
+        notes = workspace.write_config(distro, values, flags, TORVALDS_REPO)
     except ConfigError as exc:
         return jsonify({'success': False, 'errors': exc.errors}), 400
 
-    return jsonify({'success': True, 'distro': distro})
+    return jsonify({'success': True, 'distro': distro, 'warnings': notes})
 
 
 # ── tests ─────────────────────────────────────────────────────────────────
@@ -295,6 +298,19 @@ def api_mirror_sync():
          'from prci import repo; '
          'sys.exit(0 if repo.sync(%r) else 1)' % (WEB_DIR, TORVALDS_REPO)],
         'sync mainline mirror')
+    return jsonify({'success': True, 'job': job})
+
+
+@app.route('/api/submodules/sync', methods=['POST'])
+def api_submodules_sync():
+    job = store.submit(
+        'submodules',
+        [sys.executable, '-c',
+         'import sys; sys.path.insert(0, %r); '
+         'from prci import submodules; '
+         'sys.exit(0 if submodules.sync(%r) else 1)'
+         % (WEB_DIR, PROJECT_ROOT)],
+        'sync sub-repositories')
     return jsonify({'success': True, 'job': job})
 
 
@@ -425,6 +441,9 @@ def main():
     parser.add_argument('--port', type=int, default=5000)
     parser.add_argument('--no-mirror-sync', action='store_true',
                         help='do not update the mainline mirror on startup')
+    parser.add_argument('--no-submodule-sync', action='store_true',
+                        help='do not check out missing sub-repositories on '
+                             'start; check_kapi and rpm_build need them')
     parser.add_argument('--verbose', action='store_true')
     args = parser.parse_args()
 
@@ -445,6 +464,14 @@ def main():
         print('             shell as %s -- keep this on a trusted network'
               % (os.environ.get('USER') or 'this account'))
     print()
+
+    # Small enough to do unattended, unlike the multi-GB mainline clone, and
+    # without it the first check_kapi run fails on an empty directory.
+    absent = submodules.missing(PROJECT_ROOT)
+    if absent and not args.no_submodule_sync:
+        print('  sub-repos  fetching %s in the background' % ', '.join(absent))
+        threading.Thread(target=submodules.sync, args=(PROJECT_ROOT,),
+                         daemon=True).start()
 
     if not args.no_mirror_sync and os.path.isdir(TORVALDS_REPO):
         # Only refresh an existing mirror; cloning several GB is not something
