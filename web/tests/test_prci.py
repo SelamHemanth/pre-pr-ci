@@ -43,6 +43,11 @@ def read_script(distro):
         return f.read()
 
 
+def read_file(*parts):
+    with open(os.path.join(PROJECT_ROOT, *parts), errors='replace') as f:
+        return f.read()
+
+
 class TestRegistryMatchesScripts(unittest.TestCase):
     """registry.py has to agree with the scripts it drives."""
 
@@ -114,6 +119,38 @@ class TestRegistryMatchesScripts(unittest.TestCase):
                     if field['name'] in registry.SECRET_KEYS:
                         self.assertTrue(field['secret'], field['name'])
                         self.assertIsNone(field['default'])
+
+
+    def test_pipeline_dispatches_real_test_names(self):
+        """A typo here silently skips the test instead of failing."""
+        pipeline = read_file('jenkins', 'jenkins_pipeline.groovy')
+        # "make anolis-test=check_kconfig" / "make euler-test=..."
+        for distro in registry.DISTROS:
+            dispatched = set(re.findall(
+                r'make %s-test=([A-Za-z0-9_]+)' % re.escape(distro),
+                pipeline))
+            known = {t.name for t in registry.tests_for(distro)}
+            self.assertFalse(
+                dispatched - known,
+                'jenkins_pipeline.groovy runs %s tests that do not exist: %s'
+                % (distro, ', '.join(sorted(dispatched - known))))
+
+    def test_documented_test_names_exist(self):
+        """The docs are what people copy into a command line."""
+        doc = read_file('DOCUMENT.md')
+        # The two per-distro tables list one test per row: "| name | ... |"
+        rows = re.findall(r'^\s*\|\s*([a-z][a-z0-9_]{4,})\s*\|', doc, re.M)
+        every = set()
+        for distro in registry.DISTROS:
+            every |= {t.name for t in registry.tests_for(distro)}
+        # Only judge rows that look like test names, not the API table.
+        suspect = {r for r in rows
+                   if (r.startswith(('check_', 'build_', 'boot_'))
+                       or r.endswith('_build'))}
+        self.assertFalse(
+            suspect - every,
+            'DOCUMENT.md documents tests that do not exist: %s'
+            % ', '.join(sorted(suspect - every)))
 
 
 class TestConfigFile(unittest.TestCase):

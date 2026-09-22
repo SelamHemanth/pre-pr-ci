@@ -46,27 +46,38 @@ sudo yum install -y sshpass
 
 For Web Interface:
 ```bash
-pip3 install Flask Flask-CORS Werkzeug --user
+pip3 install --user -r web/requirements.txt
 ```
+
+Flask and flask-sock, nothing else.  Flask-CORS is no longer used: the
+interface is served by the same process that serves the API, so there is no
+cross-origin request to allow, and the old wide-open CORS policy let any page
+you happened to visit drive this server.
 
 ### Getting Started
 
 #### Command Line Interface
 
 ```bash
-git clone https://github.com/SelamHemanth/pre-pr-ci.git
+# kabi-dw, kabi-whitelist and the openEuler kernel spec are submodules;
+# check_kapi, check_kabi and rpm_build need them.
+git clone --recurse-submodules https://github.com/SelamHemanth/pre-pr-ci.git
 cd pre-pr-ci
 
-make config # Run config wizard
-make build # Build/test patches
-make test # Execute all tests
+# If you already cloned without --recurse-submodules:
+git submodule update --init --recursive
+
+make config      # Run the config wizard
+make build       # Generate and apply patches, then build
+make test        # Run every enabled test
+make list-tests  # See what is available for this distro
 ```
 
 #### Web Interface
 
 ```bash
-cd pre-pr-ci/web
-./start.sh
+cd pre-pr-ci
+python3 web/server.py
 # Access at: http://your-server-ip:5000
 ```
 
@@ -99,11 +110,11 @@ cd pre-pr-ci/web
      | Test                        | Description                  | Purpose                                    |
      |-----------------------------|------------------------------|--------------------------------------------|
      | check_dependency            | Verify required dependencies | Ensures all bug-fix commits are backported |
-     | check_Kconfig               | Validate Kconfig settings    | Ensures config validity                    |
+     | check_kconfig               | Validate Kconfig settings    | Ensures config validity                    |
      | build_allyes_config         | Build with allyesconfig      | Compile w/ all enabled options             |
      | build_allno_config          | Build with allnoconfig       | Minimal kernel build                       |
      | build_anolis_defconfig      | Build with anolis_defconfig  | Production default config                  |
-     | build_anolis_debug_defconfig| Build with debug config      | Enable debugging features                  |
+     | build_anolis_debug          | Build with debug config      | Enable debugging features                  |
      | anck_rpm_build              | Build ANCK RPM packages      | RPMs for installation                      |
      | check_kapi                  | Check KAPI compatibility     | ABI compatibility checks                   |
      | boot_kernel_rpm             | Automated VM boot test       | Install, boot, and verify kernel on VM     |
@@ -115,8 +126,10 @@ cd pre-pr-ci/web
 
    **Host Configuration:**
    - Host sudo password (for installing build dependencies)
-   - Stored securely for unattended testing
    - Used for: package installation, yum-builddep
+   - Written in cleartext to `<distro>/.configure`, mode 0600.  That file is
+     readable by root and by anyone who can run as your user; treat it the way
+     you would treat an SSH private key, and prefer a throwaway VM password.
 
    **VM Configuration** (when boot test enabled):
    - VM IP address (bridge or local network)
@@ -149,8 +162,10 @@ cd pre-pr-ci/web
 
    **Host Configuration:**
    - Host sudo password (for installing build dependencies)
-   - Stored securely for unattended testing
    - Used for: package installation, yum-builddep
+   - Written in cleartext to `<distro>/.configure`, mode 0600.  That file is
+     readable by root and by anyone who can run as your user; treat it the way
+     you would treat an SSH private key, and prefer a throwaway VM password.
 
    **VM Configuration** (when boot test enabled):
    - VM IP address (bridge or local network)
@@ -231,52 +246,73 @@ The web interface provides a modern, graphical dashboard for interacting with th
 - **Configuration Storage:** Direct integration with .configure files
 - **Make Integration:** Executes make commands in project root
 
-#### Frontend (Vue.js)
-- **Single Page Application:** No page reloads
-- **Reactive Updates:** Auto-refresh every 2 seconds
-- **Modern UI:** Purple gradient design with Font Awesome icons
-- **Responsive:** Works on desktop and mobile devices
-- **Modal System:** Popups for configuration, logs, and confirmations
+#### Frontend (Vue 3)
+- **Single page, no build step:** one HTML file, no npm, no bundler
+- **No network dependencies:** Vue and xterm.js are served from
+  `web/static/vendor/`, so the interface works on an isolated build machine
+- **Reactive updates:** status and job list every 2s, log tail every 1s,
+  all paused while the browser tab is hidden
+- **Light and dark themes**, remembered in `localStorage`
+- **Job history** that survives both a page reload and a server restart
+- **Incremental log streaming:** only the bytes added since the last poll
+- **Embedded terminal** (xterm.js over a WebSocket) sharing one shell
+  between every connected browser
 
 ### API Endpoints
 
 | Endpoint                | Method | Description                    |
 |-------------------------|--------|--------------------------------|
-| `/api/status`           | GET    | System configuration status    |
-| `/api/config/fields`    | GET    | Get form fields for distro     |
-| `/api/config`           | GET    | Retrieve current configuration |
-| `/api/config`           | POST   | Save configuration             |
-| `/api/tests`            | GET    | List available tests           |
-| `/api/build`            | POST   | Run build operation            |
-| `/api/test/all`         | POST   | Run all tests                  |
-| `/api/test/<name>`      | POST   | Run specific test              |
-| `/api/clean`            | POST   | Clean artifacts                |
-| `/api/reset`            | POST   | Reset git repository           |
-| `/api/jobs`             | GET    | List all jobs                  |
-| `/api/jobs/<id>`        | GET    | Get job details                |
-| `/api/jobs/<id>/log`    | GET    | Get job log output             |
+| `/api/status`                | GET    | Configuration and mirror state, active jobs |
+| `/api/system`                | GET    | Host facts: load, memory, free disk         |
+| `/api/config/fields`         | GET    | Form definition for the selected distro     |
+| `/api/config`                | GET    | Current configuration, secrets redacted     |
+| `/api/config`                | POST   | Validate and save configuration             |
+| `/api/tests`                 | GET    | Available tests and which are enabled       |
+| `/api/build`                 | POST   | Queue a build                               |
+| `/api/test`                  | POST   | Queue every enabled test                    |
+| `/api/test/<name>`           | POST   | Queue one test, name checked against registry |
+| `/api/clean`                 | POST   | Remove logs and outputs                     |
+| `/api/reset`                 | POST   | Reset the kernel tree to the saved HEAD     |
+| `/api/mirror/sync`           | POST   | Queue a fetch of the mainline mirror        |
+| `/api/jobs`                  | GET    | Job history, newest first                   |
+| `/api/jobs/<id>`             | GET    | One job, with progress and results          |
+| `/api/jobs/<id>/log`         | GET    | Log bytes from `?offset=`, ANSI stripped    |
+| `/api/jobs/<id>/log/download`| GET    | Whole log as a file                         |
+| `/api/jobs/<id>/kill`        | POST   | Cancel if queued, SIGTERM then SIGKILL if running |
+| `/api/jobs/clear`            | POST   | Drop finished jobs from the history         |
+| `/api/terminal/status`       | GET    | Whether the shared shell is alive           |
+| `/ws/terminal`               | WS     | Shared terminal: input, output, resize      |
+
+Requests are queued and run one at a time, because they all drive the same
+kernel tree.  A POST returns immediately with the job id; poll
+`/api/jobs/<id>` for the outcome.  `/api/test/<name>` rejects any name not in
+`web/prci/registry.py` rather than passing it to a shell.
 
 ### Installation
 
+The files are already in place in the repository; only the two Python
+dependencies need installing.
+
 ```bash
-# Create web directory structure
-mkdir -p web/templates
+pip3 install --user -r web/requirements.txt
 
-# Copy files
-cp server.py web/
-cp start.sh web/
-cp requirements.txt web/
-cp index.html web/templates/
+# Listens on 0.0.0.0:5000 by default
+python3 web/server.py
 
-# Make launcher executable
-chmod +x web/start.sh
+# Or pick the interface and port
+python3 web/server.py --host 127.0.0.1 --port 8080
+```
 
-# Install dependencies
-pip3 install -r web/requirements.txt --user
+To keep it running across reboots, `sudo ./service.sh install` writes a
+systemd unit for it.
 
-# Start server
-cd web
-./start.sh
+The server binds every interface and has **no authentication**, and its
+terminal tab is a root-capable shell on the build machine to whoever opens
+the page.  Run it on a trusted network, or bind it to `127.0.0.1` and reach
+it over an SSH tunnel:
+
+```bash
+ssh -L 5000:127.0.0.1:5000 you@buildhost
 ```
 
 ### Usage

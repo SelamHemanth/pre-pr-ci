@@ -26,11 +26,18 @@ echo ""
 # Change to project root
 cd "$PROJECT_ROOT"
 
-# Start server
+if ! python3 -c 'import flask, flask_sock' 2>/dev/null; then
+	echo "Missing Python dependencies. Install them with:"
+	echo "  pip3 install --user -r $WEB_DIR/requirements.txt"
+	exit 1
+fi
+
+# Start server.  Arguments are forwarded, so "./start.sh --host 127.0.0.1"
+# works for keeping the server off the network.
 echo "Starting web server..."
 echo "Access at: http://$(hostname -I | awk '{print $1}'):5000"
 echo ""
 echo "Press Ctrl+C to stop"
 echo ""
 
-python3 "$WEB_DIR/server.py"
+exec python3 "$WEB_DIR/server.py" "$@"
