@@ -46,8 +46,21 @@
     --code-bg:     #12161f;
     --code-text:   #dfe5ef;
     --shadow:      0 1px 2px rgba(16,24,40,.06), 0 4px 12px rgba(16,24,40,.06);
+    --shadow-lift: 0 2px 4px rgba(16,24,40,.07), 0 10px 24px rgba(16,24,40,.10);
     --radius:      10px;
     --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+
+    /* Motion. Durations stay short: this is a build console, and waiting on
+       an animation to find out whether a test failed would be worse than no
+       animation at all.  Every value here collapses to 0 further down when
+       the reader has asked for reduced motion. */
+    --t-fast:  .12s;
+    --t-base:  .2s;
+    --t-slow:  .32s;
+    /* Decelerating, for things entering the screen. */
+    --ease-out:    cubic-bezier(.16, .84, .44, 1);
+    /* Slight overshoot, for controls that should feel physical. */
+    --ease-spring: cubic-bezier(.34, 1.56, .64, 1);
 }
 [data-theme="dark"] {
     --bg:          #0e1117;
@@ -70,6 +83,7 @@
     --code-bg:     #0a0d13;
     --code-text:   #dfe5ef;
     --shadow:      0 1px 2px rgba(0,0,0,.3), 0 8px 24px rgba(0,0,0,.25);
+    --shadow-lift: 0 2px 6px rgba(0,0,0,.4), 0 14px 32px rgba(0,0,0,.35);
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -84,7 +98,14 @@ body {
 }
 
 /* Colour changes should not animate the whole document on load. */
-body, .card, .btn, .test-row, .job-row { transition: background-color .15s, border-color .15s, color .15s; }
+body { transition: background-color var(--t-base), color var(--t-base); }
+/* Controls need transform and box-shadow in the list too, or the hover lift
+   and press both snap instead of moving. */
+.card, .btn, .icon-btn {
+    transition: background-color var(--t-fast), border-color var(--t-fast),
+                color var(--t-fast), box-shadow var(--t-base),
+                transform var(--t-fast) var(--ease-out), filter var(--t-fast);
+}
 
 .icon { width: 1em; height: 1em; fill: currentColor; flex: none; vertical-align: -.125em; }
 
@@ -117,6 +138,11 @@ header {
     cursor: pointer; font-size: 15px;
 }
 .icon-btn:hover { background: var(--surface-2); color: var(--text); }
+.icon-btn:active { transform: scale(.92); transition-duration: .05s; }
+/* The sun/moon glyph swaps on click; spinning it makes the swap read as one
+   action rather than a flicker. */
+.theme-btn .icon { transition: transform var(--t-slow) var(--ease-spring); }
+.theme-btn:hover .icon { transform: rotate(35deg); }
 
 /* ── layout ─────────────────────────────────────────────────────────── */
 
@@ -130,7 +156,15 @@ header {
     box-shadow: var(--shadow);
     margin-bottom: 16px;
     overflow: hidden;
+    /* Cards arrive on first paint, staggered by --i (set inline) so the page
+       assembles top-down instead of appearing all at once. */
+    animation: card-in var(--t-slow) var(--ease-out) backwards;
+    animation-delay: calc(var(--i, 0) * 45ms);
 }
+@keyframes card-in {
+    from { opacity: 0; transform: translateY(10px); }
+}
+.card:hover { box-shadow: var(--shadow-lift); }
 .card-head {
     display: flex; align-items: center; gap: 8px;
     padding: 12px 16px;
@@ -153,13 +187,26 @@ header {
     font: inherit; font-weight: 550; font-size: 13px;
     cursor: pointer; white-space: nowrap;
 }
-.btn:hover:not(:disabled) { background: var(--surface-2); }
-.btn:disabled { opacity: .5; cursor: not-allowed; }
+.btn:hover:not(:disabled) { background: var(--surface-2); transform: translateY(-1px); }
+/* Press has to read as instant, so it overrides the hover lift and uses the
+   shortest duration we have. */
+.btn:active:not(:disabled) { transform: translateY(0) scale(.97); transition-duration: .05s; }
+.btn:disabled { opacity: .5; cursor: not-allowed; transform: none; }
 .btn-block { width: 100%; }
 .btn-primary { background: var(--accent); border-color: var(--accent); color: #fff; }
-.btn-primary:hover:not(:disabled) { filter: brightness(1.08); background: var(--accent); }
+.btn-primary:hover:not(:disabled) {
+    filter: brightness(1.08); background: var(--accent);
+    box-shadow: 0 4px 14px -2px color-mix(in srgb, var(--accent) 55%, transparent);
+}
 .btn-danger { color: var(--fail); border-color: var(--fail); background: transparent; }
 .btn-danger:hover:not(:disabled) { background: var(--fail-soft); }
+
+/* Keyboard focus gets the same ring the inputs use.  :focus-visible rather
+   than :focus so a mouse click does not leave a ring behind. */
+.btn:focus-visible, .icon-btn:focus-visible, .tab:focus-visible, .switch input:focus-visible + span {
+    outline: none;
+    box-shadow: 0 0 0 3px var(--accent-soft), 0 0 0 4px var(--accent);
+}
 .btn-sm { padding: 5px 10px; font-size: 12px; }
 .btn-row { display: flex; gap: 8px; }
 .btn-row > .btn { flex: 1; }
@@ -169,6 +216,15 @@ header {
     padding: 2px 8px; border-radius: 999px;
     font-size: 11px; font-weight: 650;
     text-transform: uppercase; letter-spacing: .03em;
+    transition: background var(--t-base), color var(--t-base);
+}
+/* A verdict appearing is the thing you are waiting for, so it pops rather
+   than fading in.  Keyed on the verdict in the template, so it replays when
+   PASS becomes FAIL. */
+.badge-pass, .badge-fail, .badge-skip { animation: badge-pop var(--t-slow) var(--ease-spring); }
+@keyframes badge-pop {
+    from { opacity: 0; transform: scale(.7); }
+    to   { opacity: 1; transform: scale(1); }
 }
 .badge-pass    { background: var(--pass-soft); color: var(--pass); }
 .badge-fail    { background: var(--fail-soft); color: var(--fail); }
@@ -189,9 +245,22 @@ header {
 .status-value { font-weight: 550; font-size: 13px; }
 
 .progress { height: 5px; border-radius: 999px; background: var(--surface-2); overflow: hidden; }
-.progress > span { display: block; height: 100%; background: var(--accent); border-radius: 999px; transition: width .3s; }
-.progress.indet > span { width: 35%; animation: slide 1.3s ease-in-out infinite; }
+.progress > span {
+    display: block; height: 100%; border-radius: 999px;
+    /* Moving stripes over the fill: the bar only advances when a test
+       reports a verdict, which for a kernel build can be many minutes, and
+       a bar that never moves looks like a hung page. */
+    background-image: linear-gradient(90deg,
+        var(--accent) 0%, color-mix(in srgb, var(--accent) 65%, #fff) 50%, var(--accent) 100%);
+    background-size: 200% 100%;
+    animation: sheen 1.8s linear infinite;
+    transition: width var(--t-slow) var(--ease-out);
+}
+@keyframes sheen { to { background-position: -200% 0; } }
+.progress.indet > span { width: 35%; animation: slide 1.3s ease-in-out infinite, sheen 1.8s linear infinite; }
 @keyframes slide { 0% { margin-left: -35%; } 100% { margin-left: 100%; } }
+
+.meter > span { transition: width var(--t-slow) var(--ease-out), background var(--t-base); }
 
 .meter { height: 5px; border-radius: 999px; background: var(--surface-2); overflow: hidden; }
 .meter > span { display: block; height: 100%; border-radius: 999px; background: var(--accent); }
@@ -212,18 +281,32 @@ header {
 
 .tabs { display: flex; gap: 2px; padding: 0 8px; border-bottom: 1px solid var(--border); background: var(--surface); }
 .tab {
+    position: relative;
     display: flex; align-items: center; gap: 7px;
     padding: 12px 14px; border: none; background: none;
     color: var(--text-dim); font: inherit; font-weight: 550; font-size: 13px;
-    cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px;
+    cursor: pointer; margin-bottom: -1px;
+    transition: color var(--t-fast);
+}
+/* The underline is a pseudo-element that grows out of the centre, rather
+   than a border colour that blinks between tabs. */
+.tab::after {
+    content: ""; position: absolute; left: 8px; right: 8px; bottom: 0; height: 2px;
+    background: var(--accent); border-radius: 2px 2px 0 0;
+    transform: scaleX(0); transform-origin: center;
+    transition: transform var(--t-base) var(--ease-out);
 }
 .tab:hover { color: var(--text); }
-.tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+.tab:hover::after { transform: scaleX(.4); opacity: .4; }
+.tab.active { color: var(--accent); }
+.tab.active::after { transform: scaleX(1); opacity: 1; }
 .tab .count {
     padding: 1px 6px; border-radius: 999px;
     background: var(--surface-2); color: var(--text-dim);
     font-size: 11px; font-weight: 650;
+    transition: background var(--t-fast), color var(--t-fast);
 }
+.tab.active .count { background: var(--accent-soft); color: var(--accent); }
 
 /* ── test list ──────────────────────────────────────────────────────── */
 
@@ -231,10 +314,39 @@ header {
     display: flex; align-items: center; gap: 12px;
     padding: 11px 16px;
     border-bottom: 1px solid var(--border);
+    /* A row's own left edge lights up on hover, which makes it clear which
+       row a Run button belongs to in a long list. */
+    box-shadow: inset 2px 0 0 transparent;
+    transition: background var(--t-fast), box-shadow var(--t-fast);
 }
 .test-row:last-child, .job-row:last-child { border-bottom: none; }
-.test-row:hover, .job-row:hover { background: var(--surface-2); }
+.test-row:hover, .job-row:hover {
+    background: var(--surface-2);
+    box-shadow: inset 2px 0 0 var(--accent);
+}
 .test-row.off { opacity: .45; }
+.test-row.off:hover { opacity: .7; }
+
+/* Rows fade in staggered when a list first appears. */
+.test-row, .job-row { animation: row-in var(--t-base) var(--ease-out) backwards; animation-delay: calc(var(--i, 0) * 22ms); }
+@keyframes row-in { from { opacity: 0; transform: translateX(-6px); } }
+
+/* A running job is marked by a steady tint plus a travelling accent on its
+   left edge.  Deliberately not a pulsing background: a kernel build holds
+   this state for twenty minutes, and anything that flashes the whole row
+   for that long stops being information and becomes an irritation. */
+.job-row.live { background: var(--accent-soft); position: relative; }
+.job-row.live::before {
+    content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 2px;
+    background: linear-gradient(to bottom,
+        transparent, var(--accent) 45%, var(--accent) 55%, transparent);
+    background-size: 100% 220%;
+    animation: edge-travel 2.4s ease-in-out infinite;
+}
+@keyframes edge-travel {
+    0%, 100% { background-position: 0 -60%; }
+    50%      { background-position: 0 160%; }
+}
 
 .test-main { min-width: 0; flex: 1; }
 .test-name { font-family: var(--mono); font-size: 12.5px; font-weight: 550; }
@@ -258,12 +370,16 @@ header {
 .switch input { opacity: 0; width: 0; height: 0; }
 .switch span {
     position: absolute; inset: 0; cursor: pointer;
-    background: var(--border); border-radius: 999px; transition: background .15s;
+    background: var(--border); border-radius: 999px;
+    transition: background var(--t-base), box-shadow var(--t-fast);
 }
 .switch span::before {
     content: ""; position: absolute; height: 14px; width: 14px; left: 3px; top: 3px;
-    background: #fff; border-radius: 50%; transition: transform .15s;
+    background: #fff; border-radius: 50%;
+    /* Overshoots slightly, so the knob feels thrown rather than dragged. */
+    transition: transform var(--t-base) var(--ease-spring);
 }
+.switch:active span::before { width: 16px; }
 .switch input:checked + span { background: var(--accent); }
 .switch input:checked + span::before { transform: translateX(16px); }
 
@@ -380,9 +496,10 @@ header {
     background: var(--surface);
     border: 1px solid var(--border); border-left: 3px solid var(--text-dim);
     border-radius: 10px; box-shadow: var(--shadow);
-    animation: rise .18s ease-out;
+    /* Entrance is handled by the toast-* transition classes, not a bare
+       animation, so that dismissal can collapse the stack as well. */
 }
-@keyframes rise { from { opacity: 0; transform: translateY(8px); } }
+.toast:hover { box-shadow: var(--shadow-lift); }
 .toast.ok   { border-left-color: var(--pass); }
 .toast.bad  { border-left-color: var(--fail); }
 .toast.warn { border-left-color: var(--warn); }
@@ -413,6 +530,70 @@ footer a:hover { text-decoration: underline; }
 [v-cloak] { display: none; }
 .spin { animation: spin 1s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
+
+/* ── vue transitions ────────────────────────────────────────────────── */
+
+/* Modals: the backdrop fades while the dialog rises and scales, so it reads
+   as coming forward rather than being pasted on. */
+.modal-enter-active, .modal-leave-active { transition: opacity var(--t-base) var(--ease-out); }
+.modal-enter-from, .modal-leave-to { opacity: 0; }
+.modal-enter-active .modal, .modal-leave-active .modal {
+    transition: transform var(--t-base) var(--ease-out), opacity var(--t-base);
+}
+.modal-enter-from .modal, .modal-leave-to .modal { opacity: 0; transform: translateY(12px) scale(.97); }
+
+/* The log panel is a bottom sheet, so it slides from the edge it lives on. */
+.sheet-enter-active, .sheet-leave-active { transition: transform var(--t-slow) var(--ease-out), opacity var(--t-base); }
+.sheet-enter-from, .sheet-leave-to { transform: translateY(100%); opacity: .4; }
+
+/* Toasts come in from the right edge; on leave they also collapse their own
+   height so the stack closes up instead of jumping. */
+.toast-enter-active { transition: opacity var(--t-base), transform var(--t-base) var(--ease-spring); }
+.toast-leave-active { transition: opacity var(--t-fast), transform var(--t-fast), margin-bottom var(--t-base) var(--ease-out); position: absolute; right: 0; bottom: 0; }
+.toast-enter-from { opacity: 0; transform: translateX(24px) scale(.96); }
+.toast-leave-to   { opacity: 0; transform: translateX(24px); }
+.toast-move { transition: transform var(--t-base) var(--ease-out); }
+
+/* List rows: a new job slides in at the top, a cleared one fades out, and
+   the survivors glide to their new position rather than snapping. */
+.row-enter-active { transition: opacity var(--t-base), transform var(--t-base) var(--ease-out); }
+.row-leave-active { transition: opacity var(--t-fast), transform var(--t-fast); position: absolute; width: 100%; }
+.row-enter-from { opacity: 0; transform: translateY(-8px); }
+.row-leave-to   { opacity: 0; transform: translateX(16px); }
+.row-move { transition: transform var(--t-slow) var(--ease-out); }
+/* transition-group needs a positioned parent for the absolute leave state. */
+.row-host { position: relative; }
+
+/* Tab panels animate in only.  Leaving is instant: with three panels in
+   normal flow, an outgoing one would push the incoming one around. */
+.panel-enter-active { animation: panel-in var(--t-base) var(--ease-out); }
+@keyframes panel-in { from { opacity: 0; transform: translateY(6px); } }
+
+/* Generic fade for small conditional bits. */
+.fade-enter-active, .fade-leave-active { transition: opacity var(--t-base); }
+.fade-enter-from, .fade-leave-to { opacity: 0; }
+
+/* ── reduced motion ─────────────────────────────────────────────────── */
+
+/* Anyone who has asked their system to reduce motion gets none of the
+   above.  Hover and focus states still change colour, so nothing becomes
+   unusable; only movement is dropped.  The spinner keeps turning because it
+   is the only thing telling you a request is still in flight, but slowly. */
+@media (prefers-reduced-motion: reduce) {
+    :root { --t-fast: 0s; --t-base: 0s; --t-slow: 0s; }
+    *, *::before, *::after {
+        animation-duration: .01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: .01ms !important;
+        scroll-behavior: auto !important;
+    }
+    .spin { animation: spin 2.4s linear infinite !important; animation-duration: 2.4s !important; }
+    .btn:hover:not(:disabled), .btn:active:not(:disabled),
+    .icon-btn:active, .theme-btn:hover .icon { transform: none; }
+    .progress > span { background-image: none; background: var(--accent); }
+    .tab::after { transform: scaleX(1); }
+    .tab:not(.active)::after { transform: scaleX(0); }
+}
 </style>
 </head>
 <body>
@@ -470,7 +651,7 @@ footer a:hover { text-decoration: underline; }
       </div>
     </div>
 
-    <button class="icon-btn" @click="toggleTheme"
+    <button class="icon-btn theme-btn" @click="toggleTheme"
             :title="theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'">
       <svg class="icon"><use :href="theme === 'dark' ? '#i-sun' : '#i-moon'"/></svg>
     </button>
@@ -480,7 +661,7 @@ footer a:hover { text-decoration: underline; }
 
     <!-- ── left rail ───────────────────────────────────────────────── -->
     <div>
-      <div class="card">
+      <div class="card" style="--i:0">
         <div class="card-head"><svg class="icon"><use href="#i-info"/></svg> Status</div>
         <div class="card-body">
           <div class="status-line">
@@ -501,10 +682,12 @@ footer a:hover { text-decoration: underline; }
           </div>
 
           <div v-if="activeJobs.length">
-            <div class="status-line" v-for="j in activeJobs" :key="j.id">
-              <span class="status-label" style="font-family:var(--mono)">{{ j.command }}</span>
-              <span class="badge badge-run"><i class="dot pulse"></i>{{ j.status }}</span>
-            </div>
+            <transition-group name="row" tag="div" class="row-host">
+              <div class="status-line" v-for="j in activeJobs" :key="j.id">
+                <span class="status-label" style="font-family:var(--mono)">{{ j.command }}</span>
+                <span class="badge badge-run"><i class="dot pulse"></i>{{ j.status }}</span>
+              </div>
+            </transition-group>
             <div class="progress" :class="{ indet: runningJob && runningJob.progress === null }"
                  v-if="runningJob" style="margin-top:10px">
               <span :style="{ width: (runningJob.progress || 0) + '%' }"></span>
@@ -518,7 +701,7 @@ footer a:hover { text-decoration: underline; }
         </div>
       </div>
 
-      <div class="card">
+      <div class="card" style="--i:1">
         <div class="card-head"><svg class="icon"><use href="#i-hammer"/></svg> Run</div>
         <div class="card-body">
           <button class="btn btn-primary btn-block" @click="start('/api/build', 'build')"
@@ -536,7 +719,7 @@ footer a:hover { text-decoration: underline; }
         </div>
       </div>
 
-      <div class="card">
+      <div class="card" style="--i:2">
         <div class="card-head"><svg class="icon"><use href="#i-broom"/></svg> Maintenance</div>
         <div class="card-body">
           <div class="btn-row">
@@ -558,7 +741,7 @@ footer a:hover { text-decoration: underline; }
         </div>
       </div>
 
-      <div class="card" v-if="configRows.length">
+      <div class="card" style="--i:3" v-if="configRows.length">
         <div class="card-head"><svg class="icon"><use href="#i-list"/></svg> Configuration</div>
         <div class="card-body">
           <dl class="kv">
@@ -573,7 +756,7 @@ footer a:hover { text-decoration: underline; }
 
     <!-- ── main column ─────────────────────────────────────────────── -->
     <div>
-      <div class="card" style="margin-bottom:0">
+      <div class="card" style="margin-bottom:0;--i:1">
         <div class="tabs">
           <button class="tab" :class="{ active: tab === 'tests' }" @click="tab = 'tests'">
             <svg class="icon"><use href="#i-flask"/></svg> Tests
@@ -589,6 +772,7 @@ footer a:hover { text-decoration: underline; }
         </div>
 
         <!-- tests -->
+        <transition name="panel">
         <div v-show="tab === 'tests'">
           <div class="empty" v-if="!status.configured">
             <svg class="icon"><use href="#i-cog"/></svg>
@@ -598,7 +782,8 @@ footer a:hover { text-decoration: underline; }
             <svg class="icon"><use href="#i-flask"/></svg> No tests registered.
           </div>
           <div v-else>
-            <div class="test-row" v-for="t in tests" :key="t.name" :class="{ off: !t.enabled }">
+            <div class="test-row" v-for="(t, i) in tests" :key="t.name"
+                 :class="{ off: !t.enabled }" :style="{ '--i': i }">
               <div class="test-main">
                 <div class="test-name">{{ t.name }}</div>
                 <div class="test-desc">{{ t.description }}</div>
@@ -606,6 +791,7 @@ footer a:hover { text-decoration: underline; }
 
               <span v-if="!t.enabled" class="badge badge-neutral">disabled</span>
               <span v-else-if="t.last_result" class="badge"
+                    :key="t.last_result.verdict + t.last_result.job_id"
                     :class="'badge-' + t.last_result.verdict.toLowerCase()"
                     :title="'Last run ' + when(t.last_result.when)">
                 {{ t.last_result.verdict }}
@@ -622,8 +808,10 @@ footer a:hover { text-decoration: underline; }
             </div>
           </div>
         </div>
+        </transition>
 
         <!-- history -->
+        <transition name="panel">
         <div v-show="tab === 'jobs'">
           <div class="term-bar" v-if="jobs.length">
             <span>{{ jobs.length }} most recent</span>
@@ -640,8 +828,9 @@ footer a:hover { text-decoration: underline; }
           <div class="empty" v-if="!jobs.length">
             <svg class="icon"><use href="#i-list"/></svg> Nothing has been run yet.
           </div>
-          <div v-else>
-            <div class="job-row" v-for="j in jobs" :key="j.id">
+          <transition-group name="row" tag="div" class="row-host" v-else>
+            <div class="job-row" v-for="(j, i) in jobs" :key="j.id"
+                 :class="{ live: j.status === 'running' }" :style="{ '--i': i }">
               <span class="badge" :class="statusBadge(j.status)">
                 <i class="dot" :class="{ pulse: j.status === 'running' }"></i>{{ j.status }}
               </span>
@@ -669,10 +858,12 @@ footer a:hover { text-decoration: underline; }
                 <svg class="icon"><use href="#i-stop"/></svg>
               </button>
             </div>
-          </div>
+          </transition-group>
         </div>
+        </transition>
 
         <!-- terminal -->
+        <transition name="panel">
         <div v-show="tab === 'terminal'">
           <div class="term-bar">
             <span class="badge" :class="term.connected ? 'badge-pass' : 'badge-neutral'">
@@ -694,6 +885,7 @@ footer a:hover { text-decoration: underline; }
             <div class="term-host" ref="termHost"></div>
           </div>
         </div>
+        </transition>
       </div>
 
       <footer>
@@ -704,6 +896,7 @@ footer a:hover { text-decoration: underline; }
   </div>
 
   <!-- ── log panel ─────────────────────────────────────────────────── -->
+  <transition name="sheet">
   <div class="log-panel" v-if="logJob">
     <div class="log-head">
       <span class="badge" :class="statusBadge(logJob.status)">
@@ -736,8 +929,10 @@ footer a:hover { text-decoration: underline; }
       <span v-else class="ln-dim">Waiting for output...</span>
     </div>
   </div>
+  </transition>
 
   <!-- ── configuration modal ───────────────────────────────────────── -->
+  <transition name="modal">
   <div class="overlay" v-if="configOpen" @click.self="configOpen = false">
     <div class="modal">
       <div class="modal-head">
@@ -813,7 +1008,10 @@ footer a:hover { text-decoration: underline; }
     </div>
   </div>
 
+  </transition>
+
   <!-- ── confirmation ──────────────────────────────────────────────── -->
+  <transition name="modal">
   <div class="overlay" v-if="ask" @click.self="ask = null">
     <div class="modal narrow">
       <div class="modal-head">
@@ -828,8 +1026,10 @@ footer a:hover { text-decoration: underline; }
     </div>
   </div>
 
+  </transition>
+
   <!-- ── toasts ────────────────────────────────────────────────────── -->
-  <div class="toasts">
+  <transition-group name="toast" tag="div" class="toasts">
     <div class="toast" v-for="t in toasts" :key="t.id" :class="t.kind">
       <svg class="icon"><use :href="t.kind === 'ok' ? '#i-check' : (t.kind === 'bad' ? '#i-x' : '#i-warn')"/></svg>
       <div class="toast-text">
@@ -838,7 +1038,7 @@ footer a:hover { text-decoration: underline; }
       </div>
       <button class="icon-btn" @click="dismiss(t.id)"><svg class="icon"><use href="#i-x"/></svg></button>
     </div>
-  </div>
+  </transition-group>
 </div>
 
 <script>
