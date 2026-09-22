@@ -43,12 +43,9 @@ TEST_LOG="${LOGS_DIR}/test_results.log"
 export VM_IP
 
 # Colors
-GREEN='\033[0;32m'
-RED='\033[0;31m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-CYAN='\033[0;36m'
-NC='\033[0m'
+# Colours come from the shared helper, which leaves them empty when
+# output is not a terminal so redirected logs stay free of escapes.
+. "${SCRIPT_DIR}/../lib/log.sh"
 
 # shellcheck source=../lib/torvalds.sh
 . "${WORKDIR}/lib/torvalds.sh"
@@ -154,16 +151,21 @@ skip() {
 run_kernel_build() {
   local test_name="$1"
   local config_target="$2"
+  # The log stem defaults to the test name but can differ: the verdict has to
+  # be the name registry.py knows, while the log file keeps the name it has
+  # always had.
+  local log_stem="${3:-$test_name}"
+  local build_log="${LOGS_DIR}/${log_stem}.log"
   cd "${LINUX_SRC_PATH}"
 
   make clean > /dev/null 2>&1
   echo "  → Building kernel with ${config_target}..."
-  if make "${config_target}" > "${LOGS_DIR}/${test_name}.log" 2>&1 \
-    && make -j"${BUILD_THREADS}" >> "${LOGS_DIR}/${test_name}.log" 2>&1 \
-    && make modules -j"${BUILD_THREADS}" >> "${LOGS_DIR}/${test_name}.log" 2>&1; then
+  if make "${config_target}" > "${build_log}" 2>&1 \
+    && make -j"${BUILD_THREADS}" >> "${build_log}" 2>&1 \
+    && make modules -j"${BUILD_THREADS}" >> "${build_log}" 2>&1; then
     pass "${test_name}"
   else
-    fail "${test_name}" "Build failed (see ${LOGS_DIR}/${test_name}.log)"
+    fail "${test_name}" "Build failed (see ${build_log})"
   fi
   echo ""
 }
@@ -243,7 +245,7 @@ test_check_dependency() {
 test_check_kconfig() {
   echo -e "${BLUE}Test-2: check_Kconfig${NC}"
   cd "${LINUX_SRC_PATH}/anolis" 2>/dev/null || {
-    skip "check_Kconfig" "anolis/ directory not found"
+    skip "check_kconfig" "anolis/ directory not found"
     return
   }
 
@@ -289,9 +291,9 @@ test_check_kconfig() {
 
   # Report results based on check_status
   if [ $check_status -eq 0 ]; then
-    pass "check_Kconfig"
+    pass "check_kconfig"
   else
-    fail "check_Kconfig" "dist-configs-check failed (see ${LOGS_DIR}/check_Kconfig.log)"
+    fail "check_kconfig" "dist-configs-check failed (see ${LOGS_DIR}/check_Kconfig.log)"
   fi
   echo ""
 }
@@ -313,7 +315,8 @@ test_build_anolis_defconfig() {
 
 test_build_anolis_debug_defconfig() {
   echo -e "${BLUE}Test-6: build_anolis_debug_defconfig${NC}"
-  run_kernel_build "build_anolis_debug_defconfig" "anolis-debug_defconfig"
+  run_kernel_build "build_anolis_debug" "anolis-debug_defconfig" \
+                   "build_anolis_debug_defconfig"
 }
 
 test_anck_rpm_build() {

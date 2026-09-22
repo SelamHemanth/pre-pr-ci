@@ -38,11 +38,9 @@ LOGS_DIR="${WORKDIR}/logs"
 HEAD_ID_FILE="${WORKDIR}/.head_commit_id"
 
 # Colors
-GREEN='\033[0;32m'
-RED='\033[0;31m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-NC='\033[0m'
+# Colours come from the shared helper, which leaves them empty when
+# output is not a terminal so redirected logs stay free of escapes.
+. "${SCRIPT_DIR}/../lib/log.sh"
 : "${LINUX_SRC_PATH:?missing in config}"
 : "${SIGNER_NAME:?missing in config}"
 : "${SIGNER_EMAIL:?missing in config}"

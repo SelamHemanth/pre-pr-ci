@@ -61,16 +61,38 @@ class TestRegistryMatchesScripts(unittest.TestCase):
                     '%s/test.sh has no case label for %r'
                     % (distro, test.name))
 
+    def test_verdict_names_are_registry_names(self):
+        """A PASS:/FAIL: line has to name a test the interface knows.
+
+        The job log parser keys results off these names, so a verdict for
+        "check_Kconfig" when the registry says "check_kconfig" showed up as a
+        result belonging to no test, and the test itself never got a verdict.
+        """
+        for distro in registry.DISTROS:
+            script = read_script(distro)
+            known = {test.name for test in registry.tests_for(distro)}
+            reported = set(re.findall(r'(?m)^\s*(?:pass|fail|skip)\s+"([^"$]+)"',
+                                      script))
+            unknown = reported - known
+            self.assertFalse(
+                unknown,
+                '%s/test.sh reports verdicts for %s, which registry.py does '
+                'not list' % (distro, ', '.join(sorted(unknown))))
+
     def test_every_log_file_is_written(self):
         for distro in registry.DISTROS:
             script = read_script(distro)
             for test in registry.tests_for(distro):
                 stem = test.log[:-len('.log')]
                 # Either named outright, or produced by run_kernel_build,
-                # which writes "${LOGS_DIR}/${test_name}.log".
+                # which writes "${LOGS_DIR}/${log_stem}.log".  The stem is the
+                # helper's first argument unless a third one overrides it, so
+                # accept the name in any argument position.
                 named = test.log in script
+                joined = re.sub(r'\\\n\s*', ' ', script)
                 built = re.search(
-                    r'run_kernel_build\s+"%s"' % re.escape(stem), script)
+                    r'run_kernel_build(?:\s+"[^"]*")*\s+"%s"' % re.escape(stem),
+                    joined)
                 self.assertTrue(
                     named or built,
                     '%s/test.sh never writes %s (for test %r)'

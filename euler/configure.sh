@@ -22,11 +22,9 @@ TORVALDS_REPO="${WORKDIR}/.torvalds-linux"
 LOGS_DIR="${WORKDIR}/logs"
 
 # Colors
-GREEN='\033[0;32m'
-RED='\033[0;31m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-NC='\033[0m'
+# Colours come from the shared helper, which leaves them empty when
+# output is not a terminal so redirected logs stay free of escapes.
+. "${SCRIPT_DIR}/../lib/log.sh"
 
 # shellcheck source=../lib/torvalds.sh
 . "${WORKDIR}/lib/torvalds.sh"
