@@ -48,9 +48,17 @@ endif
 
 .PHONY: help config build test list-tests clean reset distclean update-tests update
 
-# Always update repo before any target
+# Pull the latest version of this tool.  Deliberately not a prerequisite of
+# any other target: it used to run before config, build and test, which meant
+# a test could rewrite the very scripts it was running, and any failure was
+# hidden by "|| true".  Rebasing also risked moving a user's local commits.
 update:
-	@git pull --rebase >/dev/null 2>&1 || true
+	@echo -e "$(BLUE)Updating pre-pr-ci...$(NC)"
+	@git pull --ff-only || { \
+		echo -e "$(RED)Could not fast-forward. Resolve it by hand:$(NC)"; \
+		echo "  git -C $(WORKDIR) status"; \
+		exit 1; \
+	}
 
 # Configuration files (stored in main directory)
 DISTRO_CONFIG := .distro_config
@@ -93,16 +101,21 @@ help:
 	@echo "╚═════════════╝"
 	@echo ""
 	@echo "Usage:"
-	@echo "  make config     - Configure target distribution"
-	@echo "  make build      - Build kernel (generate/apply patches)"
-	@echo "  make test       - Run distro-specific tests"
+	@echo "  make config              - Configure target distribution"
+	@echo "  make build               - Build kernel (generate/apply patches)"
+	@echo "  make test                - Run every enabled test"
 	@echo "  make list-tests          - List available tests for configured distro"
-	@echo "  make anolis-test=<name>  - Run specific OpenAnolis test"
-	@echo "  make euler-test=<name>   - Run specific openEuler test"
-	@echo "  make clean      - Remove logs/ and outputs/"
-	@echo "  make reset      - Reset git repo to saved HEAD"
-	@echo "  make distclean  - Remove all artifacts and configs"
-	@echo "  make update-tests - Update test configuration only"
+	@echo "  make anolis-test=<name>  - Run one OpenAnolis test"
+	@echo "  make euler-test=<name>   - Run one openEuler test"
+	@echo "  make update-tests        - Change which tests are enabled"
+	@echo "  make clean               - Remove logs/ and outputs/"
+	@echo "  make reset               - Reset kernel tree to the saved HEAD"
+	@echo "  make distclean           - Remove all artifacts and configs"
+	@echo "  make update              - Pull a newer version of this tool"
+	@echo ""
+	@echo "Web interface:"
+	@echo "  pip3 install --user -r web/requirements.txt"
+	@echo "  python3 web/server.py --port 5000"
 	@echo ""
 	@echo "Supported Distributions:"
 	@echo "  - OpenAnolis (anolis/)"
@@ -115,7 +128,7 @@ help:
 	@echo ""
 
 # Configuration
-config: update
+config:
 	@DETECTED=$$($(MAKE) -s detect_distro); \
 	echo ""; \
 	echo "╔══════════════════════════╗"; \
@@ -151,7 +164,7 @@ config: update
 	bash $$DISTRO_DIR/configure.sh
 
 # Update test configuration only
-update-tests: validate update
+update-tests: validate
 	@. $(DISTRO_CONFIG); \
 	if [ ! -f "$$DISTRO_DIR/configure.sh" ]; then \
 		echo -e "$(RED)Error: Configuration script not found: $$DISTRO_DIR/configure.sh$(NC)"; \
@@ -161,7 +174,7 @@ update-tests: validate update
 	bash $$DISTRO_DIR/configure.sh --tests
 
 # List available tests for configured distro
-list-tests: validate update
+list-tests: validate
 	@. $(DISTRO_CONFIG); \
 	if [ ! -f "$$DISTRO_DIR/test.sh" ]; then \
 		echo -e "$(RED)No test script found: $$DISTRO_DIR/test.sh$(NC)"; \
@@ -177,7 +190,7 @@ validate:
 	fi
 
 # Build (default target)
-build: validate update
+build: validate
 	@. $(DISTRO_CONFIG); \
 	if [ ! -f "$$DISTRO_DIR/build.sh" ]; then \
 		echo -e "$(RED)Error: Build script not found: $$DISTRO_DIR/build.sh$(NC)"; \
@@ -187,11 +200,11 @@ build: validate update
 	bash $$DISTRO_DIR/build.sh
 
 # Test
-test: validate update
+test: validate
 	@. $(DISTRO_CONFIG); \
 	if [ ! -f "$$DISTRO_DIR/test.sh" ]; then \
-		echo -e "$(YELLOW)No test script found: $$DISTRO_DIR/test.sh$(NC)"; \
-		exit 0; \
+		echo -e "$(RED)No test script found: $$DISTRO_DIR/test.sh$(NC)"; \
+		exit 1; \
 	fi; \
 	echo -e "$(BLUE)Running $$DISTRO tests...$(NC)"; \
 	bash $$DISTRO_DIR/test.sh

@@ -9,6 +9,16 @@
 pipeline {
     agent { label "${params.node_name}" }
 
+    options {
+        // A kernel build that wedges must not hold the node indefinitely.
+        timeout(time: 8, unit: 'HOURS')
+        timestamps()
+        // Two builds on one node would share a single kernel tree and a
+        // single .configure, and would overwrite each other's patches.
+        disableConcurrentBuilds()
+        buildDiscarder(logRotator(numToKeepStr: '30', artifactNumToKeepStr: '10'))
+    }
+
     parameters {
         choice(
             name: 'node_name',
@@ -63,11 +73,10 @@ pipeline {
             description: 'Do you want to build the patches'
         )
         
-        string(
+        password(
             name: 'Host_configuration',
-            defaultValue: 'none',
-            trim: true,
-            description: 'Enter Host user password. If your password contains a $ symbol, escape it with a backslash. Example: Dma\\$1234'
+            defaultValue: '',
+            description: 'Host user password (used for sudo). Type it as-is; no escaping needed.'
         )
         
         string(
@@ -77,11 +86,10 @@ pipeline {
             description: 'Enter VM IP'
         )
         
-        string(
+        password(
             name: 'VM_root_pwd',
-            defaultValue: 'none',
-            trim: true,
-            description: 'Enter VM root password. If your password contains a $ symbol, escape it with a backslash. Example: "Dma\\$1234"'
+            defaultValue: '',
+            description: 'VM root password, for the boot test. Type it as-is; no escaping needed.'
         )
         
         extendedChoice(
@@ -211,21 +219,25 @@ stages {
             }
         }
         
-        stage('Archive results') {
-            steps {
-                script {
-                    try {
-                        echo '============ ARCHIVING RESULTS ============'
-                        MyArchive()
-                        echo '============ ARCHIVING COMPLETE ==========='
-                    } catch (Exception e) {
-                        error("❌ Archive stage failed: ${e.message}")
-                    }
+    }
+
+    // Archiving belongs in post, not in a stage: as a stage it was skipped
+    // whenever a test failed, which is precisely when the logs are wanted.
+    post {
+        always {
+            script {
+                try {
+                    echo '============ ARCHIVING RESULTS ============'
+                    MyArchive()
+                    echo '============ ARCHIVING COMPLETE ==========='
+                } catch (Exception e) {
+                    // Do not turn a passing build red over archiving, and do
+                    // not mask a real failure behind an archiving error.
+                    echo "⚠ Archiving failed: ${e.message}"
                 }
             }
         }
     }
-    
 }
 
 // ===================== FUNCTION DEFINITIONS ======================
@@ -562,17 +574,20 @@ TEST_BOOT_KERNEL="yes"
 TEST_BUILD_PERF="yes"
 
 # Host Configuration
-HOST_USER_PWD="${params.Host_configuration}"
+HOST_USER_PWD=""
 
 # VM Configuration
 VM_IP="${params.VM_ip}"
-VM_ROOT_PWD="${params.VM_root_pwd}"
+VM_ROOT_PWD=""
 
 # Repository Configuration
 TORVALDS_REPO="${env.WORKSPACE}/pre-pr-ci/.torvalds-linux"
 EOF
+            chmod 600 .configure
         """
-        
+
+        write_secrets(configDir)
+
         // Verify file was created and has content
         validate_config_file(configFile, ['LINUX_SRC_PATH', 'BUILD_THREADS'])
         
@@ -634,17 +649,20 @@ TEST_RPM_BUILD="yes"
 TEST_BOOT_KERNEL="yes"
 
 # Host Configuration
-HOST_USER_PWD="${params.Host_configuration}"
+HOST_USER_PWD=""
 
 # VM Configuration
 VM_IP="${params.VM_ip}"
-VM_ROOT_PWD="${params.VM_root_pwd}"
+VM_ROOT_PWD=""
 
 # Repository Configuration
 TORVALDS_REPO="${env.WORKSPACE}/pre-pr-ci/.torvalds-linux"
 EOF
+            chmod 600 .configure
         """
-        
+
+        write_secrets(configDir)
+
         // Verify file was created and has content
         validate_config_file(configFile, ['LINUX_SRC_PATH', 'PATCH_CATEGORY', 'BUILD_THREADS'])
         
@@ -716,6 +734,30 @@ def validate_config_file(String filePath, List expectedKeys) {
     }
 }
 
+// Append the credential fields to an already-written .configure.
+//
+// Split out of the heredoc above because Jenkins traces shell steps, so an
+// interpolated password ended up in the build log in plain text.  Here the
+// values travel in the environment, tracing is off for the whole step, and
+// lib/config_file.sh does the quoting so a password containing a quote, a $
+// or a pipe still round-trips.
+void write_secrets(String configDir) {
+    withEnv([
+        "PRCI_HOST_PWD=${params.Host_configuration ?: ''}",
+        "PRCI_VM_PWD=${params.VM_root_pwd ?: ''}",
+    ]) {
+        sh """
+            set +x
+            . "${env.WORKSPACE}/pre-pr-ci/lib/config_file.sh"
+            cd "${configDir}"
+            config_set .configure HOST_USER_PWD "\${PRCI_HOST_PWD}"
+            config_set .configure VM_ROOT_PWD "\${PRCI_VM_PWD}"
+            chmod 600 .configure
+        """
+    }
+    echo "✔ Credentials written to .configure (not echoed)"
+}
+
 def anolis_test_configuration() {
 
     try {
@@ -746,6 +788,7 @@ def anolis_test_configuration() {
         def selectedTests = params.Anolis_Selected_tests
                                 .split(',')
                                 .collect { it.trim() }
+        def failedTests = []
 
         //prints user selected tests
         echo "User selected tests: ${selectedTests.join(', ')}"
@@ -760,15 +803,21 @@ def anolis_test_configuration() {
                 }
 
                 def cmd = commandMap[testName]
-				
-                sh """
-                    set +e
-                    ${cmd} 
-                """
+
+                // Run the rest of the selected tests even after a failure,
+                // but remember it: this used to be "set +e", which threw the
+                // exit code away and reported every run as a success.
+                if (sh(script: cmd, returnStatus: true) != 0) {
+                    failedTests.add(testName)
+                }
             }
         }
 
-        echo "Test execution completed"
+        if (failedTests) {
+            error("❌ Tests failed: ${failedTests.join(', ')}")
+        }
+
+        echo "✔ All selected tests passed"
 
     } catch (Exception e) {
         error("❌ Anolis test configuration failed: ${e.message}")
@@ -801,6 +850,7 @@ def euler_test_configuration() {
         def selectedTests = params.Euler_Selected_tests
                                 .split(',')
                                 .collect { it.trim() }
+        def failedTests = []
 
          //prints user selected tests
         echo "User selected tests: ${selectedTests.join(', ')}"
@@ -814,16 +864,22 @@ def euler_test_configuration() {
                 }
 
                 def cmd = commandMap[testName]
-				
-                sh """
-                    set +e
-                    ${cmd} 
-                """
+
+                // Run the rest of the selected tests even after a failure,
+                // but remember it: this used to be "set +e", which threw the
+                // exit code away and reported every run as a success.
+                if (sh(script: cmd, returnStatus: true) != 0) {
+                    failedTests.add(testName)
+                }
             }
         }
 
-           echo "Test execution completed"
-		   
+        if (failedTests) {
+            error("❌ Tests failed: ${failedTests.join(', ')}")
+        }
+
+        echo "✔ All selected tests passed"
+
     } catch (Exception e) {
         error("❌ Euler test configuration failed: ${e.message}")
     }
