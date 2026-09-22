@@ -166,6 +166,9 @@ class TerminalSession:
         fd = self.master_fd
         if fd is None:
             return
+        # Keystrokes arrive as text in a JSON message, but the PTY takes bytes.
+        if isinstance(data, str):
+            data = data.encode('utf-8', 'replace')
         try:
             os.write(fd, data)
         except OSError:
@@ -175,8 +178,12 @@ class TerminalSession:
         fd = self.master_fd
         if fd is None:
             return
-        rows = max(1, min(int(rows), MAX_ROWS))
-        cols = max(1, min(int(cols), MAX_COLS))
+        try:
+            rows = max(1, min(int(rows), MAX_ROWS))
+            cols = max(1, min(int(cols), MAX_COLS))
+        except (TypeError, ValueError):
+            # A client that sends nonsense must not take the session down.
+            return
         _set_winsize(fd, rows, cols)
 
     # ── viewers ───────────────────────────────────────────────────────────

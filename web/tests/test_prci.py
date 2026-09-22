@@ -96,6 +96,25 @@ class TestRegistryMatchesScripts(unittest.TestCase):
         self.assertEqual(registry.SECRET_KEYS,
                          {'VM_ROOT_PWD', 'HOST_USER_PWD'})
 
+    def test_form_is_a_list_so_the_order_survives_json(self):
+        """Flask sorts object keys, so a dict here reordered the form."""
+        for distro in registry.DISTROS:
+            sections = registry.fields_as_json(distro)
+            self.assertIsInstance(sections, list)
+            self.assertEqual([s['key'] for s in sections],
+                             ['general', 'build', 'vm', 'host'])
+            first = sections[0]['fields'][0]
+            self.assertEqual(first['name'], 'LINUX_SRC_PATH')
+
+    def test_form_never_carries_a_secret_value(self):
+        for distro in registry.DISTROS:
+            for section in registry.fields_as_json(distro):
+                for field in section['fields']:
+                    self.assertNotIn('value', field)
+                    if field['name'] in registry.SECRET_KEYS:
+                        self.assertTrue(field['secret'], field['name'])
+                        self.assertIsNone(field['default'])
+
 
 class TestConfigFile(unittest.TestCase):
     def setUp(self):
@@ -305,6 +324,16 @@ class TestJobStore(unittest.TestCase):
         again = self.store.read_log(job['id'], offset=first['offset'])
         self.assertEqual(again['text'], '')
         self.assertEqual(again['offset'], first['offset'])
+
+    def test_log_text_has_no_escape_sequences(self):
+        """Left in, they render as literal "[0;34m" litter in the browser."""
+        job = self.store.submit(
+            'test', ['printf', '\033[0;32mgreen\033[0m and \033[1;33myellow\033[0m\n'],
+            'colours')
+        self.wait_for(job['id'])
+        text = self.store.read_log(job['id'], offset=0)['text']
+        self.assertIn('green and yellow', text)
+        self.assertNotIn('\033', text)
 
     def test_log_chunks_end_on_a_line_boundary(self):
         job = self.store.submit(

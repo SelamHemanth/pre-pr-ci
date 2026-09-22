@@ -452,8 +452,13 @@ class JobStore:
             if cut != -1:
                 raw = raw[:cut + 1]
 
+        # The scripts colour their output for a terminal. Left in, the escape
+        # sequences show up as literal "[0;34m" litter in the browser, so they
+        # are removed here; the interface colours whole lines itself. The
+        # offset stays a byte position in the file, which is all the caller
+        # echoes back, so stripping cannot desynchronise the next read.
         return {
-            'text': raw.decode('utf-8', errors='replace'),
+            'text': strip_ansi(raw.decode('utf-8', errors='replace')),
             'offset': offset + len(raw),
             'size': size,
             'truncated': truncated,

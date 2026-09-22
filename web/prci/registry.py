@@ -164,25 +164,46 @@ def test_config_keys(distro):
     return tuple(t.config_key for t in tests_for(distro))
 
 
+#: Order the form is presented in, and the heading for each group.
+SECTION_LABELS = (
+    ('general', 'General'),
+    ('build', 'Build'),
+    ('vm', 'Boot test VM'),
+    ('host', 'Host'),
+)
+
+
 def fields_as_json(distro):
-    """Render the form definition for the browser, without the secret flag
-    leaking any values (the flag itself is useful to the UI)."""
+    """Render the form definition for the browser.
+
+    A list, not a dict: Flask sorts JSON object keys, which presented the
+    sections as Build, General, Host, VM regardless of the order here.
+    """
     sections = CONFIG_FIELDS.get(distro, {})
-    out = {}
-    for section, fields in sections.items():
-        out[section] = [
-            {
-                'name': f.name,
-                'label': f.label,
-                'type': f.type,
-                'required': f.required,
-                'default': f.default,
-                'options': list(f.options) if f.options else None,
-                'hint': f.hint,
-                'secret': f.secret,
-            }
-            for f in fields
-        ]
+    out = []
+    for key, label in SECTION_LABELS:
+        fields = sections.get(key)
+        if not fields:
+            continue
+        out.append({
+            'key': key,
+            'label': label,
+            'fields': [
+                {
+                    'name': f.name,
+                    'label': f.label,
+                    'type': f.type,
+                    'required': f.required,
+                    'default': f.default,
+                    'options': list(f.options) if f.options else None,
+                    'hint': f.hint,
+                    # The flag tells the UI to render a password box and to
+                    # leave it empty; the value itself never leaves the server.
+                    'secret': f.secret,
+                }
+                for f in fields
+            ],
+        })
     return out
 
 

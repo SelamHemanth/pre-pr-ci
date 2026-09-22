@@ -30,9 +30,7 @@ import logging
 import os
 import sys
 
-from flask import (
-    Flask, jsonify, render_template, request, send_file, send_from_directory,
-)
+from flask import Flask, jsonify, request, send_file, send_from_directory
 from flask_sock import Sock
 
 WEB_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -95,9 +93,14 @@ def latest_result_per_test():
 
 # ── pages and assets ──────────────────────────────────────────────────────
 
+INDEX_HTML = os.path.join(WEB_DIR, 'templates', 'index.html')
+
+
 @app.route('/')
 def index():
-    return render_template('index.html')
+    # Sent as-is rather than rendered: the page carries no server-side values,
+    # and Jinja would try to evaluate Vue's {{ ... }} expressions.
+    return send_file(INDEX_HTML)
 
 
 @app.route('/favicon.ico')
@@ -401,7 +404,7 @@ def ws_terminal(ws):
 def not_found(_error):
     if request.path.startswith('/api/'):
         return jsonify({'success': False, 'error': 'No such endpoint'}), 404
-    return render_template('index.html'), 200
+    return send_file(INDEX_HTML)
 
 
 @app.errorhandler(500)
