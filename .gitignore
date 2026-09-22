@@ -1,0 +1,21 @@
+# Generated configuration. These hold the host sudo password and the VM root
+# password in cleartext -- never commit them.
+.distro_config
+*/.configure
+.head_commit_id
+
+# Working state
+.torvalds-linux/
+.prci/
+logs/
+outputs/
+patches/
+*/.commits.txt
+*/.dep_log
+*/.full_commits
+*/.stable_log
+*/.user_log
+
+# Python
+__pycache__/
+*.py[cod]

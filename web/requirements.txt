@@ -1,0 +1,10 @@
+# Pre-PR CI web interface
+#
+#   pip3 install --user -r web/requirements.txt
+#
+# The frontend needs nothing installed: Vue and xterm.js are served from
+# web/static/vendor/ so the interface also works on a machine with no route
+# to the internet.
+
+Flask>=2.2
+flask-sock>=0.7
