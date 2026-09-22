@@ -331,7 +331,15 @@ test_anck_rpm_build() {
 
   if [ -n "$missing_packages" ]; then
     echo "  → Installing missing packages:$missing_packages" >> "${LOGS_DIR}/anck_rpm_build.log"
-    echo "${HOST_USER_PWD}" | sudo -S yum install -y $missing_packages >> "${LOGS_DIR}/anck_rpm_build.log" 2>&1 || true
+    # Not fatal: the packages may be present in a form rpm -q does not see,
+    # and failing here would be worse than letting the build try.  But say so,
+    # because otherwise the only clue is a missing header hundreds of lines
+    # later in the log.
+    if ! echo "${HOST_USER_PWD}" | sudo -S yum install -y $missing_packages \
+            >> "${LOGS_DIR}/anck_rpm_build.log" 2>&1; then
+      echo -e "${YELLOW}[WARN]${NC} anck_rpm_build: could not install:$missing_packages"
+      echo -e "${YELLOW}       check the sudo password and repo access; continuing anyway${NC}"
+    fi
   fi
 
   # Set build environment variables
@@ -364,8 +372,16 @@ test_anck_rpm_build() {
   # Install spec dependencies only once
   if [ ! -f "${outputdir}/.deps_installed" ]; then
     echo "  → Installing build dependencies..." >> "${LOGS_DIR}/anck_rpm_build.log"
-    echo "${HOST_USER_PWD}" | sudo -S yum-builddep -y output/kernel.spec >> "${LOGS_DIR}/anck_rpm_build.log" 2>&1 || true
-    touch "${outputdir}/.deps_installed"
+    if echo "${HOST_USER_PWD}" | sudo -S yum-builddep -y output/kernel.spec \
+            >> "${LOGS_DIR}/anck_rpm_build.log" 2>&1; then
+      # Only remember success.  Touching this unconditionally meant a single
+      # failed yum-builddep was recorded as done, so every later run skipped
+      # the install and failed identically until someone found and deleted
+      # this hidden marker.
+      touch "${outputdir}/.deps_installed"
+    else
+      echo -e "${YELLOW}[WARN]${NC} anck_rpm_build: yum-builddep failed; will retry next run"
+    fi
   fi
 
   # Set ulimit and build

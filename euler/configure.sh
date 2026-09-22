@@ -367,16 +367,19 @@ TEST_CHECK_FORMAT="${TEST_CHECK_FORMAT}"
 TEST_RPM_BUILD="${TEST_RPM_BUILD}"
 TEST_BOOT_KERNEL="${TEST_BOOT_KERNEL}"
 
-# Host Configuration
-HOST_USER_PWD='${HOST_USER_PWD}'
-
 # VM Configuration
 VM_IP="${VM_IP}"
-VM_ROOT_PWD='${VM_ROOT_PWD}'
 
 # Repository Configuration
 TORVALDS_REPO="${TORVALDS_REPO}"
 EOF
+
+# The credentials are appended rather than written above, because the heredoc
+# quotes them as '...' and a password containing an apostrophe produced a
+# .configure that bash refused to source at all -- taking VM_IP and
+# TORVALDS_REPO down with it.  config_set quotes with printf %q instead.
+config_set "$CONFIG_FILE" HOST_USER_PWD "${HOST_USER_PWD}"
+config_set "$CONFIG_FILE" VM_ROOT_PWD   "${VM_ROOT_PWD}"
 chmod 600 "$CONFIG_FILE"
 
 echo ""

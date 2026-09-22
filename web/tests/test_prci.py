@@ -151,6 +151,23 @@ class TestRegistryMatchesScripts(unittest.TestCase):
             finally:
                 os.unlink(name)
 
+    def test_shell_writes_secrets_with_config_set(self):
+        """A single-quoted password broke the whole .configure file."""
+        for distro in registry.DISTROS:
+            script = read_file(distro, 'configure.sh')
+            for key in sorted(registry.SECRET_KEYS):
+                # "KEY='${KEY}'" inside a heredoc cannot survive an
+                # apostrophe: bash then refuses to source the file at all.
+                # assertNotIn would print the whole script on failure.
+                self.assertFalse(
+                    "%s='${%s}'" % (key, key) in script,
+                    '%s/configure.sh quotes %s by hand; use config_set'
+                    % (distro, key))
+                self.assertRegex(
+                    script, r'config_set[^\n]*\b%s\b' % re.escape(key),
+                    '%s/configure.sh must write %s with config_set'
+                    % (distro, key))
+
     def test_pipeline_dispatches_real_test_names(self):
         """A typo here silently skips the test instead of failing."""
         pipeline = read_file('jenkins', 'jenkins_pipeline.groovy')
