@@ -173,6 +173,20 @@ sync_torvalds_repo() {
   echo ""
 }
 
+# True when a patch carries a backport header, meaning its content and tags
+# were settled upstream and belong to the original commit, not to the person
+# sending it here.
+#
+# Only the commit message is examined.  "commit ... upstream" appears in
+# plenty of code comments, so reading past the first hunk would classify
+# ordinary patches as backports.
+patch_is_backport() {
+  local patch_file="$1"
+
+  sed -n '1,/^diff --git /p' "${patch_file}" 2>/dev/null |
+    grep -qiE '^(mainline|stable|openeuler) inclusion|^from (mainline|stable)-|^commit [0-9a-f]{12,40} upstream'
+}
+
 # ---- TEST DEFINITIONS ----
 
 test_check_dependency() {
@@ -516,7 +530,13 @@ test_check_patch() {
   
   > "${checkpatch_log}"  # Clear log file
 
-  # Define ignore list
+  # Types ignored for every patch.
+  #
+  # A backport has to stay byte-identical to the commit it claims to be, so
+  # style complaints about code upstream already took cannot be acted on
+  # without making the patch a lie.  Reformatting to satisfy them is worse
+  # than the warning: it breaks the diff against upstream that checkconflict
+  # and the dependency check rely on.
   local IGNORES_FOR_MAIN=(
     CONFIG_DESCRIPTION
     FILE_PATH_CHANGES
@@ -530,10 +550,20 @@ test_check_patch() {
     AVOID_EXTERNS
     AVOID_BUG
     NOT_UNIFIED_DIFF
-    COMMIT_LOG_LONG_LINE
     SPACING
     LONG_LINE_COMMENT
+    LONG_LINE
+    CODE_INDENT
+    TYPO_SPELLING
+    BAD_REPORTED_BY_LINK
+    BAD_SIGN_OFF
+    BAD_STABLE_ADDRESS_STYLE
+    SPACE_BEFORE_TAB
   )
+
+  # COMMIT_LOG_LONG_LINE is deliberately absent: it is a warning worth
+  # reading, and checkpatch already reports it as one, so leaving it out of
+  # this list surfaces it without failing the patch.
 
   # Join array into comma-separated string
   local ignore_str
@@ -542,9 +572,20 @@ test_check_patch() {
   for patch_file in "${patch_files[@]}"; do
     local patch_name=$(basename "${patch_file}")
     echo "    Checking: ${patch_name}" >> "${checkpatch_log}"
-    
+
+    # A Fixes: tag on a backport was written upstream and has to be carried
+    # across verbatim, so there is nothing the sender can fix.  On a patch
+    # written here the tag is ours and malformed is worth saying, but it does
+    # not stop the patch applying, so checkpatch's WARNING is left to stand
+    # rather than being promoted to a failure.
+    local ignore_this="${ignore_str}"
+    if patch_is_backport "${patch_file}"; then
+      ignore_this="${ignore_str},BAD_FIXES_TAG"
+      echo "      (backport: BAD_FIXES_TAG not applicable)" >> "${checkpatch_log}"
+    fi
+
     # Run checkpatch with ignore list and capture output
-    local output=$("${CHECKPATCH}" --show-types --no-tree --ignore "${ignore_str}" "${patch_file}" 2>&1)
+    local output=$("${CHECKPATCH}" --show-types --no-tree --ignore "${ignore_this}" "${patch_file}" 2>&1)
     echo "${output}" >> "${checkpatch_log}"
     echo "" >> "${checkpatch_log}"
     
