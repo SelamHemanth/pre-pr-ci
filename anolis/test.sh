@@ -38,10 +38,9 @@ fi
 LOGS_DIR="${WORKDIR}/logs"
 TEST_LOG="${LOGS_DIR}/test_results.log"
 
-# Export the variables so subshells can use them
-export HOST_USER_PWD
+# VM_IP is exported for convenience; the two passwords deliberately are not,
+# so they stay out of /proc/<pid>/environ of every command a test runs.
 export VM_IP
-export VM_ROOT_PWD
 
 # Colors
 GREEN='\033[0;32m'
@@ -50,6 +49,13 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 NC='\033[0m'
+
+# shellcheck source=../lib/torvalds.sh
+. "${WORKDIR}/lib/torvalds.sh"
+# shellcheck source=../lib/vm.sh
+. "${WORKDIR}/lib/vm.sh"
+# shellcheck source=../lib/boot_test.sh
+. "${WORKDIR}/lib/boot_test.sh"
 
 # Function to list available tests
 list_tests() {
@@ -91,6 +97,11 @@ fi
 : "${SIGNER_NAME:?missing in config}"
 : "${SIGNER_EMAIL:?missing in config}"
 : "${TORVALDS_REPO:?missing in config}"
+
+# Tests are also runnable against a config written before this setting
+# existed, so fall back rather than aborting under "set -u".
+: "${BUILD_THREADS:=$(nproc)}"
+: "${NUM_PATCHES:=1}"
 
 mkdir -p "${LOGS_DIR}"
 
@@ -148,8 +159,8 @@ run_kernel_build() {
   make clean > /dev/null 2>&1
   echo "  → Building kernel with ${config_target}..."
   if make "${config_target}" > "${LOGS_DIR}/${test_name}.log" 2>&1 \
-    && make -j"$(nproc)" >> "${LOGS_DIR}/${test_name}.log" 2>&1 \
-    && make modules -j"$(nproc)" >> "${LOGS_DIR}/${test_name}.log" 2>&1; then
+    && make -j"${BUILD_THREADS}" >> "${LOGS_DIR}/${test_name}.log" 2>&1 \
+    && make modules -j"${BUILD_THREADS}" >> "${LOGS_DIR}/${test_name}.log" 2>&1; then
     pass "${test_name}"
   else
     fail "${test_name}" "Build failed (see ${LOGS_DIR}/${test_name}.log)"
@@ -157,69 +168,8 @@ run_kernel_build() {
   echo ""
 }
 
-# get_host_password
-get_host_password() {
-  if [ -n "${HOST_USER_PWD:-}" ]; then
-    echo "${HOST_USER_PWD}"
-  else
-    local pwd_input
-    read -r -s -p "Enter sudo password to remove Torvalds repo: " pwd_input < /dev/tty
-    echo "" > /dev/tty
-    echo "${pwd_input}"
-  fi
-}
-
-# delete_repo
-delete_repo() {
-  if [ ! -d "$TORVALDS_REPO" ]; then
-    return 0
-  fi
-
-  echo -e "${BLUE}  → Removing corrupted repository...${NC}"
-  local owner
-  owner=$(stat -c '%U' "$TORVALDS_REPO")
-
-  if [ "$owner" = "root" ]; then
-    echo -e "${YELLOW}  → Repository is owned by root. Sudo password required.${NC}"
-    local host_pass
-    host_pass=$(get_host_password)
-    echo "$host_pass" | sudo -S rm -rf "$TORVALDS_REPO"
-  else
-    rm -rf "$TORVALDS_REPO"
-  fi
-}
-
-# _clone_torvalds
-_clone_torvalds() {
-  git clone --bare https://github.com/torvalds/linux.git "$TORVALDS_REPO" 2>&1 | \
-    stdbuf -oL tr '\r' '\n' | \
-    grep -oP '\d+(?=%)' | \
-    awk '{printf "\rProgress: %d%%", $1; fflush()}'
-  # Ensure the directory is accessible regardless of umask/ownership edge cases
-  git config --global --add safe.directory "$TORVALDS_REPO" 2>/dev/null || true
-  echo ""
-}
-
-# sync_torvalds_repo
 sync_torvalds_repo() {
-  if [ ! -d "$TORVALDS_REPO" ]; then
-    echo -e "${BLUE}  → Cloning Torvalds Linux repository...${NC}"
-    _clone_torvalds
-    echo -e "${GREEN}  → Repository cloned successfully.${NC}"
-  else
-    echo -e "${GREEN}  → Torvalds repository already exists.${NC}"
-    echo -e "${BLUE}  → Fetching latest tags...${NC}"
-    git config --global --add safe.directory "$TORVALDS_REPO" 2>/dev/null || true
-    if (cd "$TORVALDS_REPO" && git fetch --all --tags 2>&1 | grep -v "^From"); then
-      echo -e "${GREEN}  → Repository updated successfully.${NC}"
-    else
-      echo -e "${RED}  → Fetch failed. Re-cloning repository...${NC}"
-      delete_repo
-      echo -e "${BLUE}  → Re-cloning Torvalds Linux repository...${NC}"
-      _clone_torvalds
-      echo -e "${GREEN}  → Repository re-cloned successfully.${NC}"
-    fi
-  fi
+  TORVALDS_LOG_PREFIX="  → " torvalds_sync || true
   echo ""
 }
 
@@ -247,7 +197,7 @@ test_check_dependency() {
 
   local commits_file="${SCRIPT_DIR}/.commits.txt"
   local dep_log="${LOGS_DIR}/check_dependency.log"
-  local checkdepend_script="${SCRIPT_DIR}/checkdepend.py"
+  local checkdepend_script="${WORKDIR}/lib/checkdepend.py"
 
   # Check if checkdepend.py exists
   if [ ! -f "${checkdepend_script}" ]; then
@@ -276,16 +226,16 @@ test_check_dependency() {
     return
   fi
 
-  if python3 "${checkdepend_script}" "${LINUX_SRC_PATH}" "${TORVALDS_REPO}" "${commits_file}" > "${dep_log}" 2>&1; then
-    # Check if there are any failures in the output
-    if grep -q "FAIL" "${dep_log}"; then
-      fail "check_dependency" "Some commits have unfixed dependencies (see ${dep_log})"
-    else
-      pass "check_dependency"
-    fi
-  else
-    fail "check_dependency" "checkdepend.py execution failed (see ${dep_log})"
-  fi
+  # checkdepend.py reports the result in its exit status: 0 clean, 1 missing
+  # dependencies, 2 could not run.  Grepping its output for "FAIL" used to
+  # match any commit subject that happened to contain the word.
+  python3 "${checkdepend_script}" "${LINUX_SRC_PATH}" "${TORVALDS_REPO}" \
+    "${commits_file}" --output-dir "${LOGS_DIR}" > "${dep_log}" 2>&1
+  case $? in
+    0) pass "check_dependency" ;;
+    1) fail "check_dependency" "Some commits have unfixed dependencies (see ${dep_log})" ;;
+    *) fail "check_dependency" "checkdepend.py could not run (see ${dep_log})" ;;
+  esac
 
   echo ""
 }
@@ -428,7 +378,7 @@ test_anck_rpm_build() {
      DIST_BUILD_MODE=${BUILD_MODE} \
      DIST_BUILD_VARIANT=${BUILD_VARIANT} \
      DIST_BUILD_EXTRA=${BUILD_EXTRA} \
-     make dist-rpms RPMBUILDOPTS="--define '%_smp_mflags -j16'" \
+     make dist-rpms RPMBUILDOPTS="--define '%_smp_mflags -j${BUILD_THREADS}'" \
      >> "${LOGS_DIR}/anck_rpm_build.log" 2>&1; then
 
     local rpm_dir="${outputdir}/rpmbuild/RPMS"
@@ -447,165 +397,11 @@ test_anck_rpm_build() {
 }
 
 test_boot_kernel_rpm() {
-  echo -e "${BLUE}Test-8: boot_kernel_rpm${NC}"
+  echo -e "${BLUE}Test-9: boot_kernel_rpm${NC}"
 
-  local rpms_dir="${LINUX_SRC_PATH}/anolis/outputs/rpmbuild/RPMS/x86_64"
-  local boot_log="${LOGS_DIR}/boot_kernel_rpm.log"
-
-  # Check if RPMs exist
-  if [ ! -d "${rpms_dir}" ]; then
-    fail "boot_kernel_rpm" "RPMs directory not found: ${rpms_dir}"
-    echo ""
-    return
-  fi
-
-  echo "  → VM booting with build RPM..."
-
-  # Find kernel RPM (not debuginfo, not devel, not headers)
-  local kernel_rpm=$(find "${rpms_dir}" -name "kernel-*.rpm" ! -name "*debuginfo*" ! -name "*devel*" ! -name "*headers*" -type f | head -n 1)
-
-  if [ -z "${kernel_rpm}" ]; then
-    fail "boot_kernel_rpm" "Kernel RPM not found in ${rpms_dir}"
-    echo ""
-    return
-  fi
-
-  echo "  → Found kernel RPM: $(basename ${kernel_rpm})" >> "${boot_log}"
-
-  # Check VM connectivity
-  echo "  → Checking VM connectivity (${VM_IP})..." >> "${boot_log}"
-  if ! ping -c 2 "${VM_IP}" >> "${boot_log}" 2>&1; then
-    fail "boot_kernel_rpm" "VM ${VM_IP} is not reachable"
-    echo ""
-    return
-  fi
-  echo "  → VM is reachable" >> "${boot_log}"
-
-  # Install sshpass if not available (for password authentication)
-  if ! command -v sshpass &> /dev/null; then
-    echo "  → Installing sshpass..." >> "${boot_log}"
-    if ! echo "${HOST_USER_PWD}" | sudo -S yum install -y sshpass >> "${boot_log}" 2>&1; then
-	    echo "  → yum install failed, trying manual build..." >> "${boot_log}"
-	    (
-	    cd /tmp || exit 1
-	    wget https://sourceforge.net/projects/sshpass/files/latest/download -O sshpass.tar.gz >> "${boot_log}" 2>&1
-	    tar -xzf sshpass.tar.gz >> "${boot_log}" 2>&1
-	    cd sshpass-* || exit 1
-	    ./configure >> "${boot_log}" 2>&1
-	    make >> "${boot_log}" 2>&1
-	    echo "${HOST_USER_PWD}" | sudo -S make install >> "${boot_log}" 2>&1
-    ) || {
-	    fail "boot_kernel_rpm" "Failed to install sshpass manually"
-		echo ""
-		return
-	}
-    fi
-  fi
-
-  # Copy kernel RPM to VM
-  echo "  → Copying kernel RPM to VM..." >> "${boot_log}"
-  if ! sshpass -p "${VM_ROOT_PWD}" scp -o StrictHostKeyChecking=no "${kernel_rpm}" root@"${VM_IP}":/tmp/ >> "${boot_log}" 2>&1; then
-    fail "boot_kernel_rpm" "Failed to copy RPM to VM"
-    echo ""
-    return
-  fi
-  echo "  → RPM copied successfully" >> "${boot_log}"
-
-  local rpm_name=$(basename "${kernel_rpm}")
-
-  # Install kernel RPM on VM
-  echo "  → Installing kernel RPM on VM..." >> "${boot_log}"
-  if ! sshpass -p "${VM_ROOT_PWD}" ssh -o StrictHostKeyChecking=no root@"${VM_IP}" "rpm -ivh --force /tmp/${rpm_name}" >> "${boot_log}" 2>&1; then
-    fail "boot_kernel_rpm" "Failed to install kernel RPM"
-    echo ""
-    return
-  fi
-  echo "  → Kernel installed successfully" >> "${boot_log}"
-
-  # Extract kernel version from RPM name
-  local kernel_version=$(echo "${rpm_name}" | sed 's/kernel-//' | sed 's/.rpm$//')
-  local vmlinuz_path="/boot/vmlinuz-${kernel_version}"
-  echo "  → Expected kernel version: ${kernel_version}" >> "${boot_log}"
-  echo "  → Expected vmlinuz path: ${vmlinuz_path}" >> "${boot_log}"
-
-  # Verify kernel was installed
-  echo "  → Verifying kernel installation..." >> "${boot_log}"
-  if ! sshpass -p "${VM_ROOT_PWD}" ssh -o StrictHostKeyChecking=no root@"${VM_IP}" "test -f ${vmlinuz_path}" >> "${boot_log}" 2>&1; then
-    fail "boot_kernel_rpm" "Kernel image not found at ${vmlinuz_path}"
-    echo ""
-    return
-  fi
-
-  # List all available kernels
-  echo "  → Available kernels before setting default:" >> "${boot_log}"
-  sshpass -p "${VM_ROOT_PWD}" ssh -o StrictHostKeyChecking=no root@"${VM_IP}" "grubby --info ALL | grep -E '^kernel='" >> "${boot_log}" 2>&1
-
-  # Set new kernel as default using grubby
-  echo "  → Setting new kernel as default boot option using grubby..." >> "${boot_log}"
-  if ! sshpass -p "${VM_ROOT_PWD}" ssh -o StrictHostKeyChecking=no root@"${VM_IP}" "grubby --set-default=${vmlinuz_path}" >> "${boot_log}" 2>&1; then
-    fail "boot_kernel_rpm" "Failed to set default kernel with grubby"
-    echo ""
-    return
-  fi
-
-  # Verify default kernel was set
-  echo "  → Verifying default kernel setting..." >> "${boot_log}"
-  local default_kernel=$(sshpass -p "${VM_ROOT_PWD}" ssh -o StrictHostKeyChecking=no root@"${VM_IP}" "grubby --default-kernel" 2>> "${boot_log}")
-  echo "  → Default kernel set to: ${default_kernel}" >> "${boot_log}"
-
-  if [[ "${default_kernel}" != "${vmlinuz_path}" ]]; then
-    fail "boot_kernel_rpm" "Failed to set default kernel. Expected: ${vmlinuz_path}, Got: ${default_kernel}"
-    echo ""
-    return
-  fi
-
-  # Reboot VM
-  echo "  → Rebooting VM..." >> "${boot_log}"
-  sshpass -p "${VM_ROOT_PWD}" ssh -o StrictHostKeyChecking=no root@"${VM_IP}" "reboot" >> "${boot_log}" 2>&1 || true
-
-  # Wait for VM to go down
-  echo "  → Waiting for VM to shutdown..." >> "${boot_log}"
-  sleep 10
-
-  # Wait for VM to come back up (max 5 minutes)
-  echo "  → Waiting for VM to boot up (max 5 minutes)..." >> "${boot_log}"
-  local wait_count=0
-  local max_wait=60  # 60 * 5 seconds = 5 minutes
-
-  while [ $wait_count -lt $max_wait ]; do
-    if ping -c 1 -W 1 "${VM_IP}" >> "${boot_log}" 2>&1; then
-      sleep 10  # Wait a bit more for SSH to be ready
-      if sshpass -p "${VM_ROOT_PWD}" ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 root@"${VM_IP}" "echo 'VM is up'" >> "${boot_log}" 2>&1; then
-        echo "  → VM booted successfully" >> "${boot_log}"
-        break
-      fi
-    fi
-    sleep 5
-    wait_count=$((wait_count + 1))
-  done
-
-  if [ $wait_count -ge $max_wait ]; then
-    fail "boot_kernel_rpm" "VM did not boot within 5 minutes"
-    echo ""
-    return
-  fi
-
-  # Check running kernel version
-  echo "  → Checking running kernel version..." >> "${boot_log}"
-  local running_kernel=$(sshpass -p "${VM_ROOT_PWD}" ssh -o StrictHostKeyChecking=no root@"${VM_IP}" "uname -r" 2>> "${boot_log}")
-
-  echo "  → Running kernel: ${running_kernel}" >> "${boot_log}"
-  echo "  → Expected kernel: ${kernel_version}" >> "${boot_log}"
-
-  # Verify if the installed kernel is running (exact match)
-  if [[ "${running_kernel}" == "${kernel_version}" ]]; then
-    echo -e "  → VM booted with new kernel: ${running_kernel}" >> "${boot_log}"
-    pass "boot_kernel_rpm"
-  else
-    fail "boot_kernel_rpm" "VM booted with different kernel. Expected: ${kernel_version}, Got: ${running_kernel}"
-  fi
-
-  echo ""
+  run_boot_test "boot_kernel_rpm" \
+    "${LINUX_SRC_PATH}/anolis/outputs/rpmbuild/RPMS/$(arch)" \
+    "${LOGS_DIR}/boot_kernel_rpm.log"
 }
 
 test_check_kapi() {
@@ -631,7 +427,7 @@ test_check_kapi() {
   if [ ! "$(ls "${KABI_DW_DIR}" 2>/dev/null)" ] || \
 	  [ ! "$(ls "${KABI_WHITELIST_DIR}" 2>/dev/null)" ]; then
      echo "Initializing and updating submodules..." >> "$KAPI_LOG"
-     git submodule update --init --recursive >> "$KAPI_LOG" 2>&1
+     git -C "${WORKDIR}" submodule update --init --recursive >> "$KAPI_LOG" 2>&1
      if [ $? -ne 0 ]; then
 	     fail "check_kapi" "Failed to init/update submodules"
 	     return
@@ -640,7 +436,7 @@ test_check_kapi() {
 
   # Update submodules
   echo "Updating submodules..." >> "$KAPI_LOG"
-  git submodule update --remote --recursive >> "$KAPI_LOG"
+  git -C "${WORKDIR}" submodule update --remote --recursive >> "$KAPI_LOG"
 
   # Clean and build kabi-dw tool
   cd "${KABI_DW_DIR}"
@@ -668,23 +464,40 @@ test_check_kapi() {
     return
   fi
 
-  # Get current HEAD commit ID
+  # Get current HEAD commit ID.  Must be the full hash: this is what the tree
+  # gets reset to later, and an abbreviated one can become ambiguous.
   cd "${LINUX_SRC_PATH}"
-  local HEAD_SHAID=$(git log --oneline -1 | awk '{print $1}')
+  local HEAD_SHAID
+  HEAD_SHAID=$(git rev-parse HEAD 2>> "${KAPI_LOG}")
   if [ -z "${HEAD_SHAID}" ]; then
     fail "check_kapi" "Failed to get HEAD commit ID"
     return
   fi
 
+  # This test rewinds the kernel tree to build it with and without the
+  # backports.  Restore it however the function exits, or a failed build
+  # leaves the user's patches off HEAD with no indication why.
+  _kapi_restore_tree() {
+    local target="$1"
+    if ! git -C "${LINUX_SRC_PATH}" reset --hard "${target}" >> "${KAPI_LOG}" 2>&1; then
+      echo "  → WARNING: could not restore ${LINUX_SRC_PATH} to ${target}" |
+        tee -a "${KAPI_LOG}"
+    fi
+  }
+  trap '_kapi_restore_tree "${HEAD_SHAID}"; trap - RETURN' RETURN
+
   echo "  → Generating KAPI symbols..."
 
   # Reset to base (without backport patches)
   echo "  → Building kernel without backport patches..." >> "$KAPI_LOG"
-  git reset --hard HEAD~${NUM_PATCHES} >> "${KAPI_LOG}" 2>&1
+  if ! git reset --hard "HEAD~${NUM_PATCHES}" >> "${KAPI_LOG}" 2>&1; then
+    fail "check_kapi" "Could not rewind ${NUM_PATCHES} commits"
+    return
+  fi
   make mrproper >> "${KAPI_LOG}" 2>&1
   make anolis_defconfig >> "${KAPI_LOG}" 2>&1
 
-  if ! make -j"$(nproc)" >> "${KAPI_LOG}" 2>&1; then
+  if ! make -j"${BUILD_THREADS}" >> "${KAPI_LOG}" 2>&1; then
     fail "check_kapi" "Failed to build kernel without BP"
     return
   fi
@@ -704,11 +517,14 @@ test_check_kapi() {
   # Reset back to HEAD (with backport patches)
   echo "  → Building kernel with backport patches..." >> "$KAPI_LOG"
   cd "${LINUX_SRC_PATH}"
-  git reset --hard ${HEAD_SHAID} >> "${KAPI_LOG}" 2>&1
+  if ! git reset --hard "${HEAD_SHAID}" >> "${KAPI_LOG}" 2>&1; then
+    fail "check_kapi" "Could not return the tree to ${HEAD_SHAID}"
+    return
+  fi
   make mrproper >> "${KAPI_LOG}" 2>&1
   make anolis_defconfig >> "${KAPI_LOG}" 2>&1
 
-  if ! make -j"$(nproc)" >> "${KAPI_LOG}" 2>&1; then
+  if ! make -j"${BUILD_THREADS}" >> "${KAPI_LOG}" 2>&1; then
     fail "check_kapi" "Failed to build kernel with BP"
     return
   fi
@@ -792,7 +608,7 @@ test_build_perf() {
   echo "  → Building perf..." | tee -a "${perf_log}"
   cd "${perf_dir}"
 
-  if make -j"$(nproc)" -s >> "${perf_log}" 2>&1; then
+  if make -j"${BUILD_THREADS}" -s >> "${perf_log}" 2>&1; then
     pass "build_perf"
   else
     fail "build_perf" "perf build failed (see ${perf_log})"

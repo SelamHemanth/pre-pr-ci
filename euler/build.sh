@@ -218,7 +218,10 @@ else
   rm -rf "${TMP_FORMAT_DIR}"
 
   # Reset repo back by NUM_PATCHES commits so we can re-apply
-  git reset --hard "HEAD~${NUM_PATCHES}" >/dev/null 2>&1 || true
+  if ! git reset --hard "HEAD~${NUM_PATCHES}" >/dev/null 2>&1; then
+    echo -e "${RED}Could not rewind ${NUM_PATCHES} commits; refusing to continue.${NC}" >&2
+    exit 1
+  fi
   echo -e "${YELLOW}HEAD is now at $(git rev-parse --short HEAD) $(git log -1 --pretty=%s)${NC}"
 
   echo -e "${BLUE}Modifying patches with openEuler metadata and Signed-off-by tags...${NC}"

@@ -90,12 +90,14 @@ install_dependencies() {
     # Install dependencies as the actual user
     print_info "Installing Python dependencies for user $ACTUAL_USER..."
 
+    local packages="flask werkzeug flask-sock"
+
     # Try normal install
-    if su - "$ACTUAL_USER" -c "pip3 install flask flask_cors werkzeug flask-sock --user"; then
+    if su - "$ACTUAL_USER" -c "pip3 install ${packages} --user"; then
         print_success "Dependencies installed successfully"
     else
-        # Try with --break-system-packages
-        if su - "$ACTUAL_USER" -c "pip3 install flask flask_cors werkzeug --user --break-system-packages"; then
+        # Externally managed environments (PEP 668) refuse the plain install.
+        if su - "$ACTUAL_USER" -c "pip3 install ${packages} --user --break-system-packages"; then
             print_success "Dependencies installed successfully"
         else
             print_error "Failed to install dependencies"
@@ -157,9 +159,16 @@ RestartSec=5
 StandardOutput=journal
 StandardError=journal
 
+# A kernel build is a deep process tree; stopping the unit has to take the
+# whole group with it, and it needs longer than the default to wind down.
+KillMode=mixed
+TimeoutStopSec=60
+
 # Environment
 Environment="PATH=$USER_HOME/.local/bin:/usr/local/bin:/usr/bin:/bin"
 Environment="PYTHONPATH=$PROJECT_ROOT"
+# Without this, log lines sit in Python's buffer instead of reaching journalctl.
+Environment="PYTHONUNBUFFERED=1"
 
 # Security
 NoNewPrivileges=true
@@ -180,22 +189,22 @@ EOF
 }
 
 clone_torvalds() {
-	# Clone Torvalds repo if not exists
-	if [ ! -d "$TORVALDS_REPO" ]; then
-		echo -e "${BLUE}Cloning Torvalds Linux repository...${NC}"
-		git clone --bare https://github.com/torvalds/linux.git "$TORVALDS_REPO" 2>&1 | \
-			stdbuf -oL tr '\r' '\n' | \
-			grep -oP '\d+(?=%)' | \
-			awk '{printf "\rProgress: %d%%", $1; fflush()}' || \
-		git config --global --add safe.directory $TORVALDS_REPO
-		echo -e "\r${GREEN}Repository cloned successfully${NC}"
-		echo ""
-	else
-		echo -e "${GREEN}Torvalds repository already exists${NC}"
-		echo -e "${BLUE}Updating repository...${NC}"
-		(cd "$TORVALDS_REPO" && git fetch --all --tags 2>&1 | grep -v "^From" || true)
-		echo -e "${GREEN}Repository updated${NC}"
-	fi
+    detect_user
+
+    # Must run as the account the service runs as.  Cloning it as root left a
+    # mirror the server could not fetch into, and it would then try to delete
+    # and re-clone it on every startup.
+    print_info "Updating the mainline mirror as ${ACTUAL_USER}..."
+    if su - "$ACTUAL_USER" -c \
+        "cd $(printf '%q' "$PROJECT_ROOT") && \
+         TORVALDS_REPO=$(printf '%q' "$TORVALDS_REPO") \
+         bash -c '. lib/torvalds.sh && torvalds_sync'"; then
+        print_success "Mainline mirror is ready"
+    else
+        print_warning "Could not update the mainline mirror"
+        print_warning "check_dependency cannot resolve upstream commits until it is fixed"
+    fi
+    echo ""
 }
 
 install_service() {

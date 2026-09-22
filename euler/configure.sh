@@ -28,6 +28,11 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
+# shellcheck source=../lib/torvalds.sh
+. "${WORKDIR}/lib/torvalds.sh"
+# shellcheck source=../lib/config_file.sh
+. "${WORKDIR}/lib/config_file.sh"
+
 fail() {
 	local stage="$1"
 	local msg="$2"
@@ -102,8 +107,8 @@ update_tests() {
 	VM_ROOT_PWD="${VM_ROOT_PWD:-""}"
 	HOST_USER_PWD="${HOST_USER_PWD:-""}"
 
-	rpms_dir="${LINUX_SRC_PATH}/anolis/outputs/rpmbuild/RPMS/x86_64"
-	boot_log="${LOGS_DIR}/boot_kernel_rpm.log"
+	rpms_dir="${HOME}/rpmbuild/RPMS/$(arch)"
+	boot_log="${LOGS_DIR}/boot_kernel.log"
 
 	# Boot test logic
 	if [[ "$BOOT_SELECTED" == "yes" || "$TEST_SELECTION" == "all" ]]; then
@@ -139,20 +144,19 @@ update_tests() {
 		# but skip if rpm_build (5) is also selected
 		if [[ "${BOOT_SELECTED:-}" == "yes" ]]; then
 			if [[ "${RPM_BUILD_SELECTED:-}" != "yes" ]]; then
-				# Only check RPMs if 6 was selected alone
-				rpms_dir="$HOME/rpmbuild/RPMS/x86_64"
-				boot_log="${LOGS_DIR}/boot_kernel_rpm.log"
-
+				# boot_kernel on its own has nothing to install unless a
+				# previous run left an RPM behind, so say so now rather than
+				# after the VM has been rebooted.
 				if [ ! -d "${rpms_dir}" ]; then
-					fail "boot_kernel_rpm" "RPMs directory not found: ${rpms_dir}. Choose rpm_build test also."
-					exit 0   # graceful exit
+					fail "boot_kernel" "RPM directory not found: ${rpms_dir}. Select rpm_build as well."
+					exit 1
 				fi
 				kernel_rpm=$(find "${rpms_dir}" -name "kernel-*.rpm" \
 					! -name "*debuginfo*" ! -name "*devel*" ! -name "*headers*" -type f | head -n 1)
 
 				if [ -z "${kernel_rpm}" ]; then
-					fail "boot_kernel_rpm" "Kernel RPM not found in ${rpms_dir}. Choose rpm_build test also."
-					exit 0   # graceful exit
+					fail "boot_kernel" "No kernel RPM in ${rpms_dir}. Select rpm_build as well."
+					exit 1
 				fi
 
 				echo "→ Found kernel RPM: $(basename "${kernel_rpm}")" >> "${boot_log}"
@@ -184,17 +188,17 @@ update_tests() {
 	fi
 
 	# Update only test-related lines in .configure
-	sed -i "s|^RUN_TESTS=.*|RUN_TESTS=\"${RUN_TESTS}\"|" "${CONFIG_FILE}"
-	sed -i "s|^TEST_CHECK_DEPENDENCY=.*|TEST_CHECK_DEPENDENCY=\"${TEST_CHECK_DEPENDENCY}\"|" "${CONFIG_FILE}"
-	sed -i "s|^TEST_BUILD_ALLMOD=.*|TEST_BUILD_ALLMOD=\"${TEST_BUILD_ALLMOD}\"|" "${CONFIG_FILE}"
-	sed -i "s|^TEST_CHECK_KABI=.*|TEST_CHECK_KABI=\"${TEST_CHECK_KABI}\"|" "${CONFIG_FILE}"
-	sed -i "s|^TEST_CHECK_PATCH=.*|TEST_CHECK_PATCH=\"${TEST_CHECK_PATCH}\"|" "${CONFIG_FILE}"
-	sed -i "s|^TEST_CHECK_FORMAT=.*|TEST_CHECK_FORMAT=\"${TEST_CHECK_FORMAT}\"|" "${CONFIG_FILE}"
-	sed -i "s|^TEST_RPM_BUILD=.*|TEST_RPM_BUILD=\"${TEST_RPM_BUILD}\"|" "${CONFIG_FILE}"
-	sed -i "s|^TEST_BOOT_KERNEL=.*|TEST_BOOT_KERNEL=\"${TEST_BOOT_KERNEL}\"|" "${CONFIG_FILE}"
-	sed -i "s|^HOST_USER_PWD=.*|HOST_USER_PWD='${HOST_USER_PWD}'|" "${CONFIG_FILE}"
-	sed -i "s|^VM_IP=.*|VM_IP=\"${VM_IP}\"|" "${CONFIG_FILE}"
-	sed -i "s|^VM_ROOT_PWD=.*|VM_ROOT_PWD='${VM_ROOT_PWD}'|" "${CONFIG_FILE}"
+	config_set "${CONFIG_FILE}" RUN_TESTS             "${RUN_TESTS}"
+	config_set "${CONFIG_FILE}" TEST_CHECK_DEPENDENCY "${TEST_CHECK_DEPENDENCY}"
+	config_set "${CONFIG_FILE}" TEST_BUILD_ALLMOD     "${TEST_BUILD_ALLMOD}"
+	config_set "${CONFIG_FILE}" TEST_CHECK_KABI       "${TEST_CHECK_KABI}"
+	config_set "${CONFIG_FILE}" TEST_CHECK_PATCH      "${TEST_CHECK_PATCH}"
+	config_set "${CONFIG_FILE}" TEST_CHECK_FORMAT     "${TEST_CHECK_FORMAT}"
+	config_set "${CONFIG_FILE}" TEST_RPM_BUILD        "${TEST_RPM_BUILD}"
+	config_set "${CONFIG_FILE}" TEST_BOOT_KERNEL      "${TEST_BOOT_KERNEL}"
+	config_set "${CONFIG_FILE}" HOST_USER_PWD         "${HOST_USER_PWD}"
+	config_set "${CONFIG_FILE}" VM_IP                 "${VM_IP}"
+	config_set "${CONFIG_FILE}" VM_ROOT_PWD           "${VM_ROOT_PWD}"
 	echo -e "${GREEN}Test configuration updated successfully.${NC}"
 }
 
@@ -203,67 +207,9 @@ if [[ "${1:-}" == "--tests" ]]; then
 	exit 0
 fi
 
-CONFIG_FILE="euler/.configure"
-
-# Extract HOST_USER_PWD safely
-get_host_password() {
-  if [ -f "$CONFIG_FILE" ]; then
-    HOST_PASS=$(grep "^HOST_USER_PWD=" "$CONFIG_FILE" | cut -d"'" -f2)
-    echo "$HOST_PASS"
-  fi
-}
-
-delete_repo() {
-  if [ -d "$TORVALDS_REPO" ]; then
-    echo -e "${BLUE}Removing corrupted repository...${NC}"
-
-    OWNER=$(stat -c '%U' "$TORVALDS_REPO")
-
-    if [ "$OWNER" = "root" ]; then
-      echo -e "${YELLOW}Repository owned by root.${NC}"
-
-      HOST_PASS=$(get_host_password)
-
-      if [ -n "$HOST_PASS" ]; then
-        echo "$HOST_PASS" | sudo -S rm -rf "$TORVALDS_REPO"
-      else
-        echo -e "${RED}Root password not found in config.${NC}"
-        read -s -p "Enter sudo password to remove repo: " HOST_PASS
-        echo ""
-        echo "$HOST_PASS" | sudo -S rm -rf "$TORVALDS_REPO"
-      fi
-    else
-      rm -rf "$TORVALDS_REPO"
-    fi
-  fi
-}
-
-# Clone Torvalds repo if not exists
-if [ ! -d "$TORVALDS_REPO" ]; then
-  echo -e "${BLUE}Cloning Torvalds Linux repository...${NC}"
-  git clone --bare https://github.com/torvalds/linux.git "$TORVALDS_REPO" 2>&1 | \
-    stdbuf -oL tr '\r' '\n' | \
-    grep -oP '\d+(?=%)' | \
-    awk '{printf "\rProgress: %d%%", $1; fflush()}' || \
-    git config --global --add safe.directory $TORVALDS_REPO
-  echo -e "\r${GREEN}Repository cloned successfully${NC}"
-  echo ""
-else
-  echo -e "${GREEN}Torvalds repository already exists${NC}"
-  echo -e "${BLUE}Updating repository...${NC}"
-  if ! (cd "$TORVALDS_REPO" && git fetch --all --tags 2>&1 | grep -v "^From"); then
-    echo -e "${RED}Fetch failed. Re-cloning repository...${NC}"
-    delete_repo # Delete existing torvalds linux repo
-    echo -e "${BLUE}Re-cloning Torvalds Linux repository...${NC}"
-    git clone --bare https://github.com/torvalds/linux.git "$TORVALDS_REPO" 2>&1 | \
-      stdbuf -oL tr '\r' '\n' | \
-      grep -oP '\d+(?=%)' | \
-      awk '{printf "\rProgress: %d%%", $1; fflush()}' || \
-      git config --global --add safe.directory $TORVALDS_REPO
-    echo -e "${GREEN}Repository re-cloned successfully${NC}"
-  else
-    echo -e "${GREEN}Repository updated${NC}"
-  fi
+if ! torvalds_sync; then
+	echo -e "${YELLOW}Continuing without an up-to-date mainline mirror;${NC}"
+	echo -e "${YELLOW}check_dependency cannot resolve upstream commits until it is fixed.${NC}"
 fi
 
 # General Configuration
@@ -393,6 +339,9 @@ if [[ "$TEST_RPM_BUILD" == "yes" ]]; then
 fi
 
 # Write configuration file
+# The file holds the host sudo password and the VM root password, so it must
+# not be readable by other users on the build machine.
+umask 077
 cat > "$CONFIG_FILE" <<EOF
 # openEuler Configuration
 # Generated: $(date)
@@ -428,6 +377,7 @@ VM_ROOT_PWD='${VM_ROOT_PWD}'
 # Repository Configuration
 TORVALDS_REPO="${TORVALDS_REPO}"
 EOF
+chmod 600 "$CONFIG_FILE"
 
 echo ""
 echo "Linux source: ${LINUX_SRC_PATH}"
