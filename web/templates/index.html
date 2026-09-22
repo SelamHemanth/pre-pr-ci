@@ -297,6 +297,22 @@ header {
 
 .hint { font-size: 11.5px; color: var(--text-faint); }
 
+/* What the running build is actually doing, under the bar. */
+.step-now {
+    display: flex; align-items: baseline; gap: 7px;
+    margin-top: 7px; font-size: 11.5px; color: var(--text-dim);
+}
+.step-now-name {
+    font-family: var(--mono); color: var(--text);
+    min-width: 0; flex: 1;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.step-now-phase {
+    flex: none; padding: 1px 7px; border-radius: 999px;
+    background: var(--accent-soft); color: var(--accent);
+    font-size: 10.5px; font-weight: 600;
+}
+
 /* ── status card ────────────────────────────────────────────────────── */
 
 .status-line { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
@@ -802,6 +818,18 @@ footer a:hover { text-decoration: underline; }
           <div class="progress" :class="{ indet: runningJob && runningJob.progress === null }"
                v-if="runningJob" style="margin-top:10px">
             <span :style="{ width: (runningJob.progress || 0) + '%' }"></span>
+          </div>
+          <!-- During a build the percentage alone says little: what you want
+               to know is which patch it reached and whether it is compiling,
+               because that is the part that takes the time. -->
+          <div class="step-now" v-if="runningJob && runningJob.step_label">
+            <span>Patch {{ runningJob.step }} of {{ runningJob.total_steps }}</span>
+            <span class="step-now-name" :title="runningJob.step_label">
+              {{ runningJob.step_label }}
+            </span>
+            <span class="step-now-phase" v-if="runningJob.phase">
+              {{ runningJob.phase }}
+            </span>
           </div>
           <button class="btn btn-sm btn-block" v-if="runningJob"
                   @click="openLog(runningJob)">

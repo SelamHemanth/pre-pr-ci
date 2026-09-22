@@ -76,6 +76,23 @@ _RESULT_RE = re.compile(
 )
 
 
+# Both build scripts announce each patch as "[2/5] Processing: name.patch",
+# and the per-patch phases as "  Applying   : PASS".  A build job used to set
+# no total at all, so the bar was indeterminate for the whole run -- on Anolis
+# that is a full kernel compile per patch, which is the longest thing the tool
+# does and the one place a real percentage is worth having.
+_PATCH_RE = re.compile(r'^\s*\[(\d+)/(\d+)\]\s+Processing:\s*(.+?)\s*$')
+_PHASE_RE = re.compile(
+    r'^\s*(Applying|Checkpatch|Building)\s*:\s*'
+    r'(?:[\u2713\u2717\u2298]\s*)?(PASS|FAIL)\s*$'
+)
+
+#: Anolis runs apply, checkpatch and build per patch; openEuler only applies.
+#: Used to turn phases into a fraction of the current patch, so the bar keeps
+#: moving during a compile rather than sitting still for forty minutes.
+_PHASES_PER_PATCH = 3
+
+
 def strip_ansi(text):
     return _ANSI_RE.sub('', text)
 
@@ -295,6 +312,8 @@ class JobStore:
         if not clean.strip():
             return
         match = _RESULT_RE.match(clean)
+        patch = _PATCH_RE.match(clean)
+        phase = _PHASE_RE.match(clean)
         with self._lock:
             job = self._jobs.get(job_id)
             if not job:
@@ -305,6 +324,15 @@ class JobStore:
                     'verdict': match.group(1),
                     'test': match.group(2),
                 })
+            elif patch:
+                job['step'] = int(patch.group(1))
+                job['total_steps'] = int(patch.group(2))
+                job['step_label'] = patch.group(3)
+                job['phase'] = None
+                job['phases_done'] = 0
+            elif phase and job.get('step'):
+                job['phase'] = phase.group(1)
+                job['phases_done'] = job.get('phases_done', 0) + 1
 
     def _finish(self, job_id, status, exit_code=None, error=None):
         with self._lock:
@@ -347,10 +375,18 @@ class JobStore:
 
         total = out.get('total_steps') or 0
         done = len(out.get('results') or [])
+        step = out.get('step') or 0
         if out['status'] in FINISHED_STATES:
             out['progress'] = 100
-        elif total:
+        elif done and total:
             out['progress'] = min(99, int(done * 100 / total))
+        elif step and total:
+            # Patches completed, plus how far into the current one we are.
+            # Capped below 1 so finishing a patch's phases cannot claim the
+            # next patch has started.
+            within = min(0.95, (out.get('phases_done') or 0)
+                         / float(_PHASES_PER_PATCH))
+            out['progress'] = min(99, int((step - 1 + within) * 100 / total))
         else:
             out['progress'] = None
 

@@ -33,6 +33,7 @@ PROJECT_ROOT = os.path.dirname(WEB_DIR)
 if WEB_DIR not in sys.path:
     sys.path.insert(0, WEB_DIR)
 
+from prci import jobs                                       # noqa: E402
 from prci import registry                                   # noqa: E402
 from prci.distro import ConfigError, Workspace, redact       # noqa: E402
 from prci.jobs import JobStore, strip_ansi                   # noqa: E402
@@ -568,6 +569,88 @@ class TestAnsi(unittest.TestCase):
 
     def test_title_sequences_are_removed(self):
         self.assertEqual(strip_ansi('\033]0;title\007done'), 'done')
+
+
+class TestBuildProgress(unittest.TestCase):
+    """The build scripts' own output is what drives the build progress bar."""
+
+    def feed(self, lines):
+        """Replay log lines through the same matching _observe does."""
+        state = {'step': 0, 'total': 0, 'phases': 0, 'phase': None}
+        seen = []
+        for raw in lines:
+            clean = strip_ansi(raw).rstrip()
+            patch = jobs._PATCH_RE.match(clean)
+            phase = jobs._PHASE_RE.match(clean)
+            if patch:
+                state.update(step=int(patch.group(1)),
+                             total=int(patch.group(2)),
+                             phases=0, phase=None, label=patch.group(3))
+            elif phase and state['step']:
+                state['phase'] = phase.group(1)
+                state['phases'] += 1
+            if state['step'] and state['total']:
+                within = min(0.95, state['phases'] / float(jobs._PHASES_PER_PATCH))
+                seen.append(min(99, int((state['step'] - 1 + within)
+                                        * 100 / state['total'])))
+        return state, seen
+
+    def anolis_lines(self, patches):
+        out = []
+        for i in range(1, patches + 1):
+            out.append('\033[0;34m[%d/%d] Processing: %04d-fix.patch\033[0m'
+                       % (i, patches, i))
+            for label in ('Applying  ', 'Checkpatch', 'Building  '):
+                out.append('  %s : \033[0;32m\u2713 PASS\033[0m' % label)
+        return out
+
+    def test_patch_header_sets_step_and_total(self):
+        state, _ = self.feed(self.anolis_lines(3))
+        self.assertEqual(state['step'], 3)
+        self.assertEqual(state['total'], 3)
+        self.assertEqual(state['label'], '0003-fix.patch')
+
+    def test_progress_never_goes_backwards(self):
+        _, seen = self.feed(self.anolis_lines(4))
+        self.assertEqual(seen, sorted(seen))
+
+    def test_progress_stays_below_complete_until_the_job_ends(self):
+        _, seen = self.feed(self.anolis_lines(2))
+        self.assertLess(max(seen), 100)
+
+    def test_a_patch_never_claims_the_next_ones_share(self):
+        # Finishing every phase of patch 1 of 4 must stay under 25%.
+        _, seen = self.feed(self.anolis_lines(4)[:4])
+        self.assertLess(max(seen), 25)
+
+    def test_apply_only_output_still_advances(self):
+        # openEuler applies patches without compiling them.
+        lines = []
+        for i in (1, 2):
+            lines.append('[%d/2] Processing: %04d-fix.patch' % (i, i))
+            lines.append('  Applying   : \u2713 PASS')
+        _, seen = self.feed(lines)
+        self.assertEqual(seen, sorted(seen))
+        self.assertGreater(seen[-1], seen[0])
+
+    def test_a_failed_phase_is_still_a_phase(self):
+        state, _ = self.feed(['[1/1] Processing: 0001-fix.patch',
+                              '  Applying   : \u2717 FAIL'])
+        self.assertEqual(state['phase'], 'Applying')
+
+    def test_compiler_output_is_not_mistaken_for_a_patch_header(self):
+        # A kernel build prints a great deal that looks vaguely like this.
+        for noise in ('[1/3] Building modules',
+                      'note: [2/5] Processing: not at the line start',
+                      '  CC [M]  drivers/foo.o',
+                      'make[2]: Entering directory'):
+            self.assertIsNone(jobs._PATCH_RE.match(noise),
+                              'patch header matched %r' % noise)
+
+    def test_phase_line_needs_a_verdict(self):
+        # "Building   : " with no verdict is the announcement, not the result.
+        self.assertIsNone(jobs._PHASE_RE.match('  Building   : starting'))
+        self.assertIsNotNone(jobs._PHASE_RE.match('  Building   : PASS'))
 
 
 if __name__ == '__main__':
