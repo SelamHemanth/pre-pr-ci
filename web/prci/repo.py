@@ -30,6 +30,25 @@ CLONE_URL = 'https://github.com/torvalds/linux.git'
 CLONE_TIMEOUT = 60 * 60
 FETCH_TIMEOUT = 15 * 60
 
+#: Skip the fetch when the mirror is younger than this, in seconds.  Every
+#: build job synced the mirror first, so a run started minutes after the last
+#: one re-fetched a multi-gigabyte repository to learn nothing.  The mirror
+#: only answers whether a commit is upstream, which minutes cannot change.
+MAX_AGE = int(os.environ.get('TORVALDS_MAX_AGE', 30 * 60))
+
+
+def _age(path):
+    """Seconds since the mirror last fetched, or None if it never has.
+
+    git rewrites FETCH_HEAD on every fetch, including one that brought
+    nothing down, which is exactly the event worth not repeating.
+    """
+    try:
+        return max(0, int(time.time() - os.path.getmtime(
+            os.path.join(path, 'FETCH_HEAD'))))
+    except OSError:
+        return None
+
 
 def to_stdout(message):
     """Default progress sink: the job log is this process's stdout.
@@ -53,6 +72,11 @@ def sync(path, emit=None):
 
     if not os.path.isdir(path):
         return _clone(path, say)
+
+    age = _age(path)
+    if MAX_AGE > 0 and age is not None and age < MAX_AGE:
+        say('Mirror was updated %dm ago; not fetching again.' % (age // 60))
+        return True
 
     say('Updating mirror of mainline in %s' % path)
     result = _git(['fetch', '--all', '--tags', '--progress'],

@@ -21,6 +21,22 @@
 
 TORVALDS_URL="${TORVALDS_URL:-https://github.com/torvalds/linux.git}"
 
+# Skip the fetch when the mirror was updated this recently, in seconds.  The
+# mirror is only consulted to decide whether a commit is upstream, so minutes
+# of staleness cannot change an answer, and configure, check_dependency and
+# the web build job each used to fetch a multi-gigabyte mirror in turn.  Set
+# to 0 to fetch unconditionally.
+TORVALDS_MAX_AGE="${TORVALDS_MAX_AGE:-1800}"
+
+# Seconds since the mirror last completed a fetch, or nothing if unknown.
+# git rewrites FETCH_HEAD on every fetch, including one that brought nothing.
+_tv_age() {
+	local stamp now
+	stamp=$(stat -c '%Y' "${TORVALDS_REPO}/FETCH_HEAD" 2>/dev/null) || return 1
+	now=$(date +%s)
+	echo $(( now - stamp ))
+}
+
 _tv_say() {
 	printf '%b\n' "${TORVALDS_LOG_PREFIX:-}$*"
 }
@@ -104,6 +120,15 @@ torvalds_sync() {
 	fi
 
 	_tv_trust
+
+	local age
+	if [ "${TORVALDS_MAX_AGE}" -gt 0 ] 2>/dev/null && age=$(_tv_age) \
+	   && [ "${age}" -lt "${TORVALDS_MAX_AGE}" ]; then
+		_tv_say "${GREEN:-}Mirror was updated $(( age / 60 ))m ago; not fetching again.${NC:-}"
+		_tv_say "Set TORVALDS_MAX_AGE=0 to fetch regardless."
+		return 0
+	fi
+
 	_tv_say "${BLUE:-}Updating the mainline mirror...${NC:-}"
 
 	if _tv_fetch; then

@@ -34,6 +34,7 @@ if WEB_DIR not in sys.path:
     sys.path.insert(0, WEB_DIR)
 
 from prci import jobs                                       # noqa: E402
+from prci import repo                                       # noqa: E402
 from prci import registry                                   # noqa: E402
 from prci.distro import ConfigError, Workspace, redact       # noqa: E402
 from prci.jobs import JobStore, strip_ansi                   # noqa: E402
@@ -569,6 +570,76 @@ class TestAnsi(unittest.TestCase):
 
     def test_title_sequences_are_removed(self):
         self.assertEqual(strip_ansi('\033]0;title\007done'), 'done')
+
+
+class TestMirrorFreshness(unittest.TestCase):
+    """configure, check_dependency and the web build job each sync the
+    mirror, so back-to-back runs used to refetch it for nothing.
+
+    git is stubbed throughout.  sync() answers a failed fetch by deleting the
+    mirror and cloning it again, so a test that let the real git run against
+    this fixture -- which is a directory, not a repository -- pulled several
+    gigabytes of mainline into /tmp before anyone noticed.
+    """
+
+    def setUp(self):
+        from unittest import mock
+
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.mirror = os.path.join(self.tmp.name, 'mirror')
+        os.makedirs(self.mirror)
+
+        self.git_calls = []
+        patcher = mock.patch.object(repo, '_git', self.fake_git)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+        self.addCleanup(setattr, repo, 'MAX_AGE', repo.MAX_AGE)
+
+    def fake_git(self, args, cwd=None, timeout=None, say=None):
+        self.git_calls.append(args[0])
+        return repo._Result(0, '')
+
+    def stamp(self, seconds_ago):
+        path = os.path.join(self.mirror, 'FETCH_HEAD')
+        open(path, 'w').close()
+        when = time.time() - seconds_ago
+        os.utime(path, (when, when))
+
+    def test_age_is_none_before_the_first_fetch(self):
+        self.assertIsNone(repo._age(self.mirror))
+
+    def test_age_reads_the_fetch_head_stamp(self):
+        self.stamp(600)
+        self.assertAlmostEqual(repo._age(self.mirror), 600, delta=5)
+
+    def test_a_fresh_mirror_is_not_fetched_again(self):
+        repo.MAX_AGE = 1800
+        self.stamp(60)
+        said = []
+        self.assertTrue(repo.sync(self.mirror, emit=said.append))
+        self.assertEqual(self.git_calls, [])
+        self.assertIn('not fetching again', ' '.join(said))
+
+    def test_a_stale_mirror_is_fetched(self):
+        repo.MAX_AGE = 1800
+        self.stamp(3600)
+        self.assertTrue(repo.sync(self.mirror, emit=lambda line: None))
+        self.assertEqual(self.git_calls, ['fetch'])
+
+    def test_a_mirror_that_never_fetched_is_fetched(self):
+        # No FETCH_HEAD means no evidence of freshness, so the guard has to
+        # stand aside rather than treat an unknown age as recent.
+        repo.MAX_AGE = 1800
+        self.assertTrue(repo.sync(self.mirror, emit=lambda line: None))
+        self.assertEqual(self.git_calls, ['fetch'])
+
+    def test_zero_disables_the_guard(self):
+        repo.MAX_AGE = 0
+        self.stamp(1)
+        self.assertTrue(repo.sync(self.mirror, emit=lambda line: None))
+        self.assertEqual(self.git_calls, ['fetch'])
 
 
 class TestBuildProgress(unittest.TestCase):
