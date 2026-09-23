@@ -45,7 +45,6 @@ HEAD_ID_FILE="${WORKDIR}/.head_commit_id"
 : "${SIGNER_NAME:?missing in config}"
 : "${SIGNER_EMAIL:?missing in config}"
 : "${BUGZILLA_ID:?missing in config}"
-: "${PATCH_CATEGORY:?missing in config}"
 : "${NUM_PATCHES:?missing in config}"
 : "${BUILD_THREADS:=4}"
 : "${TORVALDS_REPO:?missing in config}"
@@ -77,84 +76,6 @@ if [ -z "${TOTAL_COMMITS}" ] || [ "${TOTAL_COMMITS}" -lt "${NUM_PATCHES}" ]; the
   exit 11
 fi
 
-# Function to extract and expand upstream commit ID from patch
-extract_upstream_commit() {
-  local patch_file="$1"
-  local auto_update="${2:-true}"  # Auto-update patch file by default
-
-  # Look for "commit <hash> upstream" pattern or just "commit <hash>"
-  local commit_id=$(grep -oP '(?<=commit )[a-f0-9]{7,40}(?= upstream)' "$patch_file" 2>/dev/null | head -1)
-  if [ -z "$commit_id" ]; then
-    commit_id=$(grep -oP '(?<=^commit )[a-f0-9]{7,40}' "$patch_file" 2>/dev/null | head -1)
-  fi
-
-  # If commit ID found and it's less than 40 characters, expand it
-  if [ -n "$commit_id" ] && [ ${#commit_id} -lt 40 ]; then
-    local short_id="$commit_id"
-    local full_commit_id
-
-    cd "$TORVALDS_REPO" || return 1
-    full_commit_id=$(git rev-parse --verify "${commit_id}^{commit}" 2>/dev/null)
-    local git_exit_code=$?
-    cd - >/dev/null || return 1
-
-    if [ $git_exit_code -eq 0 ] && [ -n "$full_commit_id" ] && [ ${#full_commit_id} -eq 40 ]; then
-      commit_id="$full_commit_id"
-
-      # Update the patch file with full commit ID
-      if [ "$auto_update" = "true" ]; then
-        sed -i "s/${short_id}/${full_commit_id}/g" "$patch_file"
-      fi
-    else
-      echo -e "${YELLOW}  Warning: Could not expand short commit ID ${short_id} to full SHA${NC}" >&2
-    fi
-  fi
-
-  echo "$commit_id"
-}
-
-# Function to get tag version from commit
-get_tag_version() {
-  local commit_id="$1"
-  cd "$TORVALDS_REPO"
-  local tag=$(git describe --contains "$commit_id" 2>/dev/null | sed 's/~.*//' | sed 's/\^.*//')
-  if [ -z "$tag" ]; then
-    tag=$(git describe --tags "$commit_id" 2>/dev/null | sed 's/-.*//')
-  fi
-  if [ -z "$tag" ]; then
-    echo "mainline"
-  else
-    echo "$tag"
-  fi
-  cd - >/dev/null
-}
-
-# Function to check if patch is KABI fix (operates on .patch files)
-is_kabi_fix_patch() {
-  local patch_file="$1"
-  local upstream_commit=$(extract_upstream_commit "${patch_file}" "false")
-  local subject=$(grep "^Subject:" "${patch_file}" | head -1 | sed 's/^Subject: //')
-  # Check if no upstream commit and subject contains KABI/kabi
-  if [ -z "${upstream_commit}" ] && [[ "${subject}" =~ KABI|kabi|KAPI|kapi ]]; then
-    return 0  # Is KABI fix
-  fi
-  return 1  # Not KABI fix
-}
-
-# Function to check if a commit (from git log) is a KABI fix (used for runtime tag check)
-is_kabi_fix_commit() {
-  local commit_msg="$1"
-  local subject
-  subject="$(echo "${commit_msg}" | head -1)"
-  # No upstream commit reference AND subject contains KABI/kabi keywords
-  if ! echo "${commit_msg}" | grep -qP 'commit [a-f0-9]{7,40}( upstream)?'; then
-    if echo "${subject}" | grep -qiE 'KABI|kabi|KAPI|kapi'; then
-      return 0  # Is KABI fix
-    fi
-  fi
-  return 1  # Not KABI fix
-}
-
 SOB_TAG="Signed-off-by: ${SIGNER_NAME} <${SIGNER_EMAIL}>"
 
 echo -e "${BLUE}Checking if commits are already tagged with openEuler metadata...${NC}"
@@ -162,26 +83,23 @@ echo -e "${BLUE}Checking if commits are already tagged with openEuler metadata..
 # SKIP_APPLY=true means commits+patches are already in place — no git am needed
 SKIP_APPLY=false
 
+# Two requirements, and they apply to every commit.  KABI fixes used to
+# be excused the Signed-off-by, which openEuler's check_employee_id does
+# not excuse anybody: it fails any patch without one.  The inclusion line
+# is matched loosely because their third template accepts any word --
+# hulk, virt, maillist -- and this only decides whether there is work to
+# do, not whether the result is acceptable.
 all_tagged=true
 while IFS= read -r commit_hash; do
   commit_msg="$(git log -1 --format="%B" "${commit_hash}")"
 
-  if is_kabi_fix_commit "${commit_msg}"; then
-    # KABI fix: only "virt inclusion" required — Signed-off-by not expected
-    if ! echo "${commit_msg}" | grep -qF "virt inclusion"; then
-      all_tagged=false
-      break
-    fi
-  else
-    # Regular commit: inclusion header + Signed-off-by both required
-    if ! echo "${commit_msg}" | grep -qE "mainline inclusion|virt inclusion"; then
-      all_tagged=false
-      break
-    fi
-    if ! echo "${commit_msg}" | grep -qF "${SOB_TAG}"; then
-      all_tagged=false
-      break
-    fi
+  if ! echo "${commit_msg}" | grep -qE "^[[:alnum:] ]+ inclusion$"; then
+    all_tagged=false
+    break
+  fi
+  if ! echo "${commit_msg}" | grep -qF "${SOB_TAG}"; then
+    all_tagged=false
+    break
   fi
 done < <(git log --format="%H" -n "${NUM_PATCHES}" HEAD)
 
@@ -224,131 +142,37 @@ else
 
   echo -e "${BLUE}Modifying patches with openEuler metadata and Signed-off-by tags...${NC}"
 
-  # Modify patches in-place with required formatting
+  # oe_header.py writes the header, and refuses when it cannot write one
+  # that openEuler's format.py will accept.  Refusing matters: the header
+  # used to be written on a best-effort basis, so an unresolvable SHA or a
+  # commit in no release produced a patch that looked finished and was
+  # rejected by the gate later.  Better to stop here, where the tree has
+  # not been rewound yet and the message says what is missing.
+  refused=0
   for p in "${PATCHES_DIR}"/*.patch; do
     [ -f "${p}" ] || continue
     cp -f "${p}" "${BKP_DIR}/$(basename "${p}")"
 
-    # Check if this is a KABI fix patch
-    if is_kabi_fix_patch "${p}"; then
-      # ── KABI fix: insert "virt inclusion" header ONLY — Signed-off-by skipped ──
-      awk -v CAT="$PATCH_CATEGORY" -v BZ="$BUGZILLA_ID" '
-        BEGIN { in_sub=0; printed_header=0 }
-        {
-          if (!in_sub) {
-            print $0
-            if ($0 ~ /^Subject:/) { in_sub=1; next }
-          } else if (in_sub && !printed_header) {
-            if ($0 ~ /^$/) {
-              print ""
-              print "virt inclusion"
-              print "category: " CAT
-              print "bugzilla: https://atomgit.com/openeuler/kernel/issues/" BZ
-              print ""
-              print "--------------------------------"
-              print ""
-              printed_header=1
-              next
-            } else {
-              print $0
-              next
-            }
-          } else {
-            print $0
-          }
-        }
-        END {
-          if (in_sub && !printed_header) {
-            print ""
-            print "virt inclusion"
-            print "category: " CAT
-            print "bugzilla: https://atomgit.com/openeuler/kernel/issues/" BZ
-            print ""
-            print "--------------------------------"
-            print ""
-          }
-        }' "${p}" > "${p}.tmp" && mv "${p}.tmp" "${p}"
-
-      echo -e "  ${YELLOW}KABI fix — Signed-off-by skipped: $(basename "${p}")${NC}"
-
+    if summary=$(python3 "${SCRIPT_DIR}/oe_header.py" "${p}" \
+        --mirror "${TORVALDS_REPO}" \
+        --kernel "${LINUX_SRC_PATH}" \
+        --bugzilla "${BUGZILLA_ID}" \
+        --signer "${SOB_TAG}" \
+        --branch "${OE_TARGET_BRANCH:-OLK-6.6}" 2>&1); then
+      echo -e "  ${GREEN}✓${NC} $(basename "${p}") — ${summary}"
     else
-      # ── Regular patch: insert mainline inclusion header + Signed-off-by ──
-
-      # Extract upstream commit from patch content and expand if needed
-      upstream_commit=$(extract_upstream_commit "${p}")
-      if [ -n "$upstream_commit" ]; then
-        # Get tag version from Torvalds repo
-        tag_version=$(get_tag_version "$upstream_commit")
-        # Insert openEuler header after Subject
-        awk -v TAG="$tag_version" -v COMMIT="$upstream_commit" -v CAT="$PATCH_CATEGORY" -v BZ="$BUGZILLA_ID" '
-          BEGIN { in_sub=0; printed_header=0 }
-          {
-            if (!in_sub) {
-              print $0
-              if ($0 ~ /^Subject:/) { in_sub=1; next }
-            } else if (in_sub && !printed_header) {
-              if ($0 ~ /^$/) {
-                print ""
-                print "mainline inclusion"
-                print "from mainline-" TAG
-                print "commit " COMMIT
-                print "category: " CAT
-                print "bugzilla: https://atomgit.com/openeuler/kernel/issues/" BZ
-                print "CVE: NA"
-                print ""
-                print "Reference: https://github.com/torvalds/linux/commit/" COMMIT
-                print ""
-                print "--------------------------------"
-                print ""
-                printed_header=1
-                next
-              } else {
-                print $0
-                next
-              }
-            } else {
-              print $0
-            }
-          }
-          END {
-            if (in_sub && !printed_header) {
-              print ""
-              print "mainline inclusion"
-              print "from mainline-" TAG
-              print "commit " COMMIT
-              print "category: " CAT
-              print "bugzilla: https://atomgit.com/openeuler/kernel/issues/" BZ
-              print "CVE: NA"
-              print ""
-              print "Reference: https://github.com/torvalds/linux/commit/" COMMIT
-              print ""
-              print "--------------------------------"
-              print ""
-            }
-          }' "${p}" > "${p}.tmp" && mv "${p}.tmp" "${p}"
-      fi
-
-      # Insert Signed-off-by before first '---' (non-KABI patches only)
-      SOB_LINE="Signed-off-by: ${SIGNER_NAME} <${SIGNER_EMAIL}>"
-      if ! grep -qF "${SOB_LINE}" "${p}"; then
-        awk -v SOB="Signed-off-by: ${SIGNER_NAME} <${SIGNER_EMAIL}>" '
-          BEGIN { inserted=0 }
-          {
-            if (!inserted && $0 ~ /^---$/) {
-              print SOB
-              inserted=1
-            }
-            print $0
-          }
-          END {
-            if (!inserted) {
-              print ""
-              print SOB
-            }
-          }' "${p}" > "${p}.tmp" && mv "${p}.tmp" "${p}"
-      fi
+      echo -e "  ${RED}✗${NC} $(echo "${summary}" | sed '2,$s/^/    /')"
+      refused=$((refused + 1))
     fi
   done
+
+  if [ "${refused}" -ne 0 ]; then
+    echo ""
+    echo -e "${RED}${refused} patch(es) cannot be given a header openEuler will accept.${NC}" >&2
+    echo -e "${YELLOW}Nothing has been applied; restoring ${HEAD_ID}.${NC}" >&2
+    git reset --hard "${HEAD_ID}" >/dev/null 2>&1 || true
+    exit 21
+  fi
 fi
 
 # Ensure repo clean

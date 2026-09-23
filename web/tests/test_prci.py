@@ -260,7 +260,6 @@ class TestConfigFile(unittest.TestCase):
             'SIGNER_NAME': 'Hemanth Selam',
             'SIGNER_EMAIL': 'Hemanth.Selam@amd.com',
             'BUGZILLA_ID': '12345',
-            'PATCH_CATEGORY': 'bugfix',
             'NUM_PATCHES': '5',
             'BUILD_THREADS': '256',
             'VM_IP': '10.0.0.5',
@@ -329,9 +328,9 @@ class TestConfigFile(unittest.TestCase):
             with self.assertRaises(ConfigError, msg='%s=%s' % (field, value)):
                 self.write(**{field: value})
 
-    def test_bad_category_is_rejected(self):
+    def test_a_select_field_rejects_a_value_not_on_the_list(self):
         with self.assertRaises(ConfigError):
-            self.write(PATCH_CATEGORY='urgent')
+            self.write(OE_TARGET_BRANCH='not-a-branch')
 
     def test_vm_settings_only_required_when_boot_test_is_on(self):
         # anolis, because euler no longer boots anything and has no VM
@@ -819,6 +818,86 @@ class TestBuildProgress(unittest.TestCase):
         # "Building   : " with no verdict is the announcement, not the result.
         self.assertIsNone(jobs._PHASE_RE.match('  Building   : starting'))
         self.assertIsNotNone(jobs._PHASE_RE.match('  Building   : PASS'))
+
+
+class TestPatchCategory(unittest.TestCase):
+    """Reading the category out of the commit rather than asking for it.
+
+    It used to be one answer from the configuration form, stamped on
+    every patch in the series.  That is wrong the moment a series mixes
+    a fix with a cleanup, and it is the submitter guessing at something
+    the commit message already states.
+    """
+
+    def setUp(self):
+        sys.path.insert(0, os.path.join(PROJECT_ROOT, 'euler'))
+        self.addCleanup(sys.path.remove, os.path.join(PROJECT_ROOT, 'euler'))
+        import oe_header
+        self.decide = oe_header.decide_category
+
+    def category(self, subject, message=''):
+        return self.decide(subject, message or subject)[0]
+
+    def test_a_cve_is_a_security_patch(self):
+        self.assertEqual(
+            self.category('net: fix a thing', 'Fixes CVE-2023-12345 here.'),
+            'security')
+
+    def test_cve_outranks_the_fixes_tag(self):
+        # Both are present on most CVE fixes; the CVE is the more
+        # specific statement.
+        self.assertEqual(
+            self.category('net: fix a thing',
+                          'CVE-2023-12345\nFixes: abcdef123456 ("x")'),
+            'security')
+
+    def test_copied_to_stable_means_bugfix(self):
+        # The stable rules only accept fixes, so a maintainer sending it
+        # there has already classified it.
+        self.assertEqual(
+            self.category('net: rework the thing',
+                          'Cc: <stable@vger.kernel.org>'),
+            'bugfix')
+
+    def test_a_fixes_tag_means_bugfix(self):
+        self.assertEqual(
+            self.category('net: rework the thing',
+                          'Fixes: abcdef123456 ("earlier commit")'),
+            'bugfix')
+
+    def test_a_revert_is_a_bugfix(self):
+        self.assertEqual(self.category('Revert "net: add a thing"'), 'bugfix')
+
+    def test_the_subject_decides_when_nothing_else_does(self):
+        self.assertEqual(self.category('net: fix a null deref'), 'bugfix')
+        self.assertEqual(self.category('net: avoid a race on close'),
+                         'bugfix')
+        self.assertEqual(self.category('net: optimise the hot path'),
+                         'performance')
+
+    def test_an_addition_is_a_feature(self):
+        for subject in ('net: add support for the new chip',
+                        'docs: describe the new sysfs knob',
+                        'KABI: reserve padding in struct foo'):
+            self.assertEqual(self.category(subject), 'feature', subject)
+
+    def test_fix_inside_another_word_is_not_a_fix(self):
+        # "prefix" and "suffix" end in the same three letters.
+        self.assertEqual(self.category('net: add a prefix to the log line'),
+                         'feature')
+
+    def test_the_author_can_say_so_outright(self):
+        self.assertEqual(
+            self.category('net: add a thing', 'category: performance\n'),
+            'performance')
+
+    def test_the_subject_outranks_the_body(self):
+        # A performance patch often explains which bug-shaped symptom it
+        # relieves; what it is for is what the author put in the subject.
+        self.assertEqual(
+            self.category('net: speed up the lookup',
+                          'The old code could stall under load.'),
+            'performance')
 
 
 class TestOpenEulerBuildVerdicts(unittest.TestCase):

@@ -156,9 +156,10 @@ CONFIG_FIELDS = {
     'euler': {
         'general': _COMMON_FIELDS['general'] + (
             FieldDef('BUGZILLA_ID', 'Bugzilla ID', 'text'),
-            FieldDef('PATCH_CATEGORY', 'Patch category', 'select',
-                     default='bugfix',
-                     options=('feature', 'bugfix', 'performance', 'security')),
+            # No PATCH_CATEGORY.  It used to be asked once and stamped on
+            # every patch in the series, which is wrong as soon as a series
+            # mixes a fix with a cleanup.  oe_header.py reads it from each
+            # commit instead; see decide_category there.
             FieldDef('NUM_PATCHES', 'Number of patches', 'number', default=5),
             # The branch the series is aimed at, which decides more than it
             # looks like it should: openEuler's conf/check_build.yaml keys

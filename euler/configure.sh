@@ -225,21 +225,9 @@ SIGNER_EMAIL="${signer_email:-Hemanth.Selam@amd.com}"
 read -r -p "Bugzilla ID: " bugzilla_id
 BUGZILLA_ID="${bugzilla_id:-ID0OQX}"
 
-echo ""
-echo "Available patch categories:"
-echo "  1) feature"
-echo "  2) bugfix"
-echo "  3) performance"
-echo "  4) security"
-echo ""
-read -r -p "Select patch category [1-4] (default: 1): " category_choice
-case "${category_choice:-1}" in
-  1) PATCH_CATEGORY="feature" ;;
-  2) PATCH_CATEGORY="bugfix" ;;
-  3) PATCH_CATEGORY="performance" ;;
-  4) PATCH_CATEGORY="security" ;;
-  *) PATCH_CATEGORY="feature" ;;
-esac
+# The patch category is not asked for.  One answer cannot describe a
+# series that mixes a fix with a cleanup, and the commit messages already
+# say which is which; oe_header.py reads it per patch.
 
 read -r -p "Number of patches to apply: " num_patches
 NUM_PATCHES="${num_patches:-0}"
@@ -349,7 +337,6 @@ LINUX_SRC_PATH="${LINUX_SRC_PATH}"
 SIGNER_NAME="${SIGNER_NAME}"
 SIGNER_EMAIL="${SIGNER_EMAIL}"
 BUGZILLA_ID="${BUGZILLA_ID}"
-PATCH_CATEGORY="${PATCH_CATEGORY}"
 NUM_PATCHES="${NUM_PATCHES}"
 
 # Build Configuration
@@ -383,7 +370,6 @@ chmod 600 "$CONFIG_FILE"
 echo ""
 echo "Linux source: ${LINUX_SRC_PATH}"
 echo "Patches to process: ${NUM_PATCHES}"
-echo "Patch category: ${PATCH_CATEGORY}"
 echo "Build threads: ${BUILD_THREADS}"
 echo "Tests enabled: ${RUN_TESTS}"
 echo ""

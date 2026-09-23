@@ -101,12 +101,6 @@ pipeline {
             value: 'check_dependency,check_Kconfig,build_allyes_config,build_allno_config,build_anolis_defconfig,build_anolis_debug,anck_rpm_build,check_kapi,boot_kernel_rpm,test_build_perf,all'
         )
 
-        choice(
-            name: 'Patch_category',
-            choices: ['none', 'feature', 'bugfix', 'performance', 'security'],
-            description: 'If your selected distro is euler, Select one patch category'
-        )
-        
    extendedChoice(
            name: 'Euler_Selected_tests',
            type: 'PT_CHECKBOX',
@@ -606,8 +600,7 @@ def euler_general_configuration() {
         
         // Validate required parameters
         validate_required_params([
-            'PATCH_DIR': params.PATCH_DIR,
-            'Patch_category': params.Patch_category
+            'PATCH_DIR': params.PATCH_DIR
         ])
         
         // Check if directory exists
@@ -632,7 +625,6 @@ LINUX_SRC_PATH="${params.PATCH_DIR}"
 SIGNER_NAME="${params.SIGNED_OFF_NAME}"
 SIGNER_EMAIL="${params.SIGNED_OFF_EMAIL}"
 BUGZILLA_ID="${params.BUGZILLA_ID}"
-PATCH_CATEGORY="${params.Patch_category}"
 NUM_PATCHES="${params.NO_OF_PATCHES != 'none' ? params.NO_OF_PATCHES.toInteger() : 0}"
 
 # Build Configuration
@@ -664,7 +656,7 @@ EOF
         write_secrets(configDir)
 
         // Verify file was created and has content
-        validate_config_file(configFile, ['LINUX_SRC_PATH', 'PATCH_CATEGORY', 'BUILD_THREADS'])
+        validate_config_file(configFile, ['LINUX_SRC_PATH', 'BUILD_THREADS'])
         
         echo "✔ Euler configuration created and validated successfully"
         
