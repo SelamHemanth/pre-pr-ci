@@ -409,6 +409,11 @@ header {
 }
 .test-row.off { opacity: .45; }
 .test-row.off:hover { opacity: .7; }
+/* The row that is running, findable without reading down the list. */
+.test-row.now {
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
 
 /* Rows fade in staggered when a list first appears. */
 .test-row, .job-row { animation: row-in var(--t-base) var(--ease-out) backwards; animation-delay: calc(var(--i, 0) * 22ms); }
@@ -554,6 +559,9 @@ body.dragging .log-panel { transition: none; }
     display: flex; align-items: center; gap: 10px;
     padding: 10px 16px; border-bottom: 1px solid var(--border);
     flex-wrap: wrap;
+}
+.log-sub {
+  font-size: 11px; opacity: .6; white-space: nowrap;
 }
 .log-title { font-family: var(--mono); font-size: 12.5px; font-weight: 550; }
 .log-actions { display: flex; align-items: center; gap: 8px; margin-left: auto; }
@@ -948,13 +956,24 @@ footer a:hover { text-decoration: underline; }
           </div>
           <div v-else>
             <div class="test-row" v-for="(t, i) in tests" :key="t.name"
-                 :class="{ off: !t.enabled }" :style="{ '--i': i }">
+                 :class="{ off: !t.enabled, now: t.name === runningTest }"
+                 :style="{ '--i': i }">
               <div class="test-main">
                 <div class="test-name" :title="t.name">{{ t.title }}</div>
                 <div class="test-desc">{{ t.description }}</div>
               </div>
 
-              <span v-if="!t.enabled" class="badge badge-neutral">disabled</span>
+              <!-- While something is running, say so on the row it is
+                   running on. A test that takes forty minutes used to
+                   show its previous verdict the whole time, which reads
+                   as a result rather than as stale. -->
+              <span v-if="t.name === runningTest" class="badge badge-run"
+                    title="Running now">
+                <i class="dot pulse"></i>running
+              </span>
+              <span v-else-if="queuedTests.has(t.name)" class="badge badge-neutral"
+                    title="Waiting for the tests above it">waiting</span>
+              <span v-else-if="!t.enabled" class="badge badge-neutral">disabled</span>
               <span v-else-if="t.last_result" class="badge"
                     :key="t.last_result.verdict + t.last_result.job_id"
                     :class="'badge-' + t.last_result.verdict.toLowerCase()"
@@ -963,7 +982,10 @@ footer a:hover { text-decoration: underline; }
               </span>
 
               <button class="btn btn-sm" @click="openLogFor(t)"
-                      v-if="t.last_result" title="Show the log from the last run">
+                      v-if="t.last_result || t.name === runningTest"
+                      :title="t.name === runningTest
+                              ? 'Watch this test as it runs'
+                              : 'Show this test\'s own log from its last run'">
                 <svg class="icon"><use href="#i-list"/></svg> Log
               </button>
               <button class="btn btn-sm btn-primary" @click="runTest(t)"
@@ -1065,32 +1087,36 @@ footer a:hover { text-decoration: underline; }
 
   <!-- ── log panel ─────────────────────────────────────────────────── -->
   <transition name="sheet">
-  <div class="log-panel" v-if="logJob" :style="{ '--log-h': logHeight + 'px' }">
+  <div class="log-panel" v-if="logOpen" :style="{ '--log-h': logHeight + 'px' }">
     <div class="log-grip" @pointerdown="startResize"
          title="Drag to resize. Double-click to reset."
          @dblclick="resetLogHeight"></div>
     <div class="log-head">
-      <span class="badge" :class="statusBadge(logJob.status)">
-        <i class="dot" :class="{ pulse: logJob.status === 'running' }"></i>{{ logJob.status }}
+      <span class="badge" :class="statusBadge(logStatus)">
+        <i class="dot" :class="{ pulse: logLive }"></i>{{ logStatus }}
       </span>
-      <span class="log-title">{{ logJob.label }}</span>
+      <span class="log-title">{{ logHeading }}</span>
+      <span class="log-sub" v-if="logTest">this test only</span>
       <div class="log-actions">
-        <label class="follow-toggle">
+        <label class="follow-toggle" title="Scroll to new output as it arrives">
           <span class="switch"><input type="checkbox" v-model="logFollow"><span></span></span>
           Follow
         </label>
-        <button class="btn btn-sm" v-if="logJob.test_log_file"
+        <button class="btn btn-sm" v-if="logJob && logJob.test_log_file"
                 @click="switchLogSource()"
                 :title="'Show the ' + (logWhich === 'job' ? 'test script' : 'job') + ' log'">
           {{ logWhich === 'job' ? 'Test log' : 'Job log' }}
         </button>
-        <a class="btn btn-sm" :href="'/api/jobs/' + logJob.id + '/log/download?which=' + logWhich">
+        <a class="btn btn-sm" :href="logDownloadUrl" title="Save this log to a file">
           <svg class="icon"><use href="#i-download"/></svg> Download
         </a>
-        <button class="btn btn-sm btn-danger" v-if="isActive(logJob)" @click="askKill(logJob)">
+        <button class="btn btn-sm btn-danger" v-if="logJob && isActive(logJob)"
+                @click="askKill(logJob)" title="Stop this job">
           <svg class="icon"><use href="#i-stop"/></svg> Stop
         </button>
-        <button class="icon-btn" @click="closeLog()"><svg class="icon"><use href="#i-x"/></svg></button>
+        <button class="icon-btn" @click="closeLog()" title="Close the log">
+          <svg class="icon"><use href="#i-x"/></svg>
+        </button>
       </div>
     </div>
     <div class="log-body" ref="logBody" @scroll="onLogScroll">
@@ -1255,6 +1281,7 @@ createApp({
       storedSecrets: [],
 
       logJob: null,
+      logTest: null,
       logWhich: 'job',
       logText: '',
       logOffset: 0,
@@ -1294,6 +1321,68 @@ createApp({
     },
 
     enabledCount() { return this.tests.filter(t => t.enabled).length; },
+
+    // The panel shows either a job's output or one test's own log, and
+    // everything below reads from these rather than reaching for
+    // logJob, which is null in the second case.
+    logOpen() { return !!(this.logJob || this.logTest); },
+    logUrl() {
+      if (this.logTest) return `/api/tests/${this.logTest.name}/log`;
+      return this.logJob ? `/api/jobs/${this.logJob.id}/log` : null;
+    },
+    // Kept apart from the path so pollLog can add its offset without
+    // guessing whether a "?" has already been spent.
+    logQuery() { return this.logJob ? `which=${this.logWhich}` : ''; },
+    logDownloadUrl() {
+      if (!this.logUrl) return null;
+      const query = this.logQuery;
+      return `${this.logUrl}/download${query ? '?' + query : ''}`;
+    },
+    logHeading() {
+      if (this.logTest) return this.logTest.title;
+      return this.logJob ? this.logJob.label : '';
+    },
+    // A test's log is live while that test is the one running.
+    logLive() {
+      if (this.logTest) return this.logTest.name === this.runningTest;
+      return this.logJob ? this.isActive(this.logJob) : false;
+    },
+    logStatus() {
+      if (this.logTest) {
+        if (this.logLive) return 'running';
+        const last = this.logTest.last_result;
+        return last ? last.verdict.toLowerCase() : 'no result yet';
+      }
+      return this.logJob ? this.logJob.status : '';
+    },
+
+    // Which test is on screen right now.
+    //
+    // A single-test job says so outright. A full run does not: the only
+    // thing its output reports is which tests have finished, so the one
+    // running is the first enabled test with no verdict yet. That holds
+    // because test.sh runs them in the order the registry lists them,
+    // which is asserted in the test suite rather than assumed here.
+    runningTest() {
+      const job = this.runningJob;
+      if (!job) return null;
+      if (job.kind === 'test') return job.test_name;
+      if (job.kind !== 'test_all') return null;
+      const done = new Set((job.results || []).map(r => r.test));
+      const next = this.tests.find(t => t.enabled && !done.has(t.name));
+      return next ? next.name : null;
+    },
+
+    // Enabled, not finished, and not the one running: still to come.
+    queuedTests() {
+      const job = this.runningJob;
+      if (!job || job.kind !== 'test_all') return new Set();
+      const done = new Set((job.results || []).map(r => r.test));
+      return new Set(this.tests
+        .filter(t => t.enabled && !done.has(t.name)
+                     && t.name !== this.runningTest)
+        .map(t => t.name));
+    },
 
     activeJobs() { return (this.status.active_jobs || []); },
     runningJob() { return this.activeJobs.find(j => j.status === 'running') || null; },
@@ -1416,7 +1505,7 @@ createApp({
       if (e.key === 'Escape') {
         if (this.ask) this.ask = null;
         else if (this.configOpen) this.configOpen = false;
-        else if (this.logJob) this.closeLog();
+        else if (this.logOpen) this.closeLog();
       }
     });
     addEventListener('resize', () => { if (this._fit) try { this._fit.fit(); } catch (_) {} });
@@ -1496,6 +1585,12 @@ createApp({
         if (this.logJob) {
           const fresh = this.jobs.find(j => j.id === this.logJob.id);
           if (fresh) this.logJob = fresh;
+        }
+        // The open test's verdict changes when it finishes, and the
+        // panel header shows it.
+        if (this.logTest) {
+          const fresh = this.tests.find(t => t.name === this.logTest.name);
+          if (fresh) this.logTest = fresh;
         }
       } catch (error) {
         // A single failed poll is not worth a notification; the page simply
@@ -1590,33 +1685,50 @@ createApp({
 
     openLog(job, which) {
       this.logJob = job;
+      this.logTest = null;
       this.logWhich = which || 'job';
+      this.resetLogBuffer();
+    },
+
+    // A test's own log, not the log of whatever job happened to run it.
+    // During a full run the job log holds every test's output run
+    // together, so opening that in answer to "show me this test" was
+    // showing thirteen tests.
+    openLogFor(test) {
+      this.logTest = test;
+      this.logJob = null;
+      this.logWhich = 'test';
+      this.resetLogBuffer();
+    },
+
+    resetLogBuffer() {
       this.logText = '';
       this.logOffset = 0;
       this.logFollow = true;
       this.pollLog(true);
     },
 
-    openLogFor(test) {
-      const job = this.jobs.find(j => j.id === test.last_result.job_id);
-      if (job) this.openLog(job);
-      else this.toast('warn', 'That run is no longer in the history');
-    },
-
     switchLogSource() {
       this.openLog(this.logJob, this.logWhich === 'job' ? 'test' : 'job');
     },
 
-    closeLog() { this.logJob = null; this.logText = ''; this.logOffset = 0; },
+    closeLog() {
+      this.logJob = null;
+      this.logTest = null;
+      this.logText = '';
+      this.logOffset = 0;
+    },
 
     async pollLog(force) {
-      if (!this.logJob) return;
-      // Once a job has finished there is nothing more to append.
-      if (!force && !this.isActive(this.logJob) && this.logOffset > 0) return;
+      if (!this.logUrl) return;
+      // Once whatever produces the log has stopped, there is nothing
+      // more to append.
+      if (!force && !this.logLive && this.logOffset > 0) return;
 
       try {
+        const query = this.logQuery;
         const chunk = await this.api(
-          `/api/jobs/${this.logJob.id}/log?which=${this.logWhich}&offset=${this.logOffset}`);
+          `${this.logUrl}?${query ? query + '&' : ''}offset=${this.logOffset}`);
 
         if (chunk.truncated && this.logOffset > 0) {
           // The file was replaced under us; start again rather than splicing
@@ -1818,6 +1930,11 @@ createApp({
         killed: 'badge-warn',
         cancelled: 'badge-neutral',
         interrupted: 'badge-warn',
+        // A test's own log is labelled with its verdict rather than a
+        // job status, because no single job owns it.
+        pass: 'badge-pass',
+        fail: 'badge-fail',
+        skip: 'badge-warn',
       }[status] || 'badge-neutral';
     },
 

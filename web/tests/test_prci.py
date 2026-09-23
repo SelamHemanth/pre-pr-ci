@@ -116,6 +116,30 @@ class TestRegistryMatchesScripts(unittest.TestCase):
                     '%s/test.sh ignores %s, so disabling %r in the UI would '
                     'have no effect' % (distro, test.config_key, test.name))
 
+    def test_the_registry_lists_tests_in_the_order_they_run(self):
+        """The page works out which test is running from this order.
+
+        During a full run the only thing the output says is which tests
+        have finished, so "the first enabled one with no verdict yet" is
+        how the running row is found.  That is only true while the
+        registry and the script agree on the order, and nothing else
+        would notice if they stopped agreeing -- the page would just
+        point at the wrong row.
+        """
+        for distro in registry.DISTROS:
+            script = read_script(distro)
+            keys = [t.config_key for t in registry.tests_for(distro)]
+            # Keyed on the flag, not the function it calls: anolis runs
+            # build_anolis_debug through test_build_anolis_debug_defconfig,
+            # and the flag is the only name both sides agree on.
+            ran = re.findall(r'(?m)^\s*\[\s*"\$\{(TEST_\w+):-\w+\}"\s*==\s*'
+                             r'"yes"\s*\]\s*&&\s*test_\w+\s*$', script)
+            self.assertTrue(ran, '%s/test.sh has no run-all block' % distro)
+            self.assertEqual(
+                ran, [k for k in keys if k in set(ran)],
+                '%s/test.sh runs its tests in a different order than '
+                'registry.py lists them' % distro)
+
     def test_no_duplicate_test_names(self):
         for distro in registry.DISTROS:
             names = [t.name for t in registry.tests_for(distro)]

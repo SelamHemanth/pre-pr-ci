@@ -422,6 +422,44 @@ def api_job_log(job_id):
     return jsonify(chunk)
 
 
+def test_log_path(distro, test_name):
+    test = registry.find_test(distro, test_name)
+    if not test:
+        return None
+    return os.path.join(workspace.logs_dir, test.log)
+
+
+@app.route('/api/tests/<test_name>/log')
+def api_test_log(test_name):
+    """One test's own log, whoever ran it.
+
+    Going through the job was wrong for a full run: the job log holds
+    every test's output run together, so asking for one test's log gave
+    back all of them.  Each test writes its own file either way, so read
+    that instead.
+    """
+    distro = request.args.get('distro') or workspace.selected_distro()
+    path = test_log_path(distro, test_name)
+    if not path:
+        return jsonify({'success': False,
+                        'error': 'Unknown test: %s' % test_name}), 404
+    return jsonify(store.read_file(
+        path, offset=request.args.get('offset', type=int),
+        note='This test has not written a log yet.'))
+
+
+@app.route('/api/tests/<test_name>/log/download')
+def api_test_log_download(test_name):
+    distro = request.args.get('distro') or workspace.selected_distro()
+    path = test_log_path(distro, test_name)
+    if not path or not os.path.exists(path):
+        return jsonify({'success': False,
+                        'error': 'No log for this test'}), 404
+    return send_file(path, as_attachment=True,
+                     download_name=os.path.basename(path),
+                     mimetype='text/plain')
+
+
 @app.route('/api/jobs/<job_id>/log/download')
 def api_job_log_download(job_id):
     if not store.get(job_id):

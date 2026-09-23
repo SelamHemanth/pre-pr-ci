@@ -484,6 +484,20 @@ class JobStore:
             return None
 
         path = job['test_log_file'] if which == 'test' else job['log_file']
+        note = {
+            'queued': 'Waiting for the job ahead of it to finish...',
+            'running': 'Starting...',
+        }.get(job['status'], 'No log file was produced.')
+        return self.read_file(path, offset=offset, note=note)
+
+    def read_file(self, path, offset=None, note='No log file was produced.'):
+        """Return the slice of any log starting at ``offset``.
+
+        Split out from read_log because a test's own log is not a job's:
+        during a full run every test writes its own file, and the job
+        log holds all of them run together.  Asked for one test's log,
+        showing the whole run is not an approximation of the answer.
+        """
         if not path:
             return {'text': '', 'offset': 0, 'size': 0, 'truncated': False,
                     'missing': True}
@@ -491,10 +505,6 @@ class JobStore:
         try:
             size = os.path.getsize(path)
         except OSError:
-            note = {
-                'queued': 'Waiting for the job ahead of it to finish...',
-                'running': 'Starting...',
-            }.get(job['status'], 'No log file was produced.')
             return {'text': note, 'offset': 0, 'size': 0,
                     'truncated': False, 'missing': True}
 
