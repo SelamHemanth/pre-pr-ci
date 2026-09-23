@@ -91,10 +91,6 @@ TESTS = {
         # against the whitelist, so it finds breakage theirs cannot.
         TestDef('check_kabi', 'Check KABI whitelist against Module.symvers',
                 'check_kabi.log', 'TEST_CHECK_KABI'),
-        TestDef('rpm_build', 'Build openEuler RPM packages',
-                'rpm_build.log', 'TEST_RPM_BUILD'),
-        TestDef('boot_kernel', 'Boot VM with built kernel',
-                'boot_kernel.log', 'TEST_BOOT_KERNEL'),
     ),
 }
 
@@ -130,6 +126,8 @@ CONFIG_FIELDS = {
         'vm': _COMMON_FIELDS['vm'],
         'host': _COMMON_FIELDS['host'],
     },
+    # No 'vm' section: openEuler's CI never boots a kernel, so neither do we,
+    # and with the boot test gone there is nothing to ask a VM address for.
     'euler': {
         'general': _COMMON_FIELDS['general'] + (
             FieldDef('BUGZILLA_ID', 'Bugzilla ID', 'text'),
@@ -139,7 +137,6 @@ CONFIG_FIELDS = {
             FieldDef('NUM_PATCHES', 'Number of patches', 'number', default=5),
         ),
         'build': _COMMON_FIELDS['build'],
-        'vm': _COMMON_FIELDS['vm'],
         'host': _COMMON_FIELDS['host'],
     },
 }

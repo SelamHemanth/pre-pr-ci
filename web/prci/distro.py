@@ -171,9 +171,13 @@ class Workspace:
         for field in registry.CONFIG_FIELDS[distro]['host']:
             emit(field.name)
 
-        lines += ['', '# VM']
-        for field in registry.CONFIG_FIELDS[distro]['vm']:
-            emit(field.name)
+        # Not every distro has one.  openEuler's CI never boots a kernel, so
+        # that section was dropped and writing an empty "# VM" heading with
+        # nothing under it would only invite someone to fill it back in.
+        if registry.CONFIG_FIELDS[distro].get('vm'):
+            lines += ['', '# VM']
+            for field in registry.CONFIG_FIELDS[distro]['vm']:
+                emit(field.name)
 
         lines += ['', '# Repository',
                   'TORVALDS_REPO=%s' % shlex.quote(torvalds_repo), '']

@@ -160,8 +160,6 @@ python3 web/server.py
      | oe_checkbinary    | Binary file audit                 | Binary files added by the series           |
      | build_allmod      | Build with allmodconfig           | Compile with all modules enabled           |
      | check_kabi        | Check KABI whitelist              | Check KABI whitelist against Module.symvers|
-     | rpm_build         | Build openEuler RPM packages      | RPMs for installation                      |
-     | boot_kernel       | Boot test (requires remote setup) | Install, boot, and verify kernel on VM     |
 
      Enable: individual (e.g. 1,3,5), all, or none.
 

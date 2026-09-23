@@ -845,9 +845,7 @@ def euler_test_configuration() {
             "oe_checkconflict" : "make euler-test=oe_checkconflict",
             "oe_checkbinary"   : "make euler-test=oe_checkbinary",
             "build_allmod"     : "make euler-test=build_allmod",
-	    "check_kabi"       : "make euler-test=check_kabi",
-            "rpm_build"        : "make euler-test=rpm_build",
-            "boot_kernel"      : "make euler-test=boot_kernel"
+	    "check_kabi"       : "make euler-test=check_kabi"
         ]
 
         def selectedTests = params.Euler_Selected_tests

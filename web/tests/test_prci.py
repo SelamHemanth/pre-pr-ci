@@ -132,8 +132,12 @@ class TestRegistryMatchesScripts(unittest.TestCase):
         for distro in registry.DISTROS:
             sections = registry.fields_as_json(distro)
             self.assertIsInstance(sections, list)
-            self.assertEqual([s['key'] for s in sections],
-                             ['general', 'build', 'vm', 'host'])
+            # Not every distro has every section -- euler has no VM because
+            # it has no boot test -- but the ones it does have must stay in
+            # the declared order.
+            keys = [s['key'] for s in sections]
+            declared = [key for key, _ in registry.SECTION_LABELS]
+            self.assertEqual(keys, [k for k in declared if k in keys])
             first = sections[0]['fields'][0]
             self.assertEqual(first['name'], 'LINUX_SRC_PATH')
 
@@ -275,7 +279,7 @@ class TestConfigFile(unittest.TestCase):
         self.write()
         config = self.workspace.read_config('euler')
         self.assertEqual(config['LINUX_SRC_PATH'], self.src)
-        self.assertEqual(config['VM_ROOT_PWD'], 'secret')
+        self.assertEqual(config['HOST_USER_PWD'], 'hostsecret')
         self.assertEqual(config['TORVALDS_REPO'], '/tmp/mirror')
         self.assertEqual(self.workspace.selected_distro(), 'euler')
         self.assertTrue(self.workspace.is_configured())
@@ -288,9 +292,8 @@ class TestConfigFile(unittest.TestCase):
     def test_hostile_password_survives_a_round_trip(self):
         """A quote in a password used to break every later source of the file."""
         nasty = 'p|a&s\'s"w0rd $(id) `whoami` \\ #x'
-        self.write(VM_ROOT_PWD=nasty, HOST_USER_PWD=nasty)
+        self.write(HOST_USER_PWD=nasty)
         config = self.workspace.read_config('euler')
-        self.assertEqual(config['VM_ROOT_PWD'], nasty)
         self.assertEqual(config['HOST_USER_PWD'], nasty)
         # And the following key must still be intact.
         self.assertEqual(config['TORVALDS_REPO'], '/tmp/mirror')
@@ -327,16 +330,26 @@ class TestConfigFile(unittest.TestCase):
             self.write(PATCH_CATEGORY='urgent')
 
     def test_vm_settings_only_required_when_boot_test_is_on(self):
+        # anolis, because euler no longer boots anything and has no VM
+        # section at all.
+        flags = {k: 'yes' for k in registry.test_config_keys('anolis')}
+        values = dict(self.values(VM_IP='', VM_ROOT_PWD=''), ANBZ_ID='123')
+
         with self.assertRaises(ConfigError):
-            self.workspace.write_config(
-                'euler', self.values(VM_IP='', VM_ROOT_PWD=''),
-                self.flags(), '/tmp/mirror')
+            self.workspace.write_config('anolis', values, flags, '/tmp/mirror')
 
         # Same input, boot test disabled: accepted.
         self.workspace.write_config(
-            'euler', self.values(VM_IP='', VM_ROOT_PWD=''),
-            self.flags(TEST_BOOT_KERNEL='no'), '/tmp/mirror')
-        self.assertEqual(self.workspace.read_config('euler')['VM_IP'], '')
+            'anolis', values, dict(flags, TEST_BOOT_KERNEL='no'),
+            '/tmp/mirror')
+        self.assertEqual(self.workspace.read_config('anolis')['VM_IP'], '')
+
+    def test_euler_asks_for_no_vm_details(self):
+        # Nothing in openEuler's CI boots a kernel, so the form must not
+        # demand an address and password for a machine that is never used.
+        names = {f.name for f in registry.all_fields('euler')}
+        self.assertNotIn('VM_IP', names)
+        self.assertNotIn('VM_ROOT_PWD', names)
 
     def test_enabled_tests_reflects_flags(self):
         self.workspace.write_config(
@@ -349,9 +362,10 @@ class TestConfigFile(unittest.TestCase):
     def test_redact_hides_secrets(self):
         self.write()
         shown = redact(self.workspace.read_config('euler'))
-        self.assertNotIn('secret', shown.values())
-        self.assertNotEqual(shown['VM_ROOT_PWD'], 'secret')
-        self.assertEqual(shown['VM_IP'], '10.0.0.5')
+        self.assertNotIn('hostsecret', shown.values())
+        self.assertNotEqual(shown['HOST_USER_PWD'], 'hostsecret')
+        # Non-secret values still come back as they are.
+        self.assertEqual(shown['BUGZILLA_ID'], '12345')
 
     def test_unconfigured_workspace(self):
         fresh = Workspace(tempfile.mkdtemp())

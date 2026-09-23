@@ -43,9 +43,6 @@ TEST_LOG="${LOGS_DIR}/test_results.log"
 KABI_KERNEL_DIR="${SCRIPT_DIR}/kernel"
 KABI_BRANCH="openEuler-24.03-LTS-Next"
 
-# VM_IP is exported for convenience; the two passwords deliberately are not,
-# so they stay out of /proc/<pid>/environ of every command a test runs.
-export VM_IP
 
 # Colors
 # Colours come from the shared helper, which leaves them empty when
@@ -54,10 +51,9 @@ export VM_IP
 
 # shellcheck source=../lib/torvalds.sh
 . "${WORKDIR}/lib/torvalds.sh"
-# shellcheck source=../lib/vm.sh
-. "${WORKDIR}/lib/vm.sh"
-# shellcheck source=../lib/boot_test.sh
-. "${WORKDIR}/lib/boot_test.sh"
+# lib/vm.sh and lib/boot_test.sh are deliberately not sourced: openEuler's
+# CI never boots a kernel, so this distro has no boot test to need them.
+# anolis still does, and still sources them.
 
 # Function to list available tests
 list_tests() {
@@ -79,8 +75,6 @@ list_tests() {
   echo -e "${CYAN}Ours:${NC}"
   echo -e "  7. build_allmod        Build with allmodconfig"
   echo -e "  8. check_kabi          KABI whitelist against Module.symvers"
-  echo -e "  9. rpm_build           Build kernel RPM packages"
-  echo -e " 10. boot_kernel         Boot VM with built kernel"
   echo ""
   echo -e "${BLUE}Usage:${NC}"
   echo "  $0                     - Run all enabled tests"
@@ -470,84 +464,6 @@ PYEOF
   echo ""
 }
 
-test_rpm_build() {
-  echo -e "${BLUE}Test-6: rpm_build${NC}"
-
-  cd "${LINUX_SRC_PATH}"
-
-  local rpm_log="${LOGS_DIR}/rpm_build.log"
-  local rpms_dir="$HOME/rpmbuild/RPMS/x86_64"
-
-  > "${rpm_log}"
-
-  echo "  → Cleaning source tree..." >> "${rpm_log}"
-  if ! make distclean >> "${rpm_log}" 2>&1; then
-    fail "rpm_build" "Failed to clean source tree (see ${rpm_log})"
-    echo ""
-    return
-  fi
-
-  echo "  → Configuring kernel with openeuler_defconfig..." >> "${rpm_log}"
-  if ! make openeuler_defconfig >> "${rpm_log}" 2>&1; then
-    fail "rpm_build" "Failed to configure kernel (see ${rpm_log})"
-    echo ""
-    return
-  fi
-
-  echo "  → Building RPM packages..." | tee -a "${rpm_log}"
-  if ! make -j"${BUILD_THREADS}" rpm-pkg >> "${rpm_log}" 2>&1; then
-    fail "rpm_build" "Failed to build RPM packages (see ${rpm_log})"
-    echo ""
-    return
-  fi
-
-  # Check if RPMs were created
-  echo "  → Checking for generated RPMs..." >> "${rpm_log}"
-
-  if [ ! -d "${rpms_dir}" ]; then
-    fail "rpm_build" "RPMs directory not found: ${rpms_dir}"
-    echo ""
-    return
-  fi
-
-  # Find kernel and headers RPM
-  local kernel_rpm=$(find "${rpms_dir}" -name "kernel-[0-9]*.rpm" ! -name "*headers*" -type f | head -n 1)
-  local headers_rpm=$(find "${rpms_dir}" -name "kernel-headers-*.rpm" -type f | head -n 1)
-
-  local rpm_count=0
-
-  if [ -n "${kernel_rpm}" ]; then
-    echo "  → Found kernel RPM: $(basename ${kernel_rpm})" >> "${rpm_log}"
-    rpm_count=$((rpm_count + 1))
-  else
-    echo "  → Kernel RPM not found" >> "${rpm_log}"
-  fi
-
-  if [ -n "${headers_rpm}" ]; then
-    echo "  → Found headers RPM: $(basename ${headers_rpm})" >> "${rpm_log}"
-    rpm_count=$((rpm_count + 1))
-  else
-    echo "  → Headers RPM not found" >> "${rpm_log}"
-  fi
-
-  if [ ${rpm_count} -eq 2 ]; then
-    echo "  → RPM build location: ${rpms_dir}" >> "${rpm_log}"
-    pass "rpm_build"
-  else
-    fail "rpm_build" "Expected 2 RPMs (kernel + headers), found ${rpm_count} (see ${rpm_log})"
-  fi
-
-  echo ""
-}
-
-test_boot_kernel() {
-  echo -e "${BLUE}Test-7: boot_kernel${NC}"
-
-  run_boot_test "boot_kernel" \
-    "${HOME}/rpmbuild/RPMS/$(arch)" \
-    "${LOGS_DIR}/boot_kernel.log"
-}
-
 # ---- TEST EXECUTION ----
 
 # Check if specific test is requested
@@ -583,19 +499,12 @@ if [ -n "$SPECIFIC_TEST" ]; then
     check_kabi)
       test_check_kabi
       ;;
-    rpm_build)
-      test_rpm_build
-      ;;
-    boot_kernel)
-      test_boot_kernel
-      ;;
     *)
       echo -e "${RED}Error: Unknown test '$SPECIFIC_TEST'${NC}"
       echo ""
       echo "Available tests:"
       for t in oe_checkpatch oe_checkformat oe_checkdepend oe_checkkabi \
-               oe_checkconflict oe_checkbinary build_allmod check_kabi \
-               rpm_build boot_kernel; do
+               oe_checkconflict oe_checkbinary build_allmod check_kabi; do
         echo "  - ${t}"
       done
       echo ""
@@ -616,8 +525,6 @@ else
   [ "${TEST_OE_CHECKBINARY:-yes}" == "yes" ] && test_oe_checkbinary
   [ "${TEST_BUILD_ALLMOD:-yes}" == "yes" ] && test_build_allmod
   [ "${TEST_CHECK_KABI:-yes}" == "yes" ] && test_check_kabi
-  [ "${TEST_RPM_BUILD:-yes}" == "yes" ] && test_rpm_build
-  [ "${TEST_BOOT_KERNEL:-yes}" == "yes" ] && test_boot_kernel
 fi
 
 # ---- SUMMARY ----
