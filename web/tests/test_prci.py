@@ -1006,6 +1006,90 @@ class TestOpenEulerBuildVerdicts(unittest.TestCase):
                                          stderr=subprocess.DEVNULL), 2)
 
 
+class TestCleanTree(unittest.TestCase):
+    """require_clean_tree, which now runs before anything is rewritten.
+
+    It used to run after the rewind, so a tree that was not clean cost
+    the whole run: every header written, the branch rewound, and then a
+    refusal that left it there.  And what made the tree unclean was a
+    JSON file openEuler's own conflict check had written into it.
+    """
+
+    def setUp(self):
+        self.kernel = tempfile.mkdtemp()
+        self.addCleanup(lambda: __import__('shutil').rmtree(self.kernel,
+                                                            True))
+        subprocess.check_call(['git', 'init', '-q', self.kernel])
+        for key, value in (('user.name', 'T'), ('user.email', 't@e.com'),
+                           ('commit.gpgsign', 'false')):
+            subprocess.check_call(['git', '-C', self.kernel, 'config',
+                                   key, value])
+        self.write('tracked.c', 'int main(void);\n')
+        subprocess.check_call(['git', '-C', self.kernel, 'add', '.'])
+        subprocess.check_call(['git', '-C', self.kernel, 'commit', '-q',
+                               '-m', 'first'])
+
+    def write(self, name, text):
+        with open(os.path.join(self.kernel, name), 'w') as f:
+            f.write(text)
+
+    def run_check(self):
+        script = ('. "%s/lib/log.sh"\n. "%s/lib/worktree.sh"\n'
+                  'require_clean_tree "%s"\n'
+                  % (PROJECT_ROOT, PROJECT_ROOT, self.kernel))
+        done = subprocess.run(['bash', '-c', script],
+                              stdout=subprocess.PIPE,
+                              stderr=subprocess.STDOUT)
+        return done.returncode, done.stdout.decode()
+
+    def exists(self, name):
+        return os.path.exists(os.path.join(self.kernel, name))
+
+    def test_a_clean_tree_passes(self):
+        rc, out = self.run_check()
+        self.assertEqual(rc, 0, out)
+
+    def test_leftovers_from_their_checks_are_swept_not_complained_about(self):
+        # This is the exact file that cost a real run: check_conflict.py
+        # writes it into the kernel tree for a comment-posting step we
+        # do not have, and nothing under Jenkins ever cleans it up.
+        self.write('checkconflict_diff_info.json', '{}')
+        self.write('branch_0123456789ab.txt', 'diff')
+        self.write('mainline_0123456789ab.txt', 'diff')
+        rc, out = self.run_check()
+        self.assertEqual(rc, 0, out)
+        self.assertFalse(self.exists('checkconflict_diff_info.json'))
+        self.assertFalse(self.exists('branch_0123456789ab.txt'))
+        self.assertFalse(self.exists('mainline_0123456789ab.txt'))
+
+    def test_a_tracked_file_is_never_swept(self):
+        # A real source file that happens to match the pattern must
+        # survive, so the sweep only ever touches what git does not know.
+        self.write('branch_0123456789ab.txt', 'mine')
+        subprocess.check_call(['git', '-C', self.kernel, 'add',
+                               'branch_0123456789ab.txt'])
+        subprocess.check_call(['git', '-C', self.kernel, 'commit', '-q',
+                               '-m', 'keep me'])
+        rc, out = self.run_check()
+        self.assertEqual(rc, 0, out)
+        self.assertTrue(self.exists('branch_0123456789ab.txt'))
+
+    def test_uncommitted_work_stops_the_run(self):
+        # This is what the check is for: the rewind would destroy it.
+        self.write('tracked.c', 'int main(void) { return 1; }\n')
+        rc, out = self.run_check()
+        self.assertEqual(rc, 12)
+        self.assertIn('tracked.c', out)
+
+    def test_an_unrelated_untracked_file_is_not_a_reason_to_refuse(self):
+        # It survives the rewind untouched, so refusing over one means
+        # refusing over a stray editor backup.
+        self.write('notes.txt~', 'scratch')
+        rc, out = self.run_check()
+        self.assertEqual(rc, 0, out)
+        self.assertTrue(self.exists('notes.txt~'))
+
+
 class TestReadiness(unittest.TestCase):
     """Whether the UI will let a test run.
 

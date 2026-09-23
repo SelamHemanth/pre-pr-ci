@@ -59,8 +59,18 @@ def unprepared(kernel, sha, msg, signer, mirror):
         return 'no %s' % signer.split(':')[0]
 
     upstream = oe_conflict.mainline_commit(msg)
-    if not upstream or oe_conflict.already_declared(msg):
+    if not upstream:
         return None
+
+    if oe_conflict.already_declared(msg):
+        # Present is not the same as acceptable.  Their format check is
+        # strict about where the section sits -- the sign-offs have to
+        # follow the closing bracket with nothing in between -- and a
+        # section in the wrong place reads as done while still being
+        # rejected by the gate.
+        ok, why = oe_conflict.format_ok(msg)
+        return None if ok else why
+
     if oe_conflict.deviates(kernel, sha, mirror, upstream):
         return 'differs from upstream %s with no Conflicts: section' % (
             upstream[:12])

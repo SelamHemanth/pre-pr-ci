@@ -210,6 +210,51 @@ class PrBranch(object):
         return False
 
 
+class Undirtied(object):
+    """Leave the kernel tree as clean as it was found.
+
+    Their scripts run with the kernel as the working directory and drop
+    working files into it -- check_conflict.py writes rendered diffs and
+    a checkconflict_diff_info.json for the step that posts a comment on
+    the pull request, which is a step we do not have.
+
+    Under Jenkins the tree is thrown away afterwards so none of it
+    matters.  Here it is the user's own tree, and one stray file is
+    enough to make "prepare" refuse to run, which is a confusing way to
+    find out that a check littered.
+
+    Only files that appeared while the check ran are removed, and only
+    ones git does not track, so nothing of the user's is at risk.
+    """
+
+    def __init__(self, kernel):
+        self.kernel = kernel
+        self.before = set()
+
+    def _untracked(self):
+        # -z, so a name with a space in it is not returned quoted and
+        # then deleted under the wrong path.  --untracked-files=all, so
+        # a new file inside a new directory is listed as a file rather
+        # than as the directory, which os.unlink could not remove.
+        out = _git(['status', '-z', '--porcelain',
+                    '--untracked-files=all'], cwd=self.kernel)
+        return {entry[3:] for entry in (out or '').split('\0')
+                if entry.startswith('?? ')}
+
+    def __enter__(self):
+        self.before = self._untracked()
+        return self
+
+    def __exit__(self, *exc):
+        for name in sorted(self._untracked() - self.before):
+            path = os.path.join(self.kernel, name)
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+        return False
+
+
 def verdict(lines):
     """Turn their printed counts into (status, detail).
 
@@ -303,7 +348,7 @@ def main():
          % (args.check, args.count, args.kernel))
     _say('(%s, reading results from %s)' % (script, stream))
 
-    with PrBranch(args.kernel) as pr:
+    with PrBranch(args.kernel) as pr, Undirtied(args.kernel):
         env['BUILD_ID'] = pr.build_id
         code, lines = _run(
             [sys.executable, os.path.join(tree, 'scripts', script),

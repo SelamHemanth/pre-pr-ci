@@ -487,27 +487,46 @@ def declare_conflicts(message, sha, args):
     if note:
         message = oe_conflict.strip_note(message)
 
-    body, trailers = split_trailers(message)
+    before, sign_offs = split_sign_offs(message)
     section = oe_conflict.section(files, note)
     # Their regex runs straight from the closing bracket into
     # "Signed-off-by:", so the section goes immediately above the
-    # trailer block with no blank line after it.
-    message = '\n'.join(body + [''] + section.split('\n') + trailers) + '\n'
+    # sign-offs with nothing in between -- not above the whole trailer
+    # block, which on a real backport starts with the Reviewed-by and
+    # Tested-by lines carried down from upstream.
+    message = '\n'.join(before + section.split('\n') + sign_offs) + '\n'
 
     summary = 'Conflicts: %d file(s)' % len(files)
     return message, summary + ('' if note else ', description left to you')
 
 
-def split_trailers(message):
-    """Split a message into its body lines and its final trailer block."""
+_SOB_RE = re.compile(r'^Signed-off-by:\s')
+
+
+def split_sign_offs(message):
+    """Split a message just before its last run of Signed-off-by lines.
+
+    The first part keeps a trailing blank line when the sign-offs begin
+    a paragraph of their own, so that inserting between the two does
+    not glue the section onto the prose above it.
+    """
     lines = message.rstrip('\n').split('\n')
-    end = len(lines)
-    while end > 0 and _TRAILER_RE.match(lines[end - 1]):
-        end -= 1
-    body = lines[:end]
-    while body and not body[-1].strip():
-        body.pop()
-    return body, lines[end:]
+
+    last = None
+    for i, line in enumerate(lines):
+        if _SOB_RE.match(line):
+            last = i
+    if last is None:
+        return lines + [''], []
+
+    start = last
+    while start > 0 and _SOB_RE.match(lines[start - 1]):
+        start -= 1
+
+    before = lines[:start]
+    if before and before[-1].strip():
+        before = before + ['']
+    return before, lines[start:]
 
 
 def main():

@@ -44,6 +44,8 @@ HEAD_ID_FILE="${WORKDIR}/.head_commit_id"
 # Colours come from the shared helper, which leaves them empty when
 # output is not a terminal so redirected logs stay free of escapes.
 . "${SCRIPT_DIR}/../lib/log.sh"
+# shellcheck source=../lib/worktree.sh
+. "${SCRIPT_DIR}/../lib/worktree.sh"
 
 : "${LINUX_SRC_PATH:?missing in config}"
 : "${SIGNER_NAME:?missing in config}"
@@ -80,7 +82,10 @@ if [ -z "${TOTAL_COMMITS}" ] || [ "${TOTAL_COMMITS}" -lt "${NUM_PATCHES}" ]; the
   exit 11
 fi
 
-# Check if commits are already tagged with ANBZ and Signed-off-by
+# Before anything is touched: preparing rewinds the branch, so a check
+# that runs afterwards can only report the damage it already did.
+require_clean_tree
+
 ANBZ_TAG="ANBZ: #${ANBZ_ID}"
 SOB_TAG="Signed-off-by: ${SIGNER_NAME} <${SIGNER_EMAIL}>"
 
@@ -184,12 +189,6 @@ else
       }' "${p}" > "${p}.tmp" && mv "${p}.tmp" "${p}"
     fi
   done
-fi
-
-# Ensure repo clean
-if [ -n "$(git status --porcelain)" ]; then
-  echo -e "${RED}Linux source tree is not clean. Commit or stash changes before running.${NC}" >&2
-  exit 12
 fi
 
 git config user.name "${SIGNER_NAME}"

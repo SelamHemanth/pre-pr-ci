@@ -171,3 +171,50 @@ def section(files, note):
 
 def already_declared(message):
     return bool(_CONFLICTS_RE.search(message))
+
+
+#: Their check_conflict_format, built the same way: one regex grown a
+#: piece at a time and re-matched from the start of the section, so
+#: every piece is anchored to the one before it.  Reproduced rather
+#: than approximated, because the interesting failures are the ones
+#: where a section looks right and does not match -- a blank line
+#: between the closing bracket and the sign-offs, or a Reviewed-by
+#: sitting where a Signed-off-by has to be.
+_FORMAT_STEPS = (
+    r'(\s+.*\n)+',
+    r'\[.*',
+    r'(.*?\n)*',
+    r'.*\]\n',
+    r'(Signed-off-by: .*?\n?)+',
+)
+
+
+def format_ok(message, files=()):
+    """Whether their checker would accept the section in this message.
+
+    Returns (ok, why).  ``files`` are the ones that must be named; they
+    check that too, after the shape.
+    """
+    lines = message.split('\n')
+    for index, line in enumerate(lines):
+        if line.strip() != 'Conflicts:':
+            continue
+        rest = '\n'.join(lines[index + 1:])
+
+        pattern = ''
+        for step in _FORMAT_STEPS:
+            pattern += step
+            if not re.match(pattern, rest):
+                if step == _FORMAT_STEPS[0]:
+                    return False, 'no files listed under Conflicts:'
+                if step == _FORMAT_STEPS[-1]:
+                    return False, ('the Conflicts: description is not '
+                                   'followed directly by Signed-off-by')
+                return False, 'the Conflicts: description is not in brackets'
+
+        for name in files:
+            if name not in rest:
+                return False, 'the Conflicts: section does not name %s' % name
+        return True, ''
+
+    return False, 'no Conflicts: section'

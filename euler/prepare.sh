@@ -41,6 +41,8 @@ HEAD_ID_FILE="${WORKDIR}/.head_commit_id"
 # Colours come from the shared helper, which leaves them empty when
 # output is not a terminal so redirected logs stay free of escapes.
 . "${SCRIPT_DIR}/../lib/log.sh"
+# shellcheck source=../lib/worktree.sh
+. "${SCRIPT_DIR}/../lib/worktree.sh"
 : "${LINUX_SRC_PATH:?missing in config}"
 : "${SIGNER_NAME:?missing in config}"
 : "${SIGNER_EMAIL:?missing in config}"
@@ -77,6 +79,11 @@ if [ -z "${TOTAL_COMMITS}" ] || [ "${TOTAL_COMMITS}" -lt "${NUM_PATCHES}" ]; the
 fi
 
 SOB_TAG="Signed-off-by: ${SIGNER_NAME} <${SIGNER_EMAIL}>"
+
+# Before anything is touched.  This check used to sit after the rewind,
+# so a tree that was not clean cost the whole run: thirty-five headers
+# written, the branch rewound, and then a refusal that left it there.
+require_clean_tree
 
 echo -e "${BLUE}Checking whether the series has already been prepared...${NC}"
 
@@ -126,6 +133,22 @@ else
   # against the upstream one, and a patch file on its own is not enough
   # to do that the way openEuler does it.
   mapfile -t ORIG_COMMITS < <(git rev-list --reverse -n "${NUM_PATCHES}" HEAD)
+
+  # From here until the patches are back on the branch, the commits
+  # exist only as unreferenced objects.  Any exit in between -- a
+  # refusal, an error under "set -e", a Ctrl-C -- used to leave the
+  # branch short of them and the user looking at a truncated history
+  # with no indication of how to get it back.
+  restore_head() {
+    local rc=$?
+    trap - EXIT INT TERM
+    if [ "$(git rev-parse HEAD)" != "${HEAD_ID}" ]; then
+      echo -e "${YELLOW}Putting the branch back to ${HEAD_ID:0:12}.${NC}" >&2
+      git reset --hard "${HEAD_ID}" >/dev/null 2>&1 || true
+    fi
+    exit "${rc}"
+  }
+  trap restore_head EXIT INT TERM
 
   # Reset repo back by NUM_PATCHES commits so we can re-apply
   if ! git reset --hard "HEAD~${NUM_PATCHES}" >/dev/null 2>&1; then
@@ -193,12 +216,6 @@ else
   fi
 fi
 
-# Ensure repo clean
-if [ -n "$(git status --porcelain)" ]; then
-  echo -e "${RED}Linux source tree is not clean. Commit or stash changes before running.${NC}" >&2
-  exit 12
-fi
-
 git config user.name "${SIGNER_NAME}"
 git config user.email "${SIGNER_EMAIL}"
 
@@ -242,6 +259,10 @@ for pf in "${PATCH_LIST[@]}"; do
   fi
   echo ""
 done
+
+# The series is back on the branch, with new SHAs because the messages
+# changed.  Disarm the net before it mistakes that for a failed run.
+trap - EXIT INT TERM
 
 echo ""
 echo -e "${GREEN}✓ Patches are prepared for openEuler${NC}"

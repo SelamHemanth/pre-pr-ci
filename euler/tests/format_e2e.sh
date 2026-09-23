@@ -119,10 +119,20 @@ Upstream body text." 'kernel/h.c'
   # is what openEuler calls a conflict.  It carries the author's own
   # explanation under the heading this tree writes it under; that prose
   # should end up inside the brackets their checker wants.
+  # The trailers matter. A real backport carries the upstream
+  # Reviewed-by and Tested-by lines above the sign-offs, and the
+  # section has to go below them: their regex wants a Signed-off-by
+  # immediately after the closing bracket, so a section placed above
+  # the whole trailer block is rejected even though it looks right.
   commit "${CONFLICT_SUBJ}" \
     "commit ${CONFLICT_SHA} upstream.
 
 Upstream body text.
+
+Tested-by: Someone Else <else@example.com>
+Reviewed-by: A Reviewer <reviewer@example.com>
+Signed-off-by: Upstream Author <author@example.com>
+Signed-off-by: A Maintainer <maintainer@example.com>
 
 [Backport Changes]
     The target tree already uses the neighbouring bit, so the flag moved
