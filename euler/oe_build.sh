@@ -299,7 +299,7 @@ _oe_kabi_build() {
   _oe_check_kabi "${kernel}" "${arch}" "${whitelists}" "${warnings}" \
     "${result}"
   _oe_check_defconfig "${kernel}" "${kernel_arch}" "${arch}" "${warnings}" \
-    "${result}"
+    "${result}" "${back}"
 }
 
 # Their check_kabi, using their check-kabi script against the three
@@ -333,28 +333,77 @@ _oe_check_kabi() {
   done
 }
 
-# Their check_defconfig: a patch that adds a Kconfig symbol has to add it
-# to the shipped defconfig too, or the next build silently loses it.
-_oe_check_defconfig() {
-  local kernel="$1" kernel_arch="$2" arch="$3" warnings="$4" result="$5"
-  local defconfig
-  defconfig="${kernel}/arch/$(_oe_srcarch "${kernel_arch}")/configs/openeuler_defconfig"
+# The symbols Kconfig would offer that the shipped defconfig does not
+# answer, which is their whole check_defconfig.
+_oe_new_symbols() {
+  local defconfig="$1"
 
   [ -f "${defconfig}" ] || return 0
+  cp "${defconfig}" .config || return 1
+  make listnewconfig 2>/dev/null | grep -E '^CONFIG_' || true
+}
 
+# Their check_defconfig: a patch that adds a Kconfig symbol has to add it
+# to the shipped defconfig too, or the next build silently loses it.
+#
+# Whether a symbol is "new" depends on the host as much as on the tree.
+# Kconfig only offers GCC_PLUGINS and the RANDSTRUCT choices where the
+# compiler's plugin headers are installed, so a developer machine with
+# gcc-plugin-devel reports five symbols their builder never sees, none
+# of which any patch went near.  Their CI can read the raw list because
+# it builds a known branch in a known container; we cannot.
+#
+# So ask the same question of the tree before the series and keep the
+# difference.  That is the only part a patch can be answerable for.
+_oe_check_defconfig() {
+  local kernel="$1" kernel_arch="$2" arch="$3" warnings="$4" result="$5"
+  local back="${6:-0}"
+  local src defconfig
+  src=$(_oe_srcarch "${kernel_arch}")
+  defconfig="${kernel}/arch/${src}/configs/openeuler_defconfig"
+
+  [ -f "${defconfig}" ] || return 0
   cd "${kernel}" || return 1
-  cp "${defconfig}" .config
-  if make listnewconfig 2>/dev/null | grep -E '^CONFIG_.*' >> "${warnings}"
-  then
-    echo "| ${arch} checkdefconfig | fail |" >> "${result}"
-    {
-      echo "The configs listed above are introduced but the"
-      echo "openeuler_defconfig for ${arch} is not updated; configure and"
-      echo "run 'make update_oedefconfig' to update it."
-    } >> "${warnings}"
-  else
+
+  local mine
+  mine=$(_oe_new_symbols "${defconfig}")
+  if [ -z "${mine}" ]; then
     echo "| ${arch} checkdefconfig | pass |" >> "${result}"
+    return 0
   fi
+
+  local before='' head
+  if [ "${back}" -gt 0 ] && git rev-parse --verify -q "HEAD~${back}" >/dev/null
+  then
+    head=$(git rev-parse HEAD) || return 1
+    if git checkout -q "HEAD~${back}" 2>/dev/null; then
+      before=$(_oe_new_symbols "arch/${src}/configs/openeuler_defconfig")
+      git checkout -q "${head}" || return 1
+    fi
+  fi
+
+  local added
+  added=$(comm -23 <(printf '%s\n' "${mine}" | sort -u) \
+                   <(printf '%s\n' "${before}" | sort -u))
+
+  if [ -z "${added}" ]; then
+    echo "| ${arch} checkdefconfig | pass |" >> "${result}"
+    # Said on the log and not in the warnings file, which is a gate:
+    # this is information about the machine, not a finding about the
+    # series, and it must not fail the run.
+    echo "  -> openeuler_defconfig does not answer these here, before the"
+    echo "     series as well, so they are this host's and not yours:"
+    printf '%s\n' "${mine}" | sed 's/^/       /'
+    return 0
+  fi
+
+  echo "| ${arch} checkdefconfig | fail |" >> "${result}"
+  {
+    printf '%s\n' "${added}"
+    echo "The configs listed above are introduced but the"
+    echo "openeuler_defconfig for ${arch} is not updated; configure and"
+    echo "run 'make update_oedefconfig' to update it."
+  } >> "${warnings}"
 }
 
 # Entry point.  Prints a report and answers:

@@ -22,6 +22,7 @@ becomes invisible.  That had already happened to euler's check_kabi.
 
 import os
 import re
+import shutil
 import stat
 import subprocess
 import sys
@@ -1105,6 +1106,77 @@ class TestOpenEulerBuildVerdicts(unittest.TestCase):
         quiet.close()
         self.addCleanup(os.unlink, quiet.name)
         self.assertEqual(self.shell('_oe_report_errors %s' % quiet.name), '')
+
+    def defconfig_check(self, mine, before, back='1'):
+        """_oe_check_defconfig with listnewconfig answering to order."""
+        kernel = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, kernel, True)
+        os.makedirs(os.path.join(kernel, 'arch', 'x86', 'configs'))
+
+        def put(name, text):
+            path = os.path.join(kernel, name)
+            with open(path, 'w') as f:
+                f.write(text)
+            return path
+
+        put(os.path.join('arch', 'x86', 'configs', 'openeuler_defconfig'),
+            'CONFIG_HAVE_GCC_PLUGINS=y\n')
+        put('mine', mine)
+        put('before', before)
+        warnings = put('warnings', '')
+        result = put('result', '')
+
+        script = '''
+            . "%(root)s/euler/oe_build.sh"
+            # Stand in for the tree: the second call is the baseline.
+            _oe_new_symbols() {
+                if [ -f %(kernel)s/.asked ]; then cat %(kernel)s/before
+                else touch %(kernel)s/.asked; cat %(kernel)s/mine; fi
+            }
+            git() { case "$1" in rev-parse) echo deadbeef ;; *) return 0 ;; esac; }
+            _oe_check_defconfig %(kernel)s x86_64 x86_64 \\
+                %(warnings)s %(result)s %(back)s
+        ''' % {'root': PROJECT_ROOT, 'kernel': kernel,
+               'warnings': warnings, 'result': result, 'back': back}
+        done = subprocess.run(['bash', '-c', script],
+                              stdout=subprocess.PIPE,
+                              stderr=subprocess.STDOUT)
+
+        def read(path):
+            with open(path) as f:
+                return f.read()
+        return done.stdout.decode(), read(result), read(warnings)
+
+    GCC_PLUGINS = 'CONFIG_GCC_PLUGINS=y\nCONFIG_RANDSTRUCT_FULL=n\n'
+
+    def test_symbols_the_host_offers_are_not_the_series_fault(self):
+        # Kconfig only offers GCC_PLUGINS where the compiler's plugin
+        # headers are installed, so a machine with gcc-plugin-devel
+        # reports five symbols their builder never sees and no patch
+        # went near. Their CI reads the raw list because it builds a
+        # known branch in a known container; we cannot.
+        log, result, warnings = self.defconfig_check(
+            mine=self.GCC_PLUGINS, before=self.GCC_PLUGINS)
+        self.assertIn('checkdefconfig | pass', result)
+        # Said on the log, never in the warnings file, which is a gate.
+        self.assertEqual(warnings, '')
+        self.assertIn('CONFIG_GCC_PLUGINS=y', log)
+        self.assertIn("this host's and not yours", log)
+
+    def test_a_symbol_the_series_really_added_still_fails(self):
+        log, result, warnings = self.defconfig_check(
+            mine=self.GCC_PLUGINS + 'CONFIG_AMD_PSTATE_NEW=y\n',
+            before=self.GCC_PLUGINS)
+        self.assertIn('checkdefconfig | fail', result)
+        self.assertIn('CONFIG_AMD_PSTATE_NEW=y', warnings)
+        # Only the one the series is answerable for.
+        self.assertNotIn('CONFIG_GCC_PLUGINS', warnings)
+        self.assertIn('update_oedefconfig', warnings)
+
+    def test_a_defconfig_that_answers_everything_passes_quietly(self):
+        log, result, warnings = self.defconfig_check(mine='', before='')
+        self.assertIn('checkdefconfig | pass', result)
+        self.assertEqual(warnings, '')
 
     def test_a_broken_matrix_check_is_an_error_not_a_skip(self):
         # check_branch.py exits 1 both for "this arch is off" and for a
