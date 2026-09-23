@@ -796,10 +796,9 @@ footer a:hover { text-decoration: underline; }
           </button>
         </div>
 
-        <!-- Starts folded when the page opens on an environment that is
-             already complete, since the list then has nothing to say.  It is
-             not folded again as steps complete: that would pull buttons out
-             from under the pointer mid-setup. -->
+        <!-- Folds itself once the last step goes green, since the list
+             then has nothing left to say and the count in the header
+             says it. -->
         <transition name="collapse">
         <div class="card-body" v-show="setupOpen">
           <div class="step" v-for="s in setupSteps" :key="s.key" :class="{ done: s.ready }">
@@ -812,10 +811,26 @@ footer a:hover { text-decoration: underline; }
               <div class="step-detail">{{ s.detail }}</div>
             </div>
             <button class="btn btn-sm" :class="{ 'btn-primary': !s.ready }"
-                    @click="s.run()" :disabled="busy && s.key !== 'config'">
+                    @click="s.run()" :disabled="busy && s.key !== 'config'"
+                    :title="s.ready ? `Fetch the latest ${s.label.toLowerCase()}`
+                                    : s.detail">
               {{ s.action }}
             </button>
           </div>
+
+          <!-- Everything fetchable in one press. The three fetches are
+               independent and each takes minutes, so doing them one at
+               a time meant coming back to the page twice to start the
+               next. They queue, so pressing this once is enough. -->
+          <button class="btn btn-sm btn-block"
+                  :class="{ 'btn-primary': !setupReady }"
+                  @click="syncEverything()" :disabled="busy"
+                  :title="busy ? 'Something is already running'
+                               : 'Fetch the mirror, the sub-repositories and '
+                                 + 'the openEuler checks, one after another'">
+            <svg class="icon"><use href="#i-refresh"/></svg>
+            {{ setupReady ? 'Update everything' : 'Fetch everything missing' }}
+          </button>
         </div>
         </transition>
       </div>
@@ -859,7 +874,12 @@ footer a:hover { text-decoration: underline; }
       <div class="card" style="--i:2">
         <div class="card-head"><svg class="icon"><use href="#i-hammer"/></svg> Run</div>
         <div class="card-body">
-          <button class="btn btn-primary btn-block" @click="start('/api/prepare', 'prepare')"
+          <!-- Whichever is the next thing to do carries the highlight:
+               prepare until the series is prepared, then the run. Two
+               primary buttons stacked say nothing about which comes
+               first, and prepare is the one you press once. -->
+          <button class="btn btn-block" :class="{ 'btn-primary': !prepared }"
+                  @click="start('/api/prepare', 'prepare')"
                   :disabled="busy || !status.configured"
                   :title="prepared
                     ? 'Already prepared; running this again does nothing'
@@ -867,7 +887,8 @@ footer a:hover { text-decoration: underline; }
             <svg class="icon"><use href="#i-hammer"/></svg>
             {{ prepared ? 'Patches prepared' : 'Prepare patches' }}
           </button>
-          <button class="btn btn-block" @click="start('/api/test', 'all tests')"
+          <button class="btn btn-block" :class="{ 'btn-primary': prepared }"
+                  @click="start('/api/test', 'all tests')"
                   :disabled="busy || !status.configured || !prepared"
                   :title="prepared
                     ? 'Run every test with its checkbox ticked below'
@@ -906,7 +927,8 @@ footer a:hover { text-decoration: underline; }
               <dd :title="row.value">{{ row.value }}</dd>
             </template>
           </dl>
-          <button class="btn btn-sm btn-block" @click="openConfig()">
+          <button class="btn btn-sm btn-block" @click="openConfig()"
+                  title="Change the kernel path, signer, patch count and the rest">
             <svg class="icon"><use href="#i-cog"/></svg> Edit configuration
           </button>
         </div>
@@ -919,10 +941,12 @@ footer a:hover { text-decoration: underline; }
         <div class="card-head"><svg class="icon"><use href="#i-broom"/></svg> Maintenance</div>
         <div class="card-body">
           <div class="btn-row">
-            <button class="btn btn-sm" @click="confirmThen('Delete logs, patches and build output?', () => start('/api/clean', 'clean'))" :disabled="busy">
+            <button class="btn btn-sm" @click="confirmThen('Delete logs, patches and build output?', () => start('/api/clean', 'clean'))" :disabled="busy"
+                    title="Delete logs, generated patches and build output. The kernel tree is left alone">
               <svg class="icon"><use href="#i-broom"/></svg> Clean
             </button>
-            <button class="btn btn-sm btn-danger" @click="confirmThen('Reset the kernel tree, discarding applied patches?', () => start('/api/reset', 'reset'))" :disabled="busy">
+            <button class="btn btn-sm btn-danger" @click="confirmThen('Reset the kernel tree, discarding applied patches?', () => start('/api/reset', 'reset'))" :disabled="busy"
+                    title="Rewind the kernel tree, discarding the prepared patches. You will need to prepare again">
               <svg class="icon"><use href="#i-undo"/></svg> Reset
             </button>
           </div>
@@ -934,15 +958,18 @@ footer a:hover { text-decoration: underline; }
     <div>
       <div class="card" style="margin-bottom:0;--i:1">
         <div class="tabs">
-          <button class="tab" :class="{ active: tab === 'tests' }" @click="tab = 'tests'">
+          <button class="tab" :class="{ active: tab === 'tests' }" @click="tab = 'tests'"
+                  title="The checks that run against your patches, and how each one last did">
             <svg class="icon"><use href="#i-flask"/></svg> Tests
             <span class="count">{{ tests.length }}</span>
           </button>
-          <button class="tab" :class="{ active: tab === 'jobs' }" @click="tab = 'jobs'">
+          <button class="tab" :class="{ active: tab === 'jobs' }" @click="tab = 'jobs'"
+                  title="Everything that has been run, newest first">
             <svg class="icon"><use href="#i-list"/></svg> History
             <span class="count">{{ jobs.length }}</span>
           </button>
-          <button class="tab" :class="{ active: tab === 'terminal' }" @click="showTerminal()">
+          <button class="tab" :class="{ active: tab === 'terminal' }" @click="showTerminal()"
+                  title="A shell on the machine running these tests">
             <svg class="icon"><use href="#i-term"/></svg> Terminal
           </button>
         </div>
@@ -1009,11 +1036,13 @@ footer a:hover { text-decoration: underline; }
           <div class="term-bar" v-if="jobs.length">
             <span>{{ jobs.length }} most recent</span>
             <div style="margin-left:auto;display:flex;gap:8px">
-              <button class="btn btn-sm" @click="refresh()">
+              <button class="btn btn-sm" @click="refresh()"
+                      title="Fetch the history again now">
                 <svg class="icon"><use href="#i-refresh"/></svg> Refresh
               </button>
               <button class="btn btn-sm btn-danger"
-                      @click="confirmThen('Remove finished jobs from the history?', clearHistory)">
+                      @click="confirmThen('Remove finished jobs from the history?', clearHistory)"
+                      title="Remove every finished run. Anything still going stays">
                 <svg class="icon"><use href="#i-broom"/></svg> Clear
               </button>
             </div>
@@ -1074,7 +1103,10 @@ footer a:hover { text-decoration: underline; }
               {{ term.viewers }} viewers share this shell
             </span>
             <div style="margin-left:auto">
-              <button class="btn btn-sm" @click="connectTerm(true)">
+              <button class="btn btn-sm" @click="connectTerm(true)"
+                      :title="term.connected
+                              ? 'Drop this connection and open a new one'
+                              : 'Attach to the shell on the server'">
                 <svg class="icon"><use href="#i-refresh"/></svg>
                 {{ term.connected ? 'Reconnect' : 'Connect' }}
               </button>
@@ -1672,6 +1704,32 @@ createApp({
       } catch (error) {
         this.toast('bad', `Could not start ${label}`, error.message);
       }
+    },
+
+    // The three fetchable setup steps, queued together. Configuration
+    // is left out: it is a form, not a fetch, and nothing here can
+    // fill it in.
+    async syncEverything() {
+      const steps = [
+        ['/api/mirror/sync', 'mainline mirror'],
+        ['/api/submodules/sync', 'sub-repositories'],
+        ['/api/oe-checks/update', 'openEuler checks'],
+      ];
+      const failed = [];
+      for (const [path, label] of steps) {
+        try {
+          await this.post(path);
+        } catch (error) {
+          failed.push(`${label}: ${error.message}`);
+        }
+      }
+      if (failed.length) {
+        this.toast('bad', 'Some of setup could not be started',
+                   failed.join('; '));
+      } else {
+        this.toast('ok', `Queued ${steps.length} setup step(s)`);
+      }
+      this.refresh();
     },
 
     async runTest(test) {
