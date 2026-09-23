@@ -1084,21 +1084,18 @@ class TestOpenEulerBuildVerdicts(unittest.TestCase):
         errors = tempfile.NamedTemporaryFile('w', suffix='.log',
                                              delete=False)
         errors.write(
-            'drivers/net/ethernet/huawei/hinic3/hw/hinic3_lld.c:92:55: '
-            'error: positional initialization of field\n'
-            'drivers/net/ethernet/huawei/hinic3/hw/hinic3_lld.c:93:1: '
-            'error: another one in the same file\n'
-            'drivers/net/ethernet/huawei/hinic5/cqm.c:443:10: '
-            'error: incompatible pointer type\n')
+            'drivers/net/first/one.c:92:55: error: first complaint\n'
+            'drivers/net/first/one.c:93:1: error: same file again\n'
+            'drivers/net/second/deep/../two.c:443:10: error: another file\n')
         errors.close()
         self.addCleanup(os.unlink, errors.name)
 
         out = self.shell('_oe_report_errors %s' % errors.name)
-        self.assertIn('hinic3_lld.c', out)
-        self.assertIn('hinic5/cqm.c', out)
+        self.assertIn('drivers/net/first/one.c', out)
+        self.assertIn('two.c', out)
         # One line per file: a single bad struct produces a dozen errors
         # and would otherwise crowd out the other drivers.
-        self.assertEqual(out.count('hinic3_lld.c'), 1)
+        self.assertEqual(out.count('drivers/net/first/one.c'), 1)
 
     def test_nothing_is_printed_when_there_are_no_errors(self):
         quiet = tempfile.NamedTemporaryFile('w', suffix='.log', delete=False)
@@ -1147,30 +1144,32 @@ class TestOpenEulerBuildVerdicts(unittest.TestCase):
                 return f.read()
         return done.stdout.decode(), read(result), read(warnings)
 
-    GCC_PLUGINS = 'CONFIG_GCC_PLUGINS=y\nCONFIG_RANDSTRUCT_FULL=n\n'
+    #: Unanswered before the series and after it, so the host's doing.
+    #: What makes a symbol behave this way is that Kconfig only offers
+    #: it on some machines -- gcc plugin symbols appear wherever the
+    #: compiler's plugin headers are installed -- but nothing here
+    #: depends on which symbol it is, so neither does the test.
+    FROM_THE_HOST = 'CONFIG_ONE=y\nCONFIG_TWO=n\n'
+    #: Unanswered only after the series, so the series added it.
+    FROM_THE_SERIES = 'CONFIG_THREE=y\n'
 
     def test_symbols_the_host_offers_are_not_the_series_fault(self):
-        # Kconfig only offers GCC_PLUGINS where the compiler's plugin
-        # headers are installed, so a machine with gcc-plugin-devel
-        # reports five symbols their builder never sees and no patch
-        # went near. Their CI reads the raw list because it builds a
-        # known branch in a known container; we cannot.
         log, result, warnings = self.defconfig_check(
-            mine=self.GCC_PLUGINS, before=self.GCC_PLUGINS)
+            mine=self.FROM_THE_HOST, before=self.FROM_THE_HOST)
         self.assertIn('checkdefconfig | pass', result)
         # Said on the log, never in the warnings file, which is a gate.
         self.assertEqual(warnings, '')
-        self.assertIn('CONFIG_GCC_PLUGINS=y', log)
+        self.assertIn('CONFIG_ONE=y', log)
         self.assertIn("this host's and not yours", log)
 
     def test_a_symbol_the_series_really_added_still_fails(self):
         log, result, warnings = self.defconfig_check(
-            mine=self.GCC_PLUGINS + 'CONFIG_AMD_PSTATE_NEW=y\n',
-            before=self.GCC_PLUGINS)
+            mine=self.FROM_THE_HOST + self.FROM_THE_SERIES,
+            before=self.FROM_THE_HOST)
         self.assertIn('checkdefconfig | fail', result)
-        self.assertIn('CONFIG_AMD_PSTATE_NEW=y', warnings)
+        self.assertIn('CONFIG_THREE=y', warnings)
         # Only the one the series is answerable for.
-        self.assertNotIn('CONFIG_GCC_PLUGINS', warnings)
+        self.assertNotIn('CONFIG_ONE', warnings)
         self.assertIn('update_oedefconfig', warnings)
 
     def test_a_defconfig_that_answers_everything_passes_quietly(self):
@@ -1201,11 +1200,14 @@ class TestConflictSection(unittest.TestCase):
         import oe_conflict
         import oe_header
 
+    #: The shape a real backport's trailers have: several sign-offs
+    #: carried down from upstream with a review in the middle of them,
+    #: which is what makes where the section goes a question at all.
     UPSTREAM_TRAILERS = (
-        'Signed-off-by: Perry Yuan <perry.yuan@amd.com>\n'
-        'Signed-off-by: Xiaojian Du <Xiaojian.Du@amd.com>\n'
-        'Reviewed-by: Borislav Petkov (AMD) <bp@alien8.de>\n'
-        'Signed-off-by: ShilpaVPatil <ShilpaV.Patil@amd.com>\n'
+        'Signed-off-by: First Author <first@example.com>\n'
+        'Signed-off-by: Second Author <second@example.com>\n'
+        'Reviewed-by: A Reviewer <reviewer@example.com>\n'
+        'Signed-off-by: A Maintainer <maintainer@example.com>\n'
     )
 
     NOTE = '[Backport Changes]\nBecause the tree already had part of it.\n\n'
@@ -1228,7 +1230,7 @@ class TestConflictSection(unittest.TestCase):
         self.assertEqual(lines[lines.index('Conflicts:') - 1], '')
         after = lines[lines.index('Conflicts:'):]
         closing = next(i for i, l in enumerate(after) if l.endswith(']'))
-        self.assertTrue(after[closing + 1].startswith('Signed-off-by: Perry'),
+        self.assertTrue(after[closing + 1].startswith('Signed-off-by: First Author'),
                         'nothing may come between "]" and the sign-offs')
 
     def test_the_authors_own_note_becomes_the_description(self):
@@ -1265,8 +1267,8 @@ class TestConflictSection(unittest.TestCase):
         # this records why the section butts up against the sign-offs.
         good = self.build('subject\n\nBody.\n\n' + self.NOTE
                           + self.UPSTREAM_TRAILERS)
-        spaced = good.replace(']\nSigned-off-by: Perry',
-                              ']\n\nSigned-off-by: Perry')
+        spaced = good.replace(']\nSigned-off-by: First Author',
+                              ']\n\nSigned-off-by: First Author')
         self.assertTrue(oe_conflict.format_ok(good)[0])
         self.assertFalse(oe_conflict.format_ok(spaced)[0])
 
@@ -1304,7 +1306,7 @@ class TestUndescribedDivergence(unittest.TestCase):
 
     DIVERGES = {
         'deviates': lambda *a: True,
-        'differing_files': lambda *a: ['drivers/cpufreq/amd-pstate.c'],
+        'differing_files': lambda *a: ['drivers/somewhere/a_file.c'],
         'difference': lambda *a: '--- a\n+++ b\n@@\n-old line\n+new line',
     }
 
@@ -1318,7 +1320,7 @@ class TestUndescribedDivergence(unittest.TestCase):
     def test_the_warning_names_the_files_and_shows_the_difference(self):
         _, _, warning = self.declare(
             'subject\n\nBody.\n\nSigned-off-by: S <s@e.com>\n', self.DIVERGES)
-        self.assertIn('drivers/cpufreq/amd-pstate.c', warning)
+        self.assertIn('drivers/somewhere/a_file.c', warning)
         self.assertIn('-old line', warning)
         self.assertIn('+new line', warning)
         self.assertIn('false positive', warning)
