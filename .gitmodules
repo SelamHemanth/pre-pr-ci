@@ -7,3 +7,6 @@
 [submodule "euler/kernel"]
 	path = euler/kernel
 	url = https://atomgit.com/src-openeuler/kernel.git
+[submodule "euler/hulk_robot_test"]
+	path = euler/hulk_robot_test
+	url = https://gitcode.com/hulk-robot/hulk_robot_test.git

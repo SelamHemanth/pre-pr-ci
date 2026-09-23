@@ -37,6 +37,9 @@ NEEDED_BY = {
     'anolis/kabi-dw': ('check_kapi',),
     'anolis/kabi-whitelist': ('check_kapi',),
     'euler/kernel': ('rpm_build', 'check_kabi'),
+    'euler/hulk_robot_test': ('check_patch', 'check_format', 'check_depend',
+                              'check_kabi_keyword', 'check_conflict',
+                              'check_binary'),
 }
 
 

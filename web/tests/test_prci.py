@@ -736,6 +736,83 @@ class TestBackportDetection(unittest.TestCase):
             '+/* commit 1234567890abcdef1234567890abcdef12345678 upstream */\n'))
 
 
+class TestOpenEulerVerdicts(unittest.TestCase):
+    """Reading openEuler's own checks correctly.
+
+    Their six scripts report in four different shapes and none of them set
+    a useful exit status, so the printed text is the only verdict there is.
+    Misreading it turns a rejected patch into a passing one, which is worse
+    than having no check at all.
+    """
+
+    def setUp(self):
+        sys.path.insert(0, os.path.join(PROJECT_ROOT, 'euler'))
+        self.addCleanup(sys.path.remove,
+                        os.path.join(PROJECT_ROOT, 'euler'))
+        import oe_checks
+        self.verdict = oe_checks.verdict
+
+    def test_checkpatch_counts(self):
+        self.assertEqual(
+            self.verdict(['---- result ----',
+                          'total:100 failed:8 warning:0 success:92'])[0],
+            'fail')
+
+    def test_checkpatch_warnings_are_not_failures(self):
+        status, _ = self.verdict(
+            ['---- result ----',
+             'total:100 failed:0 warning:2 success:98'])
+        self.assertEqual(status, 'warn')
+
+    def test_conflict_spaces_after_the_colon(self):
+        # check_conflict.py is the only one that writes "failed: 31".
+        self.assertEqual(
+            self.verdict(['---- result ----',
+                          'total: 100 failed: 31 success: 69'])[0],
+            'fail')
+
+    def test_conflict_omits_the_failed_key_when_clean(self):
+        # Nothing says "failed" here.  Reading that as unparseable would
+        # report an error on every clean run.
+        self.assertEqual(
+            self.verdict(['---- result ----', 'total: 2 success: 2'])[0],
+            'pass')
+
+    def test_all_clear_sentences(self):
+        for line in ('check 100 patch(es) success', 'check 43 file(s) success'):
+            self.assertEqual(self.verdict(['---- result ----', line])[0],
+                             'pass')
+
+    def test_depend_names_failures_and_never_counts_them(self):
+        status, detail = self.verdict(
+            ['---- results ----',
+             'check failed: abc123 net: a thing',
+             'missing 6842427bf299',
+             'check failed: def456 net: another thing'])
+        self.assertEqual(status, 'fail')
+        self.assertIn('2', detail)
+
+    def test_depend_silence_under_the_banner_is_success(self):
+        self.assertEqual(self.verdict(['---- results ----'])[0], 'pass')
+
+    def test_no_result_at_all_is_an_error_not_a_pass(self):
+        # A script that died before reporting has not approved anything.
+        status, _ = self.verdict(['Traceback (most recent call last):',
+                                  'UnicodeDecodeError: bad byte'])
+        self.assertEqual(status, 'error')
+
+    def test_per_commit_failed_lines_are_not_miscounted(self):
+        # pr_checkpatch prints "check <sha> failed" per commit as well as a
+        # total.  The total is what counts.
+        status, detail = self.verdict(
+            ['check abc123 failed',
+             'check def456 failed',
+             '---- result ----',
+             'total:2 failed:2 warning:0 success:0'])
+        self.assertEqual(status, 'fail')
+        self.assertIn('2 failed', detail)
+
+
 class TestBuildProgress(unittest.TestCase):
     """The build scripts' own output is what drives the build progress bar."""
 
