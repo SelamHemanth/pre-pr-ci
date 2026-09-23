@@ -486,6 +486,13 @@ def api_jobs_clear():
     return jsonify({'success': True, 'removed': removed})
 
 
+@app.route('/api/jobs/<job_id>', methods=['DELETE'])
+def api_job_forget(job_id):
+    ok, message = store.forget(job_id)
+    status = 200 if ok else (404 if message == 'No such job' else 409)
+    return jsonify({'success': ok, 'message': message}), status
+
+
 # ── terminal ──────────────────────────────────────────────────────────────
 
 @app.route('/api/terminal/status')

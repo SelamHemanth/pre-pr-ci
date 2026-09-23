@@ -834,20 +834,23 @@ footer a:hover { text-decoration: underline; }
                v-if="runningJob" style="margin-top:10px">
             <span :style="{ width: (runningJob.progress || 0) + '%' }"></span>
           </div>
-          <!-- During a build the percentage alone says little: what you want
-               to know is which patch it reached and whether it is compiling,
-               because that is the part that takes the time. -->
-          <div class="step-now" v-if="runningJob && runningJob.step_label">
-            <span>Patch {{ runningJob.step }} of {{ runningJob.total_steps }}</span>
-            <span class="step-now-name" :title="runningJob.step_label">
-              {{ runningJob.step_label }}
-            </span>
+          <!-- The percentage alone says little. What you want to know is
+               which stage it reached, because that is where the time
+               goes: which patch is being applied, or which test is
+               running and how many are left. -->
+          <div class="step-now" v-if="runningJob && stageLabel">
+            <span>{{ stageCounter }}</span>
+            <span class="step-now-name" :title="stageLabel">{{ stageLabel }}</span>
             <span class="step-now-phase" v-if="runningJob.phase">
               {{ runningJob.phase }}
             </span>
+            <span class="step-now-pct" v-if="runningJob.progress !== null">
+              {{ runningJob.progress }}%
+            </span>
           </div>
           <button class="btn btn-sm btn-block" v-if="runningJob"
-                  @click="openLog(runningJob)">
+                  @click="openLog(runningJob)"
+                  title="Follow the output of this run as it happens">
             <svg class="icon"><use href="#i-list"/></svg> Watch the log
           </button>
         </div>
@@ -1041,11 +1044,17 @@ footer a:hover { text-decoration: underline; }
                 <div class="job-tail" v-if="j.status === 'running' && j.last_line">{{ j.last_line }}</div>
                 <div class="job-tail" v-else-if="j.error" style="color:var(--fail)">{{ j.error }}</div>
               </div>
-              <button class="btn btn-sm" @click="openLog(j)">
+              <button class="btn btn-sm" @click="openLog(j)"
+                      title="Show the output of this run">
                 <svg class="icon"><use href="#i-list"/></svg> Log
               </button>
-              <button class="btn btn-sm btn-danger" v-if="isActive(j)" @click="askKill(j)">
+              <button class="btn btn-sm btn-danger" v-if="isActive(j)" @click="askKill(j)"
+                      title="Stop this run">
                 <svg class="icon"><use href="#i-stop"/></svg>
+              </button>
+              <button class="icon-btn" v-else @click="forgetJob(j)"
+                      title="Remove just this run from the history">
+                <svg class="icon"><use href="#i-x"/></svg>
               </button>
             </div>
           </transition-group>
@@ -1668,6 +1677,18 @@ createApp({
           }
           this.refresh();
         });
+    },
+
+    // One run, without taking the ones worth keeping with it.
+    async forgetJob(job) {
+      try {
+        await this.api(`/api/jobs/${job.id}`, { method: 'DELETE' });
+        if (this.logJob && this.logJob.id === job.id) this.closeLog();
+        this.jobs = this.jobs.filter(j => j.id !== job.id);
+        this.refresh();
+      } catch (error) {
+        this.toast('bad', 'Could not remove that run', error.message);
+      }
     },
 
     async clearHistory() {

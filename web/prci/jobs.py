@@ -606,6 +606,25 @@ class JobStore:
                     return
                 time.sleep(0.2)
 
+    def forget(self, job_id):
+        """Forget one finished job.
+
+        Clearing the whole history to get rid of one failed attempt
+        takes the runs worth keeping with it, which is the reason
+        people stop clearing it at all.
+        """
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if not job:
+                return False, 'No such job'
+            if job.get('status') in ACTIVE_STATES:
+                return False, 'That run has not finished'
+            self._drop_log(job)
+            self._jobs.pop(job_id, None)
+            self._order = [i for i in self._order if i != job_id]
+            self._save_locked()
+        return True, 'Removed'
+
     def clear_history(self):
         """Forget finished jobs.  Running and queued ones stay."""
         removed = 0
