@@ -171,6 +171,40 @@ _oe_report_errors() {
   echo "${lines}" | cut -c1-160 | sed 's/^/       /'
 }
 
+# The files the compiler reported an error in, as paths from the kernel
+# root.  gcc prints them as the build saw them, which for a driver that
+# includes across directories means a path with .. in the middle, so
+# they are normalised before anyone compares them with anything.
+_oe_error_files() {
+  local warnings="$1" path
+  grep -aoE '[^ ]+\.[chS]:[0-9]+:[0-9]+: (fatal )?error:' "${warnings}" \
+      2>/dev/null | cut -d: -f1 | sort -u | while read -r path; do
+    realpath -m --relative-to=. "${path}" 2>/dev/null || echo "${path}"
+  done | sort -u
+}
+
+# Did the series break a file of its own?
+#
+# "The tree was already broken" is decided by the baseline build also
+# failing, and that on its own cannot tell breaking it further from
+# leaving it as found: both end with make exiting non-zero.  A gate
+# that passes because it never really looked is the worst kind, and
+# this is where it would happen.
+#
+# An error in a file the series touches is the series', whatever else
+# is broken elsewhere in the tree.
+_oe_broke_its_own_files() {
+  local warnings="$1" back="$2" errors series
+
+  [ "${back}" -gt 0 ] || return 1
+  errors=$(_oe_error_files "${warnings}")
+  [ -n "${errors}" ] || return 1
+  series=$(git diff --name-only "HEAD~${back}" HEAD 2>/dev/null | sort -u)
+  [ -n "${series}" ] || return 1
+
+  comm -12 <(printf '%s\n' "${errors}") <(printf '%s\n' "${series}")
+}
+
 # Was the tree already like this before the series?
 #
 # openEuler's CI never asks, because it builds their branch on their
@@ -200,8 +234,10 @@ _oe_failed_before_the_series() {
     >/dev/null 2>&1
   # Kept, not discarded: when this build fails too, its errors are the
   # evidence that the breakage predates the series, and they are what
-  # the row above is asserting.
-  make ARCH="${kernel_arch}" CROSS_COMPILE="${cross}" -j"${jobs}" \
+  # the row above is asserting.  -k for the same reason as above: the
+  # two error lists are only comparable if both builds got as far as
+  # each other.
+  make ARCH="${kernel_arch}" CROSS_COMPILE="${cross}" -k -j"${jobs}" \
     >/dev/null 2>"${baseline}"
   rc=$?
   git checkout -q "${head}" || return 1
@@ -226,7 +262,7 @@ _oe_cross_build() {
     git checkout -q "HEAD~${back}" || return 1
     make ARCH="${kernel_arch}" CROSS_COMPILE="${cross}" allmodconfig \
       >/dev/null 2>&1
-    make ARCH="${kernel_arch}" CROSS_COMPILE="${cross}" -j"${jobs}" \
+    make ARCH="${kernel_arch}" CROSS_COMPILE="${cross}" -k -j"${jobs}" \
       >/dev/null 2>&1
     git checkout -q "${head}" || return 1
   else
@@ -236,7 +272,7 @@ _oe_cross_build() {
   echo "  -> building allmodconfig for ${kernel_arch}"
   make ARCH="${kernel_arch}" CROSS_COMPILE="${cross}" allmodconfig \
     >/dev/null 2>&1
-  make ARCH="${kernel_arch}" CROSS_COMPILE="${cross}" -j"${jobs}" \
+  make ARCH="${kernel_arch}" CROSS_COMPILE="${cross}" -k -j"${jobs}" \
     >/dev/null 2>"${warnings}"
 }
 
@@ -244,6 +280,7 @@ _oe_cross_build() {
 _oe_kabi_build() {
   local kernel="$1" kernel_arch="$2" cross="$3" jobs="$4" arch="$5"
   local whitelists="$6" warnings="$7" result="$8" back="$9"
+  local ours
 
   cd "${kernel}" || return 1
 
@@ -252,9 +289,21 @@ _oe_kabi_build() {
   make ARCH="${kernel_arch}" CROSS_COMPILE="${cross}" allmodconfig \
     >/dev/null 2>&1
   make ARCH="${kernel_arch}" CROSS_COMPILE="${cross}" oldconfig >/dev/null 2>&1
-  if make ARCH="${kernel_arch}" CROSS_COMPILE="${cross}" -j"${jobs}" \
+  # -k, which their CI does not need and we do.  They build a branch
+  # that compiles, so the first error is the answer; we build whatever
+  # tree we are pointed at, and stopping at the first error in some
+  # unrelated driver means the files the series actually changed are
+  # never compiled at all.  Nothing can then be said about whose fault
+  # the failure is, which is the one question being asked.
+  if make ARCH="${kernel_arch}" CROSS_COMPILE="${cross}" -k -j"${jobs}" \
       >/dev/null 2>"${warnings}"; then
     echo "| ${arch} allmodconfig build | pass |" >> "${result}"
+  elif ours=$(_oe_broke_its_own_files "${warnings}" "${back}") \
+       && [ -n "${ours}" ]; then
+    echo "| ${arch} allmodconfig build | fail |" >> "${result}"
+    echo "  -> these are files the series touches, so the breakage is its own"
+    printf '%s\n' "${ours}" | sed 's/^/       /'
+    _oe_report_errors "${warnings}"
   elif _oe_failed_before_the_series "${kernel}" "${kernel_arch}" \
       "${cross}" "${jobs}" "${back}" "${warnings}.baseline"; then
     echo "| ${arch} allmodconfig build | broken already, not your series |" \
@@ -460,16 +509,25 @@ oe_build_arch() {
     # the way is a separate question, asked once below for both paths, so
     # that their branch exemptions get a say -- counting a warning as a
     # failed row here would decide the verdict before they are consulted.
+    local ours
     if _oe_cross_build "${kernel}" "${kernel_arch}" "${cross}" "${jobs}" \
         "${back}" "${warnings}"; then
       echo "| ${arch} allmodconfig build | pass |" >> "${result}"
+    elif ours=$(_oe_broke_its_own_files "${warnings}" "${back}") \
+         && [ -n "${ours}" ]; then
+      echo "| ${arch} allmodconfig build | fail |" >> "${result}"
+      echo "  -> these are files the series touches, so the breakage is its own"
+      printf '%s\n' "${ours}" | sed 's/^/       /'
+      _oe_report_errors "${warnings}"
     elif _oe_failed_before_the_series "${kernel}" "${kernel_arch}" \
-        "${cross}" "${jobs}" "${back}"; then
+        "${cross}" "${jobs}" "${back}" "${warnings}.baseline"; then
       echo "| ${arch} allmodconfig build | broken already, not your series |" \
         >> "${result}"
+      _oe_report_errors "${warnings}.baseline"
       : > "${warnings}"
     else
       echo "| ${arch} allmodconfig build | fail |" >> "${result}"
+      _oe_report_errors "${warnings}"
     fi
   fi
 

@@ -1097,6 +1097,45 @@ class TestOpenEulerBuildVerdicts(unittest.TestCase):
         # and would otherwise crowd out the other drivers.
         self.assertEqual(out.count('drivers/net/first/one.c'), 1)
 
+    def attribution(self, errored, touched):
+        """_oe_broke_its_own_files, with git answering for the series."""
+        log = tempfile.NamedTemporaryFile('w', suffix='.log', delete=False)
+        log.write(''.join('%s:1:1: error: broke\n' % f for f in errored))
+        log.close()
+        self.addCleanup(os.unlink, log.name)
+
+        return self.shell('''
+            git() { printf '%%s\\n' %(touched)s; }
+            _oe_broke_its_own_files %(log)s 1
+        ''' % {'touched': ' '.join("'%s'" % t for t in touched) or "''",
+               'log': log.name})
+
+    def test_breaking_a_file_of_its_own_is_the_series_fault(self):
+        # The tree being broken already is decided by the baseline build
+        # failing too, and that cannot tell breaking it further from
+        # leaving it as found: both end with make exiting non-zero. A
+        # gate that passes because it never really looked is the worst
+        # kind, and this is where it would happen.
+        out = self.attribution(
+            errored=['drivers/other/theirs.c', 'drivers/mine/ours.c'],
+            touched=['drivers/mine/ours.c', 'include/linux/ours.h'])
+        self.assertEqual(out.split(), ['drivers/mine/ours.c'])
+
+    def test_breakage_in_files_the_series_never_touched_is_not_its_fault(self):
+        out = self.attribution(errored=['drivers/other/theirs.c'],
+                               touched=['drivers/mine/ours.c'])
+        self.assertEqual(out.strip(), '')
+
+    def test_a_path_with_dot_dot_in_it_still_matches(self):
+        # gcc prints paths as the build saw them, and a driver that
+        # includes across directories produces several .. in the middle.
+        # Compared unnormalised, those never match what git reports and
+        # every such breakage is filed as somebody else's.
+        out = self.attribution(
+            errored=['drivers/mine/deep/../ours.c'],
+            touched=['drivers/mine/ours.c'])
+        self.assertEqual(out.split(), ['drivers/mine/ours.c'])
+
     def test_nothing_is_printed_when_there_are_no_errors(self):
         quiet = tempfile.NamedTemporaryFile('w', suffix='.log', delete=False)
         quiet.write('fs/foo.c:12: warning: unused variable\n')
