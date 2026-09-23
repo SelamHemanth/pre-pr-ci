@@ -142,8 +142,14 @@ def existing_note(message):
 
 
 def strip_note(message):
-    """Remove the [Backport Changes] block once it has been moved."""
-    return _BACKPORT_NOTE_RE.sub('', message).rstrip() + '\n'
+    """Remove the [Backport Changes] block once it has been moved.
+
+    Taking the block out leaves the blank line above it against the
+    blank line below, so close the gap rather than leaving a hole
+    where the note used to be.
+    """
+    without = _BACKPORT_NOTE_RE.sub('', message)
+    return re.sub(r'\n{3,}', '\n\n', without).rstrip() + '\n'
 
 
 def section(files, note):

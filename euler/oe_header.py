@@ -504,29 +504,34 @@ _SOB_RE = re.compile(r'^Signed-off-by:\s')
 
 
 def split_sign_offs(message):
-    """Split a message just before its last run of Signed-off-by lines.
+    """Split the message where the Conflicts: section has to go.
 
-    The first part keeps a trailing blank line when the sign-offs begin
-    a paragraph of their own, so that inserting between the two does
-    not glue the section onto the prose above it.
+    Their regex runs straight from the closing bracket into
+    "Signed-off-by:", so the section has to sit directly above one.
+    Several places satisfy that; the right one is the highest, at the
+    top of the trailer group, because that is where the author's own
+    [Backport Changes] block was and the note is replacing it.  Below
+    the upstream trailers it reads as something the backporter added
+    to a chain they do not own.
+
+    A trailer group that opens with something else -- a Reviewed-by
+    carried down from upstream -- pushes the section down to the first
+    sign-off after it, which is as high as the gate allows.
     """
     lines = message.rstrip('\n').split('\n')
 
-    last = None
-    for i, line in enumerate(lines):
-        if _SOB_RE.match(line):
-            last = i
-    if last is None:
-        return lines + [''], []
-
-    start = last
-    while start > 0 and _SOB_RE.match(lines[start - 1]):
+    # The last paragraph, which is where the trailers are.
+    start = len(lines)
+    while start > 0 and lines[start - 1].strip():
         start -= 1
 
-    before = lines[:start]
-    if before and before[-1].strip():
-        before = before + ['']
-    return before, lines[start:]
+    for i in range(start, len(lines)):
+        if _SOB_RE.match(lines[i]):
+            return lines[:i], lines[i:]
+
+    # No sign-off to sit above, which add_signed_off_by makes
+    # impossible in practice.
+    return lines + [''], []
 
 
 def main():

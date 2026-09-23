@@ -1030,6 +1030,86 @@ class TestOpenEulerBuildVerdicts(unittest.TestCase):
                                          stderr=subprocess.DEVNULL), 2)
 
 
+class TestConflictSection(unittest.TestCase):
+    """Where the Conflicts: section goes, and what goes in the brackets."""
+
+    def setUp(self):
+        euler = os.path.join(PROJECT_ROOT, 'euler')
+        if euler not in sys.path:
+            sys.path.insert(0, euler)
+        global oe_conflict, oe_header
+        import oe_conflict
+        import oe_header
+
+    UPSTREAM_TRAILERS = (
+        'Signed-off-by: Perry Yuan <perry.yuan@amd.com>\n'
+        'Signed-off-by: Xiaojian Du <Xiaojian.Du@amd.com>\n'
+        'Reviewed-by: Borislav Petkov (AMD) <bp@alien8.de>\n'
+        'Signed-off-by: ShilpaVPatil <ShilpaV.Patil@amd.com>\n'
+    )
+
+    def build(self, message, files=('arch/x86/include/asm/cpufeatures.h',)):
+        note = oe_conflict.existing_note(message)
+        if note:
+            message = oe_conflict.strip_note(message)
+        message = oe_header.add_signed_off_by(
+            message, 'Signed-off-by: Someone <s@example.com>')
+        before, sign_offs = oe_header.split_sign_offs(message)
+        section = oe_conflict.section(list(files), note)
+        return '\n'.join(before + section.split('\n') + sign_offs) + '\n'
+
+    def test_the_section_sits_at_the_top_of_the_trailers(self):
+        # Not wedged between the upstream sign-offs and ours: it is
+        # replacing the author's own note, and belongs where that was.
+        out = self.build('subject\n\nBody text.\n\n'
+                         + self.UPSTREAM_TRAILERS)
+        lines = out.split('\n')
+        self.assertEqual(lines[lines.index('Conflicts:') - 1], '')
+        after = lines[lines.index('Conflicts:'):]
+        closing = next(i for i, l in enumerate(after) if l.endswith(']'))
+        self.assertTrue(after[closing + 1].startswith('Signed-off-by: Perry'),
+                        'nothing may come between "]" and the sign-offs')
+
+    def test_the_authors_own_note_becomes_the_description(self):
+        out = self.build(
+            'subject\n\nBody text.\n\n'
+            '[Backport Changes]\n'
+            'The target tree already uses that bit for something else.\n'
+            'Every reference is by macro name.\n\n'
+            + self.UPSTREAM_TRAILERS)
+        self.assertIn('[The target tree already uses that bit for '
+                      'something else.\nEvery reference is by macro name.]',
+                      out)
+        self.assertNotIn('[Backport Changes]', out)
+        self.assertNotIn('Describe why here', out)
+        # Taking the block out must not leave a hole behind it.
+        self.assertNotIn('\n\n\n', out)
+
+    def test_openeuler_accepts_what_we_produce(self):
+        for message in (
+            'subject\n\nBody.\n\n' + self.UPSTREAM_TRAILERS,
+            'subject\n\nBody.\n\n[Backport Changes]\nBecause.\n\n'
+            + self.UPSTREAM_TRAILERS,
+            # A trailer group that does not open with a sign-off: the
+            # section has to drop to the first one that follows.
+            'subject\n\nBody.\n\nReviewed-by: R <r@e.com>\n'
+            'Signed-off-by: S <s@e.com>\n',
+        ):
+            out = self.build(message)
+            ok, why = oe_conflict.format_ok(
+                out, ['arch/x86/include/asm/cpufeatures.h'])
+            self.assertTrue(ok, '%s\n\nfor:\n%s' % (why, out))
+
+    def test_a_blank_line_before_the_sign_offs_is_rejected(self):
+        # The layout that reads best is the one their regex refuses, so
+        # this records why the section butts up against the sign-offs.
+        good = self.build('subject\n\nBody.\n\n' + self.UPSTREAM_TRAILERS)
+        spaced = good.replace(']\nSigned-off-by: Perry',
+                              ']\n\nSigned-off-by: Perry')
+        self.assertTrue(oe_conflict.format_ok(good)[0])
+        self.assertFalse(oe_conflict.format_ok(spaced)[0])
+
+
 class TestCleanTree(unittest.TestCase):
     """require_clean_tree, which now runs before anything is rewritten.
 
