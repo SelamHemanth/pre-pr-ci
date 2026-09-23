@@ -87,15 +87,16 @@ class TestRegistryMatchesScripts(unittest.TestCase):
             script = read_script(distro)
             for test in registry.tests_for(distro):
                 stem = test.log[:-len('.log')]
-                # Either named outright, or produced by run_kernel_build,
-                # which writes "${LOGS_DIR}/${log_stem}.log".  The stem is the
-                # helper's first argument unless a third one overrides it, so
-                # accept the name in any argument position.
+                # Either named outright, or produced by a helper that builds
+                # the path from its argument: run_kernel_build writes
+                # "${LOGS_DIR}/${log_stem}.log" and run_oe_check writes
+                # "${LOGS_DIR}/${test_name}.log".  The stem can be in any
+                # argument position, since a later one may override it.
                 named = test.log in script
                 joined = re.sub(r'\\\n\s*', ' ', script)
                 built = re.search(
-                    r'run_kernel_build(?:\s+"[^"]*")*\s+"%s"' % re.escape(stem),
-                    joined)
+                    r'run_(?:kernel_build|oe_check)(?:\s+"[^"]*")*\s+"%s"'
+                    % re.escape(stem), joined)
                 self.assertTrue(
                     named or built,
                     '%s/test.sh never writes %s (for test %r)'
@@ -340,9 +341,9 @@ class TestConfigFile(unittest.TestCase):
     def test_enabled_tests_reflects_flags(self):
         self.workspace.write_config(
             'euler', self.values(),
-            self.flags(TEST_CHECK_PATCH='no'), '/tmp/mirror')
+            self.flags(TEST_OE_CHECKPATCH='no'), '/tmp/mirror')
         enabled = self.workspace.enabled_tests('euler')
-        self.assertFalse(enabled['check_patch'])
+        self.assertFalse(enabled['oe_checkpatch'])
         self.assertTrue(enabled['build_allmod'])
 
     def test_redact_hides_secrets(self):
@@ -641,99 +642,6 @@ class TestMirrorFreshness(unittest.TestCase):
         self.stamp(1)
         self.assertTrue(repo.sync(self.mirror, emit=lambda line: None))
         self.assertEqual(self.git_calls, ['fetch'])
-
-
-class TestCheckpatchIgnores(unittest.TestCase):
-    """What euler's check_patch is willing to fail a patch over.
-
-    The list is read out of test.sh rather than restated here.  A type
-    dropped from the script should fail this test, not quietly start
-    rejecting backports that cannot be changed.
-    """
-
-    def setUp(self):
-        self.script = read_script('euler')
-        match = re.search(r'local IGNORES_FOR_MAIN=\((.*?)\n  \)',
-                          self.script, re.S)
-        self.assertIsNotNone(match, 'check_patch has no ignore list')
-        self.ignored = set(match.group(1).split())
-
-    def test_style_upstream_already_settled_is_ignored(self):
-        # A backport has to stay identical to the commit it claims to be, so
-        # none of these can be acted on without making the patch a lie.
-        for kind in ('LONG_LINE', 'CODE_INDENT', 'TYPO_SPELLING',
-                     'BAD_REPORTED_BY_LINK', 'BAD_SIGN_OFF',
-                     'BAD_STABLE_ADDRESS_STYLE', 'SPACE_BEFORE_TAB'):
-            self.assertIn(kind, self.ignored)
-
-    def test_long_commit_log_lines_are_reported_not_ignored(self):
-        # checkpatch raises this as a WARNING and only errors fail a patch,
-        # so leaving it out of the list reports it without rejecting anything.
-        self.assertNotIn('COMMIT_LOG_LONG_LINE', self.ignored)
-
-    def test_bad_fixes_tag_is_waived_per_patch_not_wholesale(self):
-        self.assertNotIn('BAD_FIXES_TAG', self.ignored)
-        self.assertIn('${ignore_str},BAD_FIXES_TAG', self.script)
-
-
-class TestBackportDetection(unittest.TestCase):
-    """check_patch waives BAD_FIXES_TAG for backports, so what counts as a
-    backport decides whether a malformed tag is reported at all."""
-
-    LOCAL = ('Subject: [PATCH] our own change\n\n'
-             'Written here, no upstream involved.\n\n'
-             'Fixes: 0123456789ab (no quotes)\n'
-             'Signed-off-by: A <a@example.com>\n')
-
-    def setUp(self):
-        # Run the function the script actually defines.  Sourcing test.sh
-        # outright needs a configuration this test has no business creating.
-        text = read_file('euler', 'test.sh')
-        match = re.search(r'^patch_is_backport\(\)\s*\{.*?^\}', text,
-                          re.S | re.M)
-        self.assertIsNotNone(match, 'patch_is_backport is gone')
-        self.func = match.group(0)
-        self.tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.tmp.cleanup)
-
-    def is_backport(self, body):
-        path = os.path.join(self.tmp.name, 'p.patch')
-        with open(path, 'w') as handle:
-            handle.write(body)
-        return subprocess.call(
-            ['bash', '-c', '%s\npatch_is_backport "%s"' % (self.func, path)]
-        ) == 0
-
-    def test_openeuler_inclusion_header(self):
-        self.assertTrue(self.is_backport(
-            'Subject: [PATCH] fix a thing\n\n'
-            'mainline inclusion\n'
-            'from mainline-v6.6-rc1\n'
-            'commit 1234567890abcdef1234567890abcdef12345678\n'
-            'category: bugfix\n\n'
-            'Signed-off-by: A <a@example.com>\n'))
-
-    def test_stable_upstream_header(self):
-        self.assertTrue(self.is_backport(
-            'Subject: [PATCH] fix a thing\n\n'
-            'commit 1234567890abcdef1234567890abcdef12345678 upstream.\n\n'
-            'Signed-off-by: A <a@example.com>\n'))
-
-    def test_a_locally_written_patch_is_not_a_backport(self):
-        self.assertFalse(self.is_backport(self.LOCAL))
-
-    def test_the_diff_is_not_searched_for_headers(self):
-        # "mainline inclusion" occurs in plenty of comments.  Reading past
-        # the first hunk would waive the tag check on ordinary patches.
-        self.assertFalse(self.is_backport(
-            self.LOCAL +
-            '---\n'
-            'diff --git a/d.c b/d.c\n'
-            '--- a/d.c\n'
-            '+++ b/d.c\n'
-            '@@ -1 +1,2 @@\n'
-            '+/* mainline inclusion was discussed for this */\n'
-            '+/* commit 1234567890abcdef1234567890abcdef12345678 upstream */\n'))
 
 
 class TestOpenEulerVerdicts(unittest.TestCase):

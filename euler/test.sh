@@ -68,13 +68,19 @@ list_tests() {
   echo ""
   echo -e "${GREEN}Test Name              Description${NC}"
   echo -e "${GREEN}─────────────────────────────────────────────────────────${NC}"
-  echo -e "  1. check_dependency    Check patch dependencies"
-  echo -e "  2. build_allmod        Build with allmodconfig"
-  echo -e "  3. check_kabi          Check KABI whitelist against Module.symvers"
-  echo -e "  4. check_patch         Run checkpatch.pl on patches"
-  echo -e "  5. check_format        Validate commit message format"
-  echo -e "  6. rpm_build           Build kernel RPM packages"
-  echo -e "  7. boot_kernel         Boot VM with built kernel"
+  echo -e "${CYAN}openEuler's own gate, run from their code:${NC}"
+  echo -e "  1. oe_checkpatch       checkpatch.pl, skipping clean backports"
+  echo -e "  2. oe_checkformat      Commit message headers"
+  echo -e "  3. oe_checkdepend      Upstream Fixes: closure"
+  echo -e "  4. oe_checkkabi        KABI keywords in message and diff"
+  echo -e "  5. oe_checkconflict    Backports that diverge must say Conflicts:"
+  echo -e "  6. oe_checkbinary      Binary files added by the series"
+  echo ""
+  echo -e "${CYAN}Ours:${NC}"
+  echo -e "  7. build_allmod        Build with allmodconfig"
+  echo -e "  8. check_kabi          KABI whitelist against Module.symvers"
+  echo -e "  9. rpm_build           Build kernel RPM packages"
+  echo -e " 10. boot_kernel         Boot VM with built kernel"
   echo ""
   echo -e "${BLUE}Usage:${NC}"
   echo "  $0                     - Run all enabled tests"
@@ -82,7 +88,7 @@ list_tests() {
   echo "  $0 <test_name>         - Run specific test"
   echo ""
   echo -e "${YELLOW}Examples:${NC}"
-  echo "  $0 check_dependency"
+  echo "  $0 oe_checkpatch"
   echo ""
   exit 0
 }
@@ -173,89 +179,60 @@ sync_torvalds_repo() {
   echo ""
 }
 
-# True when a patch carries a backport header, meaning its content and tags
-# were settled upstream and belong to the original commit, not to the person
-# sending it here.
-#
-# Only the commit message is examined.  "commit ... upstream" appears in
-# plenty of code comments, so reading past the first hunk would classify
-# ordinary patches as backports.
-patch_is_backport() {
-  local patch_file="$1"
-
-  sed -n '1,/^diff --git /p' "${patch_file}" 2>/dev/null |
-    grep -qiE '^(mainline|stable|openeuler) inclusion|^from (mainline|stable)-|^commit [0-9a-f]{12,40} upstream'
-}
-
 # ---- TEST DEFINITIONS ----
 
-test_check_dependency() {
-  echo -e "${BLUE}Test-1: check_dependency${NC}"
+# openEuler's gate, run from openEuler's code.
+#
+# oe_checks.py drives the scripts in the hulk_robot_test submodule and turns
+# what they print into an exit status: 0 passed or warned, 1 the patches were
+# rejected, 2 the check could not run, 3 there was nothing to check.  Warnings
+# are not failures here for the same reason they are not there -- the gate
+# reports them and still lets the patch through.
+run_oe_check() {
+  local test_name="$1"
+  local check="$2"
+  local log="${LOGS_DIR}/${test_name}.log"
+  local source_dir="${SCRIPT_DIR}/hulk_robot_test"
 
-  # Ensure Torvalds repo is present and up to date before running the check
-  sync_torvalds_repo
+  echo -e "${BLUE}${test_name}${NC}"
 
-  cd "${LINUX_SRC_PATH}"
-
-  # Get list of applied commits (those that are ahead of the reset point)
-  local applied_commits=()
-  mapfile -t applied_commits < <(git log --format=%H HEAD | head -n "${NUM_PATCHES:-10}")
-
-  if [ ${#applied_commits[@]} -eq 0 ]; then
-    skip "check_dependency" "No commits to check"
+  if [ ! -d "${source_dir}/openEuler/lib/static_checking/scripts" ]; then
+    skip "${test_name}" "hulk_robot_test is not checked out; run 'git submodule update --init ${source_dir#"${WORKDIR}/"}'"
     echo ""
     return
   fi
 
-  echo "  → Checking ${#applied_commits[@]} commits for dependencies..."
+  # checkformat, checkdepend and checkconflict resolve commits against
+  # mainline, so the mirror has to be there first.  The freshness guard in
+  # torvalds_sync means this is usually a no-op.
+  case "${check}" in
+    checkformat|checkdepend|checkconflict) sync_torvalds_repo ;;
+  esac
 
-  local commits_file="${SCRIPT_DIR}/.commits.txt"
-  local dep_log="${LOGS_DIR}/check_dependency.log"
-  local checkdepend_script="${WORKDIR}/lib/checkdepend.py"
+  python3 "${SCRIPT_DIR}/oe_checks.py" "${check}" \
+    --source "${source_dir}" \
+    --kernel "${LINUX_SRC_PATH}" \
+    --workdir "${WORKDIR}" \
+    --mirror "${TORVALDS_REPO:-}" \
+    --branch "${OE_TARGET_BRANCH:-master}" \
+    --count "${NUM_PATCHES:-5}" 2>&1 | tee "${log}"
 
-  # Check if checkdepend.py exists
-  if [ ! -f "${checkdepend_script}" ]; then
-    fail "check_dependency" "checkdepend.py not found at ${checkdepend_script}"
-    echo ""
-    return
-  fi
-
-  # Extract upstream commit IDs and save to .commits.txt
-  > "${commits_file}"
-
-  for commit in "${applied_commits[@]}"; do
-    local commit_body=$(git log -1 --format=%B "${commit}")
-
-    # Extract upstream commit ID (full 40-char hash) from commit message
-    local upstream_commit=$(echo "${commit_body}" | grep -oP '(?<=^commit )[a-f0-9]{40}' | head -1)
-
-    if [ -n "${upstream_commit}" ]; then
-      # Save the full 40-character hash
-      echo "${upstream_commit}" >> "${commits_file}"
-    fi
-  done
-
-  # Check if we have any commits to check
-  local commit_count=$(wc -l < "${commits_file}")
-  if [ ${commit_count} -eq 0 ]; then
-    skip "check_dependency" "No upstream commit IDs found in patches"
-    echo ""
-    return
-  fi
-
-  # checkdepend.py reports the result in its exit status: 0 clean, 1 missing
-  # dependencies, 2 could not run.  Grepping its output for "FAIL" used to
-  # match any commit subject that happened to contain the word.
-  python3 "${checkdepend_script}" "${LINUX_SRC_PATH}" "${TORVALDS_REPO}" \
-    "${commits_file}" --output-dir "${LOGS_DIR}" > "${dep_log}" 2>&1
-  case $? in
-    0) pass "check_dependency" ;;
-    1) fail "check_dependency" "Some commits have unfixed dependencies (see ${dep_log})" ;;
-    *) fail "check_dependency" "checkdepend.py could not run (see ${dep_log})" ;;
+  case "${PIPESTATUS[0]}" in
+    0) pass "${test_name}" ;;
+    3) skip "${test_name}" "No commits to check" ;;
+    2) fail "${test_name}" "The check could not run (see ${log})" ;;
+    *) fail "${test_name}" "openEuler ${check} rejected the series (see ${log})" ;;
   esac
 
   echo ""
 }
+
+test_oe_checkpatch()    { run_oe_check "oe_checkpatch"    "checkpatch"; }
+test_oe_checkformat()   { run_oe_check "oe_checkformat"   "checkformat"; }
+test_oe_checkdepend()   { run_oe_check "oe_checkdepend"   "checkdepend"; }
+test_oe_checkkabi()     { run_oe_check "oe_checkkabi"     "checkkabi"; }
+test_oe_checkconflict() { run_oe_check "oe_checkconflict" "checkconflict"; }
+test_oe_checkbinary()   { run_oe_check "oe_checkbinary"   "checkbinary"; }
 
 test_build_allmod() {
   echo -e "${BLUE}Test-2: build_allmod${NC}"
@@ -493,261 +470,6 @@ PYEOF
   echo ""
 }
 
-test_check_patch() {
-  echo -e "${BLUE}Test-4: check_patch${NC}"
-  
-  # Check if checkpatch.pl exists
-  local CHECKPATCH="${LINUX_SRC_PATH}/scripts/checkpatch.pl"
-  if [ ! -f "${CHECKPATCH}" ]; then
-    fail "check_patch" "checkpatch.pl not found at ${CHECKPATCH}"
-    echo ""
-    return
-  fi
-  
-  # Check if patches directory exists
-  if [ ! -d "${PATCHES_DIR}" ]; then
-    fail "check_patch" "Patches directory not found at ${PATCHES_DIR}"
-    echo ""
-    return
-  fi
-  
-  # Find all patch files (excluding .bkp directory)
-  local patch_files=()
-  mapfile -t patch_files < <(find "${PATCHES_DIR}" -maxdepth 1 -name "*.patch" -type f | sort)
-  
-  if [ ${#patch_files[@]} -eq 0 ]; then
-    skip "check_patch" "No patches found in ${PATCHES_DIR}"
-    echo ""
-    return
-  fi
-  
-  echo "  → Checking ${#patch_files[@]} patches..."
-  
-  local total_errors=0
-  local total_warnings=0
-  local failed_patches=0
-  local checkpatch_log="${LOGS_DIR}/check_patch.log"
-  
-  > "${checkpatch_log}"  # Clear log file
-
-  # Types ignored for every patch.
-  #
-  # A backport has to stay byte-identical to the commit it claims to be, so
-  # style complaints about code upstream already took cannot be acted on
-  # without making the patch a lie.  Reformatting to satisfy them is worse
-  # than the warning: it breaks the diff against upstream that checkconflict
-  # and the dependency check rely on.
-  local IGNORES_FOR_MAIN=(
-    CONFIG_DESCRIPTION
-    FILE_PATH_CHANGES
-    GERRIT_CHANGE_ID
-    GIT_COMMIT_ID
-    UNKNOWN_COMMIT_ID
-    FROM_SIGN_OFF_MISMATCH
-    REPEATED_WORD
-    COMMIT_COMMENT_SYMBOL
-    BLOCK_COMMENT_STYLE
-    AVOID_EXTERNS
-    AVOID_BUG
-    NOT_UNIFIED_DIFF
-    SPACING
-    LONG_LINE_COMMENT
-    LONG_LINE
-    CODE_INDENT
-    TYPO_SPELLING
-    BAD_REPORTED_BY_LINK
-    BAD_SIGN_OFF
-    BAD_STABLE_ADDRESS_STYLE
-    SPACE_BEFORE_TAB
-  )
-
-  # COMMIT_LOG_LONG_LINE is deliberately absent: it is a warning worth
-  # reading, and checkpatch already reports it as one, so leaving it out of
-  # this list surfaces it without failing the patch.
-
-  # Join array into comma-separated string
-  local ignore_str
-  ignore_str=$(IFS=, ; echo "${IGNORES_FOR_MAIN[*]}")
-
-  for patch_file in "${patch_files[@]}"; do
-    local patch_name=$(basename "${patch_file}")
-    echo "    Checking: ${patch_name}" >> "${checkpatch_log}"
-
-    # A Fixes: tag on a backport was written upstream and has to be carried
-    # across verbatim, so there is nothing the sender can fix.  On a patch
-    # written here the tag is ours and malformed is worth saying, but it does
-    # not stop the patch applying, so checkpatch's WARNING is left to stand
-    # rather than being promoted to a failure.
-    local ignore_this="${ignore_str}"
-    if patch_is_backport "${patch_file}"; then
-      ignore_this="${ignore_str},BAD_FIXES_TAG"
-      echo "      (backport: BAD_FIXES_TAG not applicable)" >> "${checkpatch_log}"
-    fi
-
-    # Run checkpatch with ignore list and capture output
-    local output=$("${CHECKPATCH}" --show-types --no-tree --ignore "${ignore_this}" "${patch_file}" 2>&1)
-    echo "${output}" >> "${checkpatch_log}"
-    echo "" >> "${checkpatch_log}"
-    
-    # Filter out the specific error we want to ignore
-    local filtered_output=$(echo "${output}" | grep -v "ERROR: Please use git commit description style")
-    
-    # Count errors and warnings from filtered output
-    local errors=$(echo "${filtered_output}" | grep -c "^ERROR:" || true)
-    local warnings=$(echo "${filtered_output}" | grep -c "^WARNING:" || true)
-    
-    total_errors=$((total_errors + errors))
-    total_warnings=$((total_warnings + warnings))
-    
-    if [ ${errors} -gt 0 ]; then
-      failed_patches=$((failed_patches + 1))
-      echo "      ${patch_name}: ${errors} error(s), ${warnings} warning(s)" >> "${checkpatch_log}"
-    fi
-  done
-  
-  echo "  → Total: ${total_errors} errors, ${total_warnings} warnings across ${#patch_files[@]} patches"
-  
-  if [ ${total_errors} -gt 0 ]; then
-    fail "check_patch" "${failed_patches} patch(es) have errors (see ${checkpatch_log})"
-  else
-    if [ ${total_warnings} -gt 0 ]; then
-      echo -e "  ${YELLOW}→${NC} ${total_warnings} warning(s) found (non-fatal)"
-    fi
-    pass "check_patch"
-  fi
-  
-  echo ""
-}
-
-test_check_format() {
-  echo -e "${BLUE}Test-5: check_format${NC}"
-  
-  cd "${LINUX_SRC_PATH}"
-  
-  # Get list of applied commits (those that are ahead of the reset point)
-  local applied_commits=()
-  mapfile -t applied_commits < <(git log --oneline --no-merges HEAD | head -n "${NUM_PATCHES:-10}" | awk '{print $1}')
-  
-  if [ ${#applied_commits[@]} -eq 0 ]; then
-    skip "check_format" "No commits to check"
-    echo ""
-    return
-  fi
-  
-  echo "  → Checking ${#applied_commits[@]} commits for proper format..."
-  
-  local format_log="${LOGS_DIR}/check_format.log"
-  > "${format_log}"
-  
-  local format_errors=0
-  local expected_sob="Signed-off-by: ${SIGNER_NAME} <${SIGNER_EMAIL}>"
-  
-  for commit in "${applied_commits[@]}"; do
-    local commit_msg=$(git log -1 --format=%B "${commit}")
-    local commit_subject=$(git log -1 --format=%s "${commit}")
-    
-    echo "Checking commit: ${commit} - ${commit_subject}" >> "${format_log}"
-    echo "---" >> "${format_log}"
-    
-    local has_error=0
-    
-    # Check for mainline inclusion header
-    if ! echo "${commit_msg}" | grep -q "^mainline inclusion"; then
-      echo "  ✗ Missing 'mainline inclusion' header" >> "${format_log}"
-      has_error=1
-    fi
-    
-    # Check for 'from mainline-' line
-    if ! echo "${commit_msg}" | grep -q "^from mainline-"; then
-      echo "  ✗ Missing 'from mainline-' line" >> "${format_log}"
-      has_error=1
-    fi
-    
-    # Check for commit line
-    if ! echo "${commit_msg}" | grep -q "^commit [a-f0-9]\{40\}"; then
-      echo "  ✗ Missing upstream commit ID" >> "${format_log}"
-      has_error=1
-    fi
-    
-    # Check for category line
-    if ! echo "${commit_msg}" | grep -q "^category:"; then
-      echo "  ✗ Missing 'category:' line" >> "${format_log}"
-      has_error=1
-    fi
-    
-    # Check for bugzilla line
-    if ! echo "${commit_msg}" | grep -q "^bugzilla: https://atomgit.com/openeuler/kernel/issues/"; then
-      echo "  ✗ Missing or incorrect 'bugzilla:' line" >> "${format_log}"
-      has_error=1
-    fi
-    
-    # Check for CVE line
-    if ! echo "${commit_msg}" | grep -q "^CVE:"; then
-      echo "  ✗ Missing 'CVE:' line" >> "${format_log}"
-      has_error=1
-    fi
-    
-    # Check for Reference line
-    if ! echo "${commit_msg}" | grep -q "^Reference: https://github.com/torvalds/linux/commit/"; then
-      echo "  ✗ Missing 'Reference:' line" >> "${format_log}"
-      has_error=1
-    fi
-    
-    # Check for separator line
-    if ! echo "${commit_msg}" | grep -q "^--------------------------------"; then
-      echo "  ✗ Missing separator line '--------------------------------'" >> "${format_log}"
-      has_error=1
-    fi
-    
-    # Check for new Signed-off-by line
-    if ! echo "${commit_msg}" | grep -q "^${expected_sob}"; then
-      echo "  ✗ Missing expected Signed-off-by: ${expected_sob}" >> "${format_log}"
-      has_error=1
-    else
-      # Extract upstream commit ID
-      local upstream_commit=$(echo "${commit_msg}" | grep "^commit " | awk '{print $2}')
-      
-      if [ -n "${upstream_commit}" ]; then
-        # Get the last Signed-off-by from upstream commit in Torvalds repo
-        cd "${TORVALDS_REPO}"
-        local upstream_last_sob=$(git log -1 --format=%B "${upstream_commit}" 2>/dev/null | grep "^Signed-off-by:" | tail -1)
-        cd "${LINUX_SRC_PATH}"
-        
-        # Get all Signed-off-by lines from current commit
-        local all_sobs=$(echo "${commit_msg}" | grep "^Signed-off-by:")
-        local current_last_sob=$(echo "${all_sobs}" | tail -1)
-        
-        # Check if the last sob is the same as upstream (which means we didn't add our new one)
-        if [ -n "${upstream_last_sob}" ] && [ "${current_last_sob}" == "${upstream_last_sob}" ]; then
-          echo "  ✗ New Signed-off-by line not added (last SOB matches upstream)" >> "${format_log}"
-          has_error=1
-        elif [ "${current_last_sob}" != "${expected_sob}" ]; then
-          echo "  ✗ Last Signed-off-by does not match expected: ${expected_sob}" >> "${format_log}"
-          echo "    Found: ${current_last_sob}" >> "${format_log}"
-          has_error=1
-        fi
-      fi
-    fi
-    
-    if [ ${has_error} -eq 1 ]; then
-      format_errors=$((format_errors + 1))
-      echo "  Result: FAIL" >> "${format_log}"
-    else
-      echo "  Result: PASS" >> "${format_log}"
-    fi
-    
-    echo "" >> "${format_log}"
-  done
-  
-  if [ ${format_errors} -gt 0 ]; then
-    fail "check_format" "${format_errors} commit(s) have format errors (see ${format_log})"
-  else
-    pass "check_format"
-  fi
-  
-  echo ""
-}
-
 test_rpm_build() {
   echo -e "${BLUE}Test-6: rpm_build${NC}"
 
@@ -837,20 +559,29 @@ if [ -n "$SPECIFIC_TEST" ]; then
   echo ""
 
   case "$SPECIFIC_TEST" in
-    check_dependency)
-      test_check_dependency
+    oe_checkpatch)
+      test_oe_checkpatch
+      ;;
+    oe_checkformat)
+      test_oe_checkformat
+      ;;
+    oe_checkdepend)
+      test_oe_checkdepend
+      ;;
+    oe_checkkabi)
+      test_oe_checkkabi
+      ;;
+    oe_checkconflict)
+      test_oe_checkconflict
+      ;;
+    oe_checkbinary)
+      test_oe_checkbinary
       ;;
     build_allmod)
       test_build_allmod
       ;;
     check_kabi)
       test_check_kabi
-      ;;
-    check_patch)
-      test_check_patch
-      ;;
-    check_format)
-      test_check_format
       ;;
     rpm_build)
       test_rpm_build
@@ -862,25 +593,29 @@ if [ -n "$SPECIFIC_TEST" ]; then
       echo -e "${RED}Error: Unknown test '$SPECIFIC_TEST'${NC}"
       echo ""
       echo "Available tests:"
-      echo "  - check_dependency"
-      echo "  - build_allmod"
-      echo "  - check_kabi"
-      echo "  - check_patch"
-      echo "  - check_format"
-      echo "  - rpm_build"
-      echo "  - boot_kernel"
+      for t in oe_checkpatch oe_checkformat oe_checkdepend oe_checkkabi \
+               oe_checkconflict oe_checkbinary build_allmod check_kabi \
+               rpm_build boot_kernel; do
+        echo "  - ${t}"
+      done
       echo ""
       echo "Run '$0 list' for detailed information"
       exit 1
       ;;
   esac
 else
-  # Run all enabled tests
-  [ "${TEST_CHECK_DEPENDENCY:-yes}" == "yes" ] && test_check_dependency
+  # Run all enabled tests.  openEuler's own checks go first: they are the
+  # cheapest and they are the ones the real gate will apply, so there is no
+  # sense compiling for forty minutes before finding out the series is
+  # rejected on its commit messages.
+  [ "${TEST_OE_CHECKPATCH:-yes}" == "yes" ] && test_oe_checkpatch
+  [ "${TEST_OE_CHECKFORMAT:-yes}" == "yes" ] && test_oe_checkformat
+  [ "${TEST_OE_CHECKDEPEND:-yes}" == "yes" ] && test_oe_checkdepend
+  [ "${TEST_OE_CHECKKABI:-yes}" == "yes" ] && test_oe_checkkabi
+  [ "${TEST_OE_CHECKCONFLICT:-yes}" == "yes" ] && test_oe_checkconflict
+  [ "${TEST_OE_CHECKBINARY:-yes}" == "yes" ] && test_oe_checkbinary
   [ "${TEST_BUILD_ALLMOD:-yes}" == "yes" ] && test_build_allmod
   [ "${TEST_CHECK_KABI:-yes}" == "yes" ] && test_check_kabi
-  [ "${TEST_CHECK_PATCH:-yes}" == "yes" ] && test_check_patch
-  [ "${TEST_CHECK_FORMAT:-yes}" == "yes" ] && test_check_format
   [ "${TEST_RPM_BUILD:-yes}" == "yes" ] && test_rpm_build
   [ "${TEST_BOOT_KERNEL:-yes}" == "yes" ] && test_boot_kernel
 fi

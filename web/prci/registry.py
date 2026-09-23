@@ -66,17 +66,31 @@ TESTS = {
         TestDef('build_perf', 'Build perf tool',
                 'build_perf.log', 'TEST_BUILD_PERF'),
     ),
+    # The six oe_ tests are openEuler's own gate, run from their code in the
+    # hulk_robot_test submodule rather than reimplemented.  Our own
+    # checkpatch, commit-format and dependency tests used to sit here and
+    # were removed: a second opinion that drifts from the gate deciding
+    # whether a patch is accepted is worse than no opinion at all.
     'euler': (
-        TestDef('check_dependency', 'Check patch dependencies',
-                'check_dependency.log', 'TEST_CHECK_DEPENDENCY'),
+        TestDef('oe_checkpatch', 'openEuler checkpatch',
+                'oe_checkpatch.log', 'TEST_OE_CHECKPATCH'),
+        TestDef('oe_checkformat', 'openEuler commit message format',
+                'oe_checkformat.log', 'TEST_OE_CHECKFORMAT'),
+        TestDef('oe_checkdepend', 'openEuler upstream dependency closure',
+                'oe_checkdepend.log', 'TEST_OE_CHECKDEPEND'),
+        TestDef('oe_checkkabi', 'openEuler KABI keyword scan',
+                'oe_checkkabi.log', 'TEST_OE_CHECKKABI'),
+        TestDef('oe_checkconflict', 'openEuler backport conflict declaration',
+                'oe_checkconflict.log', 'TEST_OE_CHECKCONFLICT'),
+        TestDef('oe_checkbinary', 'openEuler binary file audit',
+                'oe_checkbinary.log', 'TEST_OE_CHECKBINARY'),
         TestDef('build_allmod', 'Build with allmodconfig',
                 'build_allmod.log', 'TEST_BUILD_ALLMOD'),
+        # Kept alongside oe_checkkabi on purpose.  Theirs greps commit
+        # messages for the keyword; this one builds and diffs Module.symvers
+        # against the whitelist, so it finds breakage theirs cannot.
         TestDef('check_kabi', 'Check KABI whitelist against Module.symvers',
                 'check_kabi.log', 'TEST_CHECK_KABI'),
-        TestDef('check_patch', 'Run checkpatch.pl validation',
-                'check_patch.log', 'TEST_CHECK_PATCH'),
-        TestDef('check_format', 'Validate commit message format',
-                'check_format.log', 'TEST_CHECK_FORMAT'),
         TestDef('rpm_build', 'Build openEuler RPM packages',
                 'rpm_build.log', 'TEST_RPM_BUILD'),
         TestDef('boot_kernel', 'Boot VM with built kernel',

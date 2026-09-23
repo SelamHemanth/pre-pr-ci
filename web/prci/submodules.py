@@ -37,9 +37,9 @@ NEEDED_BY = {
     'anolis/kabi-dw': ('check_kapi',),
     'anolis/kabi-whitelist': ('check_kapi',),
     'euler/kernel': ('rpm_build', 'check_kabi'),
-    'euler/hulk_robot_test': ('check_patch', 'check_format', 'check_depend',
-                              'check_kabi_keyword', 'check_conflict',
-                              'check_binary'),
+    'euler/hulk_robot_test': ('oe_checkpatch', 'oe_checkformat',
+                              'oe_checkdepend', 'oe_checkkabi',
+                              'oe_checkconflict', 'oe_checkbinary'),
 }
 
 
@@ -146,6 +146,49 @@ def sync(root, emit=None):
         return False
 
     say('All sub-repositories are ready.')
+    return True
+
+
+#: The submodule carrying openEuler's own checks.
+OE_CHECKS = 'euler/hulk_robot_test'
+
+
+def revision(root, sub=OE_CHECKS):
+    """Short commit and subject of a submodule, for showing in the UI."""
+    result = repo._git(['log', '-1', '--format=%h  %s'],
+                       cwd=os.path.join(root, sub), timeout=30)
+    return result.output.strip() if result.ok else ''
+
+
+def update_remote(root, sub=OE_CHECKS, emit=None):
+    """Move one submodule to the tip of the branch its upstream publishes.
+
+    Only this one.  The others stay pinned on purpose: check_kapi compares
+    against the kabi-dw and whitelist versions it was written for, so
+    tracking those would quietly change what the test means.  This one is
+    the opposite case -- it holds the checks the real gate runs, and a gate
+    pinned a year ago is not the gate -- so keeping up with it is the point.
+    """
+    say = emit or repo.to_stdout
+
+    before = revision(root, sub)
+    if before:
+        say('Currently at %s' % before)
+
+    result = repo._git(['submodule', 'update', '--remote', '--init',
+                        '--progress', '--', sub],
+                       cwd=root, timeout=SYNC_TIMEOUT, say=say)
+    if not result.ok:
+        say('Could not update %s (exit %s).' % (sub, result.code))
+        return False
+
+    after = revision(root, sub)
+    if after and after == before:
+        say('Already up to date.')
+    else:
+        say('Now at %s' % after)
+        say('The checked-out commit changed, so commit the new pointer to')
+        say('keep everyone on the same checks: git add %s' % sub)
     return True
 
 

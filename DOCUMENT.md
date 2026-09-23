@@ -146,13 +146,20 @@ python3 web/server.py
 
      **Test Options:**
 
+     The six `oe_` tests are openEuler's own gate, run from their code in
+     the `euler/hulk_robot_test` submodule rather than reimplemented here,
+     so they give the same answer the real gate will.
+
      | Test              | Description                       | Purpose                                    |
      |-------------------|-----------------------------------|--------------------------------------------|
-     | check_dependency  | Verify required dependencies      | Ensures all bug-fix commits are backported |
+     | oe_checkpatch     | openEuler checkpatch              | checkpatch.pl, skipping clean backports    |
+     | oe_checkformat    | openEuler commit message format   | Inclusion headers, category, bugzilla, CVE |
+     | oe_checkdepend    | Upstream dependency closure       | Every Fixes: follow-up is present          |
+     | oe_checkkabi      | KABI keyword scan                 | Flags commits touching KABI for review     |
+     | oe_checkconflict  | Backport conflict declaration     | A diverging backport must say Conflicts:   |
+     | oe_checkbinary    | Binary file audit                 | Binary files added by the series           |
      | build_allmod      | Build with allmodconfig           | Compile with all modules enabled           |
      | check_kabi        | Check KABI whitelist              | Check KABI whitelist against Module.symvers|
-     | check_patch       | Run checkpatch.pl validation      | Verify coding style and patch format       |
-     | check_format      | Check code formatting             | Ensures code style consistency             |
      | rpm_build         | Build openEuler RPM packages      | RPMs for installation                      |
      | boot_kernel       | Boot test (requires remote setup) | Install, boot, and verify kernel on VM     |
 

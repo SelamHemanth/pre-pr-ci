@@ -1273,6 +1273,9 @@ createApp({
     subs() { return this.status.submodules || []; },
     subsReady() { return this.subs.length > 0 && this.subs.every(s => s.present); },
     subsMissing() { return this.subs.filter(s => !s.present); },
+    oeChecksPresent() {
+      return this.subs.some(s => s.name === 'hulk_robot_test' && s.present);
+    },
     blockedTests() {
       const names = new Set();
       for (const s of this.subsMissing) (s.needed_by || []).forEach(t => names.add(t));
@@ -1317,6 +1320,20 @@ createApp({
                 : 'None declared'),
           action: this.subsReady ? 'Update' : 'Fetch',
           run: () => this.start('/api/submodules/sync', 'sub-repository sync'),
+        },
+        {
+          key: 'oe',
+          label: 'openEuler checks',
+          // Present is as far as readiness goes.  Whether it is the newest
+          // revision cannot be known without asking gitcode, and a setup
+          // step that reports "not ready" until the network answers would
+          // be wrong more often than it is right.
+          ready: this.oeChecksPresent,
+          detail: this.oeChecksPresent
+            ? (this.status.oe_checks_revision || 'Checked out')
+            : 'Not checked out -- the six oe_ tests cannot run',
+          action: 'Update',
+          run: () => this.start('/api/oe-checks/update', 'openEuler checks update'),
         },
       ];
     },

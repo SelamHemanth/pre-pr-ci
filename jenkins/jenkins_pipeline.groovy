@@ -838,11 +838,14 @@ def euler_test_configuration() {
 
         def commandMap = [
             "all"              : "make test",
-            "check_dependency" : "make euler-test=check_dependency",
+            "oe_checkpatch"    : "make euler-test=oe_checkpatch",
+            "oe_checkformat"   : "make euler-test=oe_checkformat",
+            "oe_checkdepend"   : "make euler-test=oe_checkdepend",
+            "oe_checkkabi"     : "make euler-test=oe_checkkabi",
+            "oe_checkconflict" : "make euler-test=oe_checkconflict",
+            "oe_checkbinary"   : "make euler-test=oe_checkbinary",
             "build_allmod"     : "make euler-test=build_allmod",
 	    "check_kabi"       : "make euler-test=check_kabi",
-            "check_patch"      : "make euler-test=check_patch",
-            "check_format"     : "make euler-test=check_format",
             "rpm_build"        : "make euler-test=rpm_build",
             "boot_kernel"      : "make euler-test=boot_kernel"
         ]

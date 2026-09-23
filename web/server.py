@@ -128,6 +128,7 @@ def api_status():
         'terminal_alive': terminal.alive,
         'mirror_present': os.path.isdir(TORVALDS_REPO),
         'submodules': submodules.status(PROJECT_ROOT),
+        'oe_checks_revision': submodules.revision(PROJECT_ROOT),
     })
 
 
@@ -311,6 +312,25 @@ def api_submodules_sync():
          'sys.exit(0 if submodules.sync(%r) else 1)'
          % (WEB_DIR, PROJECT_ROOT)],
         'sync sub-repositories')
+    return jsonify({'success': True, 'job': job})
+
+
+@app.route('/api/oe-checks/update', methods=['POST'])
+def api_oe_checks_update():
+    """Pull openEuler's latest checks.
+
+    Separate from the submodule sync above, which restores the pinned
+    commits.  This one deliberately moves the pin forward, and only for the
+    repository whose whole purpose is to match what the real gate runs.
+    """
+    job = store.submit(
+        'oe-checks',
+        [sys.executable, '-c',
+         'import sys; sys.path.insert(0, %r); '
+         'from prci import submodules; '
+         'sys.exit(0 if submodules.update_remote(%r) else 1)'
+         % (WEB_DIR, PROJECT_ROOT)],
+        'update openEuler checks')
     return jsonify({'success': True, 'job': job})
 
 
