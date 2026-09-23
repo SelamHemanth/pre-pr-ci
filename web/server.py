@@ -258,6 +258,7 @@ def api_tests():
         'tests': [
             {
                 'name': t.name,
+                'title': t.title,
                 'description': t.description,
                 'log': t.log,
                 'config_key': t.config_key,

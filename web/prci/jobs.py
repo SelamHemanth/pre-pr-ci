@@ -92,6 +92,20 @@ _PHASE_RE = re.compile(
 #: moving during a compile rather than sitting still for forty minutes.
 _PHASES_PER_PATCH = 3
 
+#: What each kind of job is called on screen.  Individual tests are not
+#: here: their names come from the registry, so the history and the test
+#: list cannot drift apart.
+_LABELS = {
+    'prepare': 'Preparing patches',
+    'build': 'Preparing patches',
+    'test_all': 'Running every enabled test',
+    'clean': 'Removing logs and outputs',
+    'reset': 'Resetting the kernel tree',
+    'mirror': 'Syncing the mainline mirror',
+    'submodules': 'Syncing the sub-repositories',
+    'oe-checks': "Updating openEuler's checks",
+}
+
 
 def strip_ansi(text):
     return _ANSI_RE.sub('', text)
@@ -178,6 +192,8 @@ class JobStore:
 
     # ── submission ────────────────────────────────────────────────────────
 
+    # Kept out of the job record so a wording change applies to the
+    # history too, rather than only to jobs run after it.
     def submit(self, kind, argv, display, test_name=None, distro=None,
                total_steps=None):
         """Queue a command.  ``argv`` is a list -- nothing here goes via a shell."""
@@ -249,6 +265,7 @@ class JobStore:
             log_path = job['log_file']
             kind = job['kind']
             test_name = job.get('test_name')
+            label = self._label(job)
             self._save_locked()
 
         needs_mirror = kind == 'prepare' or test_name == 'check_dependency'
@@ -261,7 +278,9 @@ class JobStore:
                 if needs_mirror:
                     repo.sync(self.torvalds_repo, emit=say)
 
-                log_file.write('$ %s\n\n' % ' '.join(argv))
+                # The log is read in the UI, so it opens with what the
+                # job is rather than the command line that starts it.
+                log_file.write('=== %s ===\n\n' % self._label(job))
 
                 process = subprocess.Popen(
                     argv,
@@ -399,7 +418,28 @@ class JobStore:
         out['log_size'] = self._size(out.get('log_file'))
         out['has_test_log'] = bool(
             out.get('test_log_file') and os.path.exists(out['test_log_file']))
+        out['label'] = self._label(out)
         return out
+
+    @staticmethod
+    def _label(job):
+        """What to call this job on screen.
+
+        The command line is an implementation detail.  "make prepare"
+        tells a reader nothing they cannot see from the button they
+        just pressed, and it invites them to run it by hand, in a
+        shell that has none of the setup this one arranges.
+
+        Derived rather than stored, so entries already in the history
+        get a name too.
+        """
+        kind = job.get('kind')
+        if kind == 'test':
+            test = registry.find_test(job.get('distro'), job.get('test_name'))
+            if test:
+                return test.title
+            return job.get('test_name') or 'Test'
+        return _LABELS.get(kind) or (job.get('command') or 'Job')
 
     @staticmethod
     def _size(path):

@@ -203,6 +203,13 @@ header {
 .btn:active:not(:disabled) { transform: translateY(0) scale(.97); transition-duration: .05s; }
 .btn:disabled { opacity: .5; cursor: not-allowed; transform: none; }
 .btn-block { width: 100%; }
+/* How many tests the button would run, so the label can stay short
+   without hiding what "Run tests" means today. */
+.btn-count {
+  margin-left: 6px; padding: 1px 7px; border-radius: 999px;
+  font-size: 11px; font-weight: 600;
+  background: rgba(127, 127, 127, .22);
+}
 .btn-primary { background: var(--accent); border-color: var(--accent); color: #fff; }
 .btn-primary:hover:not(:disabled) {
     filter: brightness(1.08); background: var(--accent);
@@ -811,7 +818,7 @@ footer a:hover { text-decoration: underline; }
         <div class="card-body">
           <transition-group name="row" tag="div" class="row-host">
             <div class="status-line" v-for="j in activeJobs" :key="j.id">
-              <span class="status-label" style="font-family:var(--mono)">{{ j.command }}</span>
+              <span class="status-label">{{ j.label }}</span>
               <span class="badge badge-run"><i class="dot pulse"></i>{{ j.status }}</span>
             </div>
           </transition-group>
@@ -854,7 +861,8 @@ footer a:hover { text-decoration: underline; }
                   :title="prepared
                     ? 'Run every test with its checkbox ticked below'
                     : 'Prepare the patches first'">
-            <svg class="icon"><use href="#i-flask"/></svg> Run every enabled test
+            <svg class="icon"><use href="#i-flask"/></svg> Run tests
+            <span class="btn-count" v-if="enabledCount">{{ enabledCount }}</span>
           </button>
           <button class="btn btn-danger btn-block" v-if="runningJob"
                   @click="askKill(runningJob)"
@@ -942,7 +950,7 @@ footer a:hover { text-decoration: underline; }
             <div class="test-row" v-for="(t, i) in tests" :key="t.name"
                  :class="{ off: !t.enabled }" :style="{ '--i': i }">
               <div class="test-main">
-                <div class="test-name">{{ t.name }}</div>
+                <div class="test-name" :title="t.name">{{ t.title }}</div>
                 <div class="test-desc">{{ t.description }}</div>
               </div>
 
@@ -995,7 +1003,7 @@ footer a:hover { text-decoration: underline; }
                 <i class="dot" :class="{ pulse: j.status === 'running' }"></i>{{ j.status }}
               </span>
               <div class="job-main">
-                <div class="job-cmd">{{ j.command }}</div>
+                <div class="job-cmd">{{ j.label }}</div>
                 <div class="job-meta">
                   <span>{{ when(j.created_time) }}</span>
                   <span v-if="j.elapsed_seconds !== null">{{ duration(j.elapsed_seconds) }}</span>
@@ -1065,7 +1073,7 @@ footer a:hover { text-decoration: underline; }
       <span class="badge" :class="statusBadge(logJob.status)">
         <i class="dot" :class="{ pulse: logJob.status === 'running' }"></i>{{ logJob.status }}
       </span>
-      <span class="log-title">{{ logJob.command }}</span>
+      <span class="log-title">{{ logJob.label }}</span>
       <div class="log-actions">
         <label class="follow-toggle">
           <span class="switch"><input type="checkbox" v-model="logFollow"><span></span></span>
@@ -1146,7 +1154,7 @@ footer a:hover { text-decoration: underline; }
             <input type="checkbox" :value="t.config_key" v-model="form.tests"><span></span>
           </label>
           <div class="test-main">
-            <div class="test-name">{{ t.name }}</div>
+            <div class="test-name" :title="t.name">{{ t.title }}</div>
             <div class="test-desc">{{ t.description }}</div>
           </div>
         </div>
@@ -1284,6 +1292,8 @@ createApp({
         .filter(([key]) => this.config[key])
         .map(([key, label]) => ({ key, label, value: this.config[key] }));
     },
+
+    enabledCount() { return this.tests.filter(t => t.enabled).length; },
 
     activeJobs() { return (this.status.active_jobs || []); },
     runningJob() { return this.activeJobs.find(j => j.status === 'running') || null; },
@@ -1501,17 +1511,17 @@ createApp({
         if (ACTIVE.indexOf(job.status) !== -1) continue;
 
         if (job.status === 'completed') {
-          this.toast('ok', `${job.command} finished`,
+          this.toast('ok', `${job.label} finished`,
             job.results && job.results.length
               ? `${job.results.length} verdict(s) recorded`
               : null);
         } else if (job.status === 'failed') {
-          this.toast('bad', `${job.command} failed`,
+          this.toast('bad', `${job.label} failed`,
             (job.failed_tests && job.failed_tests.length)
               ? `Failed: ${job.failed_tests.join(', ')}`
               : (job.error || `Exit code ${job.exit_code}`));
         } else {
-          this.toast('warn', `${job.command} ${job.status}`, null);
+          this.toast('warn', `${job.label} ${job.status}`, null);
         }
       }
     },
@@ -1553,7 +1563,7 @@ createApp({
 
     askKill(job) {
       this.confirmThen(
-        `Stop "${job.command}"? A partial build leaves the tree half-built.`,
+        `Stop "${job.label}"? A partial run leaves the tree half-changed.`,
         async () => {
           try {
             const data = await this.post(`/api/jobs/${job.id}/kill`);

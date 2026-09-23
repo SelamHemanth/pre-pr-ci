@@ -33,7 +33,14 @@ from collections import namedtuple
 #: a full allmodconfig for one architecture is an hour of somebody's
 #: machine, openEuler runs six of them in parallel across a fleet and we
 #: have one host, so they are offered rather than imposed.
-TestDef = namedtuple('TestDef', 'name description log config_key default_on')
+#:
+#: name        -- the id, which is also the make target; never shown as
+#:                a heading, because "oe_checkkabi" tells a reader less
+#:                than "Kernel ABI" does and is not what they are picking
+#: title       -- what it is called on screen
+#: description -- what it actually checks, in a sentence
+TestDef = namedtuple(
+    'TestDef', 'name title description log config_key default_on')
 TestDef.__new__.__defaults__ = (True,)
 
 #: Field in the configuration form.
@@ -52,25 +59,42 @@ DISTROS = {
 
 TESTS = {
     'anolis': (
-        TestDef('check_dependency', 'Check patch dependencies',
+        TestDef('check_dependency', 'Missing dependencies',
+                'Looks for upstream commits your patches need that are '
+                'not in the series',
                 'check_dependency.log', 'TEST_CHECK_DEPENDENCY'),
-        TestDef('check_kconfig', 'Validate kernel configuration',
+        TestDef('check_kconfig', 'Kconfig',
+                'Checks that new config symbols are declared and reachable',
                 'check_Kconfig.log', 'TEST_CHECK_KCONFIG'),
-        TestDef('build_allyes_config', 'Build with allyesconfig',
+        TestDef('build_allyes_config', 'Build, everything on',
+                'Compiles with allyesconfig, which reaches code no normal '
+                'config builds',
                 'build_allyes_config.log', 'TEST_BUILD_ALLYES'),
-        TestDef('build_allno_config', 'Build with allnoconfig',
+        TestDef('build_allno_config', 'Build, everything off',
+                'Compiles with allnoconfig, which catches code that only '
+                'builds because something else was enabled',
                 'build_allno_config.log', 'TEST_BUILD_ALLNO'),
-        TestDef('build_anolis_defconfig', 'Build with anolis_defconfig',
+        TestDef('build_anolis_defconfig', 'Build, shipping config',
+                'Compiles with anolis_defconfig, the configuration '
+                'OpenAnolis actually ships',
                 'build_anolis_defconfig.log', 'TEST_BUILD_DEFCONFIG'),
-        TestDef('build_anolis_debug', 'Build with anolis-debug_defconfig',
+        TestDef('build_anolis_debug', 'Build, debug config',
+                'Compiles with anolis-debug_defconfig, which turns on the '
+                'debugging checks',
                 'build_anolis_debug_defconfig.log', 'TEST_BUILD_DEBUG'),
-        TestDef('anck_rpm_build', 'Build ANCK RPM packages',
+        TestDef('anck_rpm_build', 'Kernel packages',
+                'Builds the ANCK RPMs, the form the kernel is delivered in',
                 'anck_rpm_build.log', 'TEST_RPM_BUILD'),
-        TestDef('check_kapi', 'Check kernel ABI compatibility',
+        TestDef('check_kapi', 'Kernel ABI',
+                'Checks the series does not break the ABI that modules '
+                'built against this kernel rely on',
                 'kapi_test.log', 'TEST_CHECK_KAPI'),
-        TestDef('boot_kernel_rpm', 'Boot VM with built kernel RPM',
+        TestDef('boot_kernel_rpm', 'Boot test',
+                'Installs the built kernel in a VM and checks it comes up',
                 'boot_kernel_rpm.log', 'TEST_BOOT_KERNEL'),
-        TestDef('build_perf', 'Build perf tool',
+        TestDef('build_perf', 'Build perf',
+                'Builds the perf tool, which breaks on kernel header '
+                'changes that the kernel build itself does not notice',
                 'build_perf.log', 'TEST_BUILD_PERF'),
     ),
     # The six oe_ tests are openEuler's own gate, run from their code in the
@@ -79,17 +103,28 @@ TESTS = {
     # were removed: a second opinion that drifts from the gate deciding
     # whether a patch is accepted is worse than no opinion at all.
     'euler': (
-        TestDef('oe_checkpatch', 'openEuler checkpatch',
+        TestDef('oe_checkpatch', 'Coding style',
+                'Runs checkpatch.pl the way openEuler does, skipping '
+                'backports that match upstream exactly',
                 'oe_checkpatch.log', 'TEST_OE_CHECKPATCH'),
-        TestDef('oe_checkformat', 'openEuler commit message format',
+        TestDef('oe_checkformat', 'Commit message',
+                'Checks the inclusion header, category, bugzilla link and '
+                'sign-off on every commit',
                 'oe_checkformat.log', 'TEST_OE_CHECKFORMAT'),
-        TestDef('oe_checkdepend', 'openEuler upstream dependency closure',
+        TestDef('oe_checkdepend', 'Missing fixes',
+                'Looks for upstream commits that fix yours and are not in '
+                'the series',
                 'oe_checkdepend.log', 'TEST_OE_CHECKDEPEND'),
-        TestDef('oe_checkkabi', 'openEuler KABI keyword scan',
+        TestDef('oe_checkkabi', 'Kernel ABI',
+                'Flags changes to the structures and symbols that modules '
+                'built against this kernel rely on',
                 'oe_checkkabi.log', 'TEST_OE_CHECKKABI'),
-        TestDef('oe_checkconflict', 'openEuler backport conflict declaration',
+        TestDef('oe_checkconflict', 'Backport differences',
+                'Checks that every commit differing from upstream says '
+                'which files differ and why',
                 'oe_checkconflict.log', 'TEST_OE_CHECKCONFLICT'),
-        TestDef('oe_checkbinary', 'openEuler binary file audit',
+        TestDef('oe_checkbinary', 'Binary files',
+                'Rejects binary files added or changed by the series',
                 'oe_checkbinary.log', 'TEST_OE_CHECKBINARY'),
 
         # One test per architecture, because that is one job per
@@ -102,19 +137,28 @@ TESTS = {
         # defconfig, exactly as their checkkabi.sh does -- those two
         # architectures are the ones openEuler ships, so they are the ones
         # whose ABI is promised.
-        TestDef('oe_build_x86_64', 'openEuler build + KABI, x86_64',
+        TestDef('oe_build_x86_64', 'Build for x86_64',
+                'Full build, then compares the ABI and the shipping '
+                'config against openEuler',
                 'oe_build_x86_64.log', 'TEST_OE_BUILD_X86_64'),
-        TestDef('oe_build_aarch64', 'openEuler build + KABI, aarch64',
+        TestDef('oe_build_aarch64', 'Build for arm64',
+                'Full build, then compares the ABI and the shipping '
+                'config against openEuler',
                 'oe_build_aarch64.log', 'TEST_OE_BUILD_AARCH64', False),
-        TestDef('oe_build_arm', 'openEuler cross build, arm',
+        TestDef('oe_build_arm', 'Build for arm (32-bit)',
+                'Cross-compiles the tree for 32-bit arm',
                 'oe_build_arm.log', 'TEST_OE_BUILD_ARM', False),
-        TestDef('oe_build_ppc', 'openEuler cross build, powerpc',
+        TestDef('oe_build_ppc', 'Build for powerpc',
+                'Cross-compiles the tree for 32-bit powerpc',
                 'oe_build_ppc.log', 'TEST_OE_BUILD_PPC', False),
-        TestDef('oe_build_ppc64', 'openEuler cross build, powerpc64',
+        TestDef('oe_build_ppc64', 'Build for powerpc64',
+                'Cross-compiles the tree for 64-bit powerpc',
                 'oe_build_ppc64.log', 'TEST_OE_BUILD_PPC64', False),
-        TestDef('oe_build_riscv64', 'openEuler cross build, riscv64',
+        TestDef('oe_build_riscv64', 'Build for riscv64',
+                'Cross-compiles the tree for 64-bit RISC-V',
                 'oe_build_riscv64.log', 'TEST_OE_BUILD_RISCV64', False),
-        TestDef('oe_build_loongarch', 'openEuler cross build, loongarch',
+        TestDef('oe_build_loongarch', 'Build for loongarch',
+                'Cross-compiles the tree for LoongArch',
                 'oe_build_loongarch.log', 'TEST_OE_BUILD_LOONGARCH', False),
     ),
 }
