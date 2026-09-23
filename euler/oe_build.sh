@@ -56,6 +56,24 @@ _oe_arch_has_kabi() {
   [ "$1" = 'x86_64' ] || [ "$1" = 'aarch64' ]
 }
 
+# ARCH -> the directory under arch/ that holds it, which is what the
+# kernel build calls SRCARCH.
+#
+# For every architecture here but one the two are the same word, which
+# is why passing ARCH where a path was wanted went unnoticed: it only
+# breaks on x86_64, whose configs live in arch/x86.  The effect was that
+# openeuler_defconfig was reported as "not in this tree" on the one
+# architecture everybody builds, taking the defconfig build, the kabi
+# check and the defconfig consistency check silently with it.
+_oe_srcarch() {
+  case "$1" in
+    x86_64|i386) echo 'x86' ;;
+    sparc32|sparc64) echo 'sparc' ;;
+    parisc64) echo 'parisc' ;;
+    *) echo "$1" ;;
+  esac
+}
+
 # Their get_kabi_whitelist_branch: the whitelist for a kernel branch does
 # not live on a branch of the same name.
 _oe_kabi_branch() {
@@ -128,6 +146,31 @@ _oe_setup_gcc() {
   export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:+${LD_LIBRARY_PATH}:}${bin%/bin}/lib"
 }
 
+# The first few compiler errors, named, under the row that reports them.
+#
+# A build that failed and said nothing about why is a result nobody can
+# act on.  It matters most in the case below, where the answer is "not
+# your series": without the file name that reads as the tool excusing
+# itself, and the file name is usually the whole explanation -- a driver
+# this tree has never compiled here, or one fixed on the branch since
+# the tree was taken.
+_oe_report_errors() {
+  local warnings="$1" limit="${2:-4}" lines
+
+  # One line per file, not per error: a single bad struct produces a
+  # dozen, and four of them from one driver hide the other drivers
+  # that are the point of the list.
+  lines=$(grep -aoE '[^ ]+\.[chS]:[0-9]+:[0-9]+: (fatal )?error: .*' \
+          "${warnings}" 2>/dev/null \
+          | awk -F: '!seen[$1]++' | head -n "${limit}")
+  [ -n "${lines}" ] || return 0
+
+  echo "  -> first error(s), one per file:"
+  # Long include-relative paths wrap into unreadability; the directory
+  # is what identifies the driver, so keep the head of the line.
+  echo "${lines}" | cut -c1-160 | sed 's/^/       /'
+}
+
 # Was the tree already like this before the series?
 #
 # openEuler's CI never asks, because it builds their branch on their
@@ -143,6 +186,7 @@ _oe_setup_gcc() {
 # nothing for it.  Returns 0 when the failure is pre-existing.
 _oe_failed_before_the_series() {
   local kernel="$1" kernel_arch="$2" cross="$3" jobs="$4" back="$5"
+  local baseline="$6"
   local head rc
 
   [ "${back}" -gt 0 ] || return 1
@@ -154,8 +198,11 @@ _oe_failed_before_the_series() {
   git checkout -q "HEAD~${back}" || return 1
   make ARCH="${kernel_arch}" CROSS_COMPILE="${cross}" allmodconfig \
     >/dev/null 2>&1
+  # Kept, not discarded: when this build fails too, its errors are the
+  # evidence that the breakage predates the series, and they are what
+  # the row above is asserting.
   make ARCH="${kernel_arch}" CROSS_COMPILE="${cross}" -j"${jobs}" \
-    >/dev/null 2>&1
+    >/dev/null 2>"${baseline}"
   rc=$?
   git checkout -q "${head}" || return 1
 
@@ -209,21 +256,24 @@ _oe_kabi_build() {
       >/dev/null 2>"${warnings}"; then
     echo "| ${arch} allmodconfig build | pass |" >> "${result}"
   elif _oe_failed_before_the_series "${kernel}" "${kernel_arch}" \
-      "${cross}" "${jobs}" "${back}"; then
+      "${cross}" "${jobs}" "${back}" "${warnings}.baseline"; then
     echo "| ${arch} allmodconfig build | broken already, not your series |" \
       >> "${result}"
+    _oe_report_errors "${warnings}.baseline"
     # The warnings belong to the same pre-existing breakage, and
     # keeping them would fail the series through the warning gate
     # after the row above declined to.
     : > "${warnings}"
   else
     echo "| ${arch} allmodconfig build | fail |" >> "${result}"
+    _oe_report_errors "${warnings}"
   fi
 
   # Everything below needs openeuler_defconfig, which only an openEuler
   # tree has.  Their CI never sees anything else; we might, and a missing
   # config is not a broken patch.
-  local config_arch="${kernel_arch}"
+  local config_arch
+  config_arch=$(_oe_srcarch "${kernel_arch}")
   if [ ! -f "arch/${config_arch}/configs/openeuler_defconfig" ]; then
     echo "| ${arch} openeuler_defconfig | skip, not in this tree |" \
       >> "${result}"
@@ -243,6 +293,7 @@ _oe_kabi_build() {
     echo "| ${arch} openeuler_defconfig build | pass |" >> "${result}"
   else
     echo "| ${arch} openeuler_defconfig build | fail |" >> "${result}"
+    _oe_report_errors "${warnings}"
   fi
 
   _oe_check_kabi "${kernel}" "${arch}" "${whitelists}" "${warnings}" \
@@ -286,7 +337,8 @@ _oe_check_kabi() {
 # to the shipped defconfig too, or the next build silently loses it.
 _oe_check_defconfig() {
   local kernel="$1" kernel_arch="$2" arch="$3" warnings="$4" result="$5"
-  local defconfig="${kernel}/arch/${kernel_arch}/configs/openeuler_defconfig"
+  local defconfig
+  defconfig="${kernel}/arch/$(_oe_srcarch "${kernel_arch}")/configs/openeuler_defconfig"
 
   [ -f "${defconfig}" ] || return 0
 

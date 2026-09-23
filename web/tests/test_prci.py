@@ -1044,6 +1044,68 @@ class TestOpenEulerBuildVerdicts(unittest.TestCase):
         self.assertEqual(self.build('x86_64', 'OLK-6.6',
                                     kabi=rows % 'fail'), 1)
 
+    def shell(self, body):
+        script = '. "%s/euler/oe_build.sh"\n%s' % (PROJECT_ROOT, body)
+        done = subprocess.run(['bash', '-c', script],
+                              stdout=subprocess.PIPE,
+                              stderr=subprocess.STDOUT)
+        return done.stdout.decode()
+
+    def test_the_config_directory_is_not_the_arch_name(self):
+        # x86_64 is the one architecture here whose configs are not in
+        # arch/<ARCH>. Looking for arch/x86_64/configs found nothing, so
+        # openeuler_defconfig was reported "not in this tree" on the one
+        # architecture everybody builds, and the defconfig build, the
+        # kabi check and the defconfig consistency check went with it.
+        self.assertEqual(self.shell('_oe_srcarch x86_64').strip(), 'x86')
+        for same in ('arm64', 'arm', 'powerpc', 'riscv', 'loongarch'):
+            self.assertEqual(self.shell('_oe_srcarch %s' % same).strip(),
+                             same)
+
+    def test_every_arch_we_build_has_its_config_directory(self):
+        # The mapping is only right if it names a directory the kernel
+        # actually has, so check it against a real tree rather than
+        # against itself.
+        kernel = os.environ.get('PRCI_TEST_KERNEL')
+        if not kernel or not os.path.isdir(os.path.join(kernel, 'arch')):
+            self.skipTest('no kernel tree to check the mapping against')
+        for arch in ('x86_64', 'aarch64', 'arm', 'ppc', 'ppc64', 'riscv64'):
+            spec = self.shell('_oe_arch_spec %s' % arch).split()
+            src = self.shell('_oe_srcarch %s' % spec[0]).strip()
+            self.assertTrue(
+                os.path.isdir(os.path.join(kernel, 'arch', src)),
+                'arch/%s does not exist, for %s' % (src, arch))
+
+    def test_a_failed_build_says_which_file_broke(self):
+        # A row saying "broken already, not your series" with nothing
+        # behind it reads as the tool excusing itself. The file name is
+        # usually the whole explanation.
+        errors = tempfile.NamedTemporaryFile('w', suffix='.log',
+                                             delete=False)
+        errors.write(
+            'drivers/net/ethernet/huawei/hinic3/hw/hinic3_lld.c:92:55: '
+            'error: positional initialization of field\n'
+            'drivers/net/ethernet/huawei/hinic3/hw/hinic3_lld.c:93:1: '
+            'error: another one in the same file\n'
+            'drivers/net/ethernet/huawei/hinic5/cqm.c:443:10: '
+            'error: incompatible pointer type\n')
+        errors.close()
+        self.addCleanup(os.unlink, errors.name)
+
+        out = self.shell('_oe_report_errors %s' % errors.name)
+        self.assertIn('hinic3_lld.c', out)
+        self.assertIn('hinic5/cqm.c', out)
+        # One line per file: a single bad struct produces a dozen errors
+        # and would otherwise crowd out the other drivers.
+        self.assertEqual(out.count('hinic3_lld.c'), 1)
+
+    def test_nothing_is_printed_when_there_are_no_errors(self):
+        quiet = tempfile.NamedTemporaryFile('w', suffix='.log', delete=False)
+        quiet.write('fs/foo.c:12: warning: unused variable\n')
+        quiet.close()
+        self.addCleanup(os.unlink, quiet.name)
+        self.assertEqual(self.shell('_oe_report_errors %s' % quiet.name), '')
+
     def test_a_broken_matrix_check_is_an_error_not_a_skip(self):
         # check_branch.py exits 1 both for "this arch is off" and for a
         # failed import.  Telling them apart is the difference between a
