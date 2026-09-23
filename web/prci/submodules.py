@@ -36,10 +36,19 @@ SYNC_TIMEOUT = 30 * 60
 NEEDED_BY = {
     'anolis/kabi-dw': ('check_kapi',),
     'anolis/kabi-whitelist': ('check_kapi',),
-    'euler/kernel': ('rpm_build', 'check_kabi'),
+    # euler/kernel is src-openeuler/kernel, which carries check-kabi and
+    # the ABI whitelists.  Only the two architectures openEuler ships
+    # compare against them.
+    'euler/kernel': ('oe_build_x86_64', 'oe_build_aarch64'),
+    # hulk_robot_test carries the six checks, the build matrix and the
+    # cross toolchains, so every euler test needs it.
     'euler/hulk_robot_test': ('oe_checkpatch', 'oe_checkformat',
                               'oe_checkdepend', 'oe_checkkabi',
-                              'oe_checkconflict', 'oe_checkbinary'),
+                              'oe_checkconflict', 'oe_checkbinary',
+                              'oe_build_x86_64', 'oe_build_aarch64',
+                              'oe_build_arm', 'oe_build_ppc',
+                              'oe_build_ppc64', 'oe_build_riscv64',
+                              'oe_build_loongarch'),
 }
 
 

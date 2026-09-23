@@ -27,7 +27,14 @@ from collections import namedtuple
 #: description -- one-line summary shown in the UI
 #: log         -- file under ``logs/`` that the test writes
 #: config_key  -- ``TEST_*`` flag in ``<distro>/.configure`` that enables it
-TestDef = namedtuple('TestDef', 'name description log config_key')
+#: default_on  -- whether a fresh configuration enables it
+#:
+#: Almost everything is on by default.  The exception is the cross builds:
+#: a full allmodconfig for one architecture is an hour of somebody's
+#: machine, openEuler runs six of them in parallel across a fleet and we
+#: have one host, so they are offered rather than imposed.
+TestDef = namedtuple('TestDef', 'name description log config_key default_on')
+TestDef.__new__.__defaults__ = (True,)
 
 #: Field in the configuration form.
 #:
@@ -84,13 +91,31 @@ TESTS = {
                 'oe_checkconflict.log', 'TEST_OE_CHECKCONFLICT'),
         TestDef('oe_checkbinary', 'openEuler binary file audit',
                 'oe_checkbinary.log', 'TEST_OE_CHECKBINARY'),
-        TestDef('build_allmod', 'Build with allmodconfig',
-                'build_allmod.log', 'TEST_BUILD_ALLMOD'),
-        # Kept alongside oe_checkkabi on purpose.  Theirs greps commit
-        # messages for the keyword; this one builds and diffs Module.symvers
-        # against the whitelist, so it finds breakage theirs cannot.
-        TestDef('check_kabi', 'Check KABI whitelist against Module.symvers',
-                'check_kabi.log', 'TEST_CHECK_KABI'),
+
+        # One test per architecture, because that is one job per
+        # architecture in their CI, and because a local run wants to say
+        # "powerpc only" without editing anything.  Which of these their
+        # gate would actually run depends on the target branch; each test
+        # asks their conf/check_build.yaml and skips if the answer is no.
+        #
+        # x86_64 and aarch64 additionally compare the ABI and the
+        # defconfig, exactly as their checkkabi.sh does -- those two
+        # architectures are the ones openEuler ships, so they are the ones
+        # whose ABI is promised.
+        TestDef('oe_build_x86_64', 'openEuler build + KABI, x86_64',
+                'oe_build_x86_64.log', 'TEST_OE_BUILD_X86_64'),
+        TestDef('oe_build_aarch64', 'openEuler build + KABI, aarch64',
+                'oe_build_aarch64.log', 'TEST_OE_BUILD_AARCH64', False),
+        TestDef('oe_build_arm', 'openEuler cross build, arm',
+                'oe_build_arm.log', 'TEST_OE_BUILD_ARM', False),
+        TestDef('oe_build_ppc', 'openEuler cross build, powerpc',
+                'oe_build_ppc.log', 'TEST_OE_BUILD_PPC', False),
+        TestDef('oe_build_ppc64', 'openEuler cross build, powerpc64',
+                'oe_build_ppc64.log', 'TEST_OE_BUILD_PPC64', False),
+        TestDef('oe_build_riscv64', 'openEuler cross build, riscv64',
+                'oe_build_riscv64.log', 'TEST_OE_BUILD_RISCV64', False),
+        TestDef('oe_build_loongarch', 'openEuler cross build, loongarch',
+                'oe_build_loongarch.log', 'TEST_OE_BUILD_LOONGARCH', False),
     ),
 }
 
@@ -195,6 +220,18 @@ def find_test(distro, name):
 
 def test_config_keys(distro):
     return tuple(t.config_key for t in tests_for(distro))
+
+
+def default_flag(distro, config_key):
+    """``'yes'`` or ``'no'`` for a test nobody has expressed an opinion on.
+
+    An unknown key answers ``'yes'``: a flag left over from an older
+    configuration should not silently disable something.
+    """
+    for test in tests_for(distro):
+        if test.config_key == config_key:
+            return 'yes' if test.default_on else 'no'
+    return 'yes'
 
 
 #: Order the form is presented in, and the heading for each group.

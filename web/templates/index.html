@@ -1331,7 +1331,7 @@ createApp({
           ready: this.oeChecksPresent,
           detail: this.oeChecksPresent
             ? (this.status.oe_checks_revision || 'Checked out')
-            : 'Not checked out -- the six oe_ tests cannot run',
+            : 'Not checked out -- no openEuler test can run',
           action: 'Update',
           run: () => this.start('/api/oe-checks/update', 'openEuler checks update'),
         },

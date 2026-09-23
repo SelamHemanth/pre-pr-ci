@@ -193,7 +193,7 @@ def api_config_post():
     selected = payload.get('tests')
     for key in registry.test_config_keys(distro):
         if selected is None:
-            flags[key] = existing.get(key, 'yes')
+            flags[key] = existing.get(key, registry.default_flag(distro, key))
         else:
             flags[key] = 'yes' if key in selected else 'no'
 
@@ -224,7 +224,7 @@ def api_tests():
                 'description': t.description,
                 'log': t.log,
                 'config_key': t.config_key,
-                'enabled': enabled.get(t.name, True),
+                'enabled': enabled.get(t.name, t.default_on),
                 'last_result': latest.get(t.name),
             }
             for t in registry.tests_for(distro)

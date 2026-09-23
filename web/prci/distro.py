@@ -126,7 +126,9 @@ class Workspace:
         distro = distro or self.selected_distro()
         config = self.read_config(distro) or {}
         return {
-            test.name: config.get(test.config_key, 'yes').lower() != 'no'
+            test.name: config.get(
+                test.config_key,
+                'yes' if test.default_on else 'no').lower() != 'no'
             for test in registry.tests_for(distro)
         }
 
@@ -165,7 +167,8 @@ class Workspace:
 
         lines += ['', '# Test selection', 'RUN_TESTS=yes']
         for key in registry.test_config_keys(distro):
-            lines.append('%s=%s' % (key, test_flags.get(key, 'yes')))
+            lines.append('%s=%s' % (
+                key, test_flags.get(key, registry.default_flag(distro, key))))
 
         lines += ['', '# Host']
         for field in registry.CONFIG_FIELDS[distro]['host']:
@@ -230,7 +233,9 @@ class Workspace:
     def _boot_test_enabled(distro, test_flags):
         for test in registry.tests_for(distro):
             if test.name in ('boot_kernel', 'boot_kernel_rpm'):
-                return test_flags.get(test.config_key, 'yes') != 'no'
+                return test_flags.get(
+                    test.config_key,
+                    registry.default_flag(distro, test.config_key)) != 'no'
         return False
 
     def _check_field(self, field, value):

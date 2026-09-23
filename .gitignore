@@ -19,3 +19,7 @@ patches/
 # Python
 __pycache__/
 *.py[cod]
+
+# Cross toolchains unpacked from the hulk_robot_test submodule on demand.
+# A gigabyte of gcc that can be recreated from the tarballs at any time.
+.toolchains/

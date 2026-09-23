@@ -60,7 +60,7 @@ you happened to visit drive this server.
 
 ```bash
 # kabi-dw, kabi-whitelist and the openEuler kernel spec are submodules;
-# check_kapi, check_kabi and rpm_build need them.
+# check_kapi needs them.
 git clone --recurse-submodules https://github.com/SelamHemanth/pre-pr-ci.git
 cd pre-pr-ci
 
@@ -158,8 +158,13 @@ python3 web/server.py
      | oe_checkkabi      | KABI keyword scan                 | Flags commits touching KABI for review     |
      | oe_checkconflict  | Backport conflict declaration     | A diverging backport must say Conflicts:   |
      | oe_checkbinary    | Binary file audit                 | Binary files added by the series           |
-     | build_allmod      | Build with allmodconfig           | Compile with all modules enabled           |
-     | check_kabi        | Check KABI whitelist              | Check KABI whitelist against Module.symvers|
+     | oe_build_x86_64   | Build + KABI, x86_64              | allmodconfig, openeuler_defconfig, check-kabi against the three whitelists, defconfig drift |
+     | oe_build_aarch64  | Build + KABI, aarch64             | As x86_64, cross compiled; off by default  |
+     | oe_build_arm      | Cross build, arm                  | allmodconfig with their pinned gcc-12.2.0; off by default |
+     | oe_build_ppc      | Cross build, powerpc              | allmodconfig with their pinned gcc-12.2.0; off by default |
+     | oe_build_ppc64    | Cross build, powerpc64            | allmodconfig with their pinned gcc-12.2.0; off by default |
+     | oe_build_riscv64  | Cross build, riscv64              | allmodconfig with their pinned gcc-12.2.0; off by default |
+     | oe_build_loongarch| Cross build, loongarch            | Their matrix disables it on every branch, so it skips |
 
      Enable: individual (e.g. 1,3,5), all, or none.
 

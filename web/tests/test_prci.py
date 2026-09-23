@@ -88,15 +88,19 @@ class TestRegistryMatchesScripts(unittest.TestCase):
             for test in registry.tests_for(distro):
                 stem = test.log[:-len('.log')]
                 # Either named outright, or produced by a helper that builds
-                # the path from its argument: run_kernel_build writes
-                # "${LOGS_DIR}/${log_stem}.log" and run_oe_check writes
-                # "${LOGS_DIR}/${test_name}.log".  The stem can be in any
+                # the path from its argument: run_oe_check writes
+                # "${LOGS_DIR}/${test_name}.log" from the name it is given,
+                # and run_oe_build writes "${LOGS_DIR}/oe_build_${arch}.log"
+                # from just the architecture.  The stem can be in any
                 # argument position, since a later one may override it.
                 named = test.log in script
                 joined = re.sub(r'\\\n\s*', ' ', script)
+                wanted = stem
+                if stem.startswith('oe_build_'):
+                    wanted = stem[len('oe_build_'):]
                 built = re.search(
-                    r'run_(?:kernel_build|oe_check)(?:\s+"[^"]*")*\s+"%s"'
-                    % re.escape(stem), joined)
+                    r'run_(?:kernel_build|oe_check|oe_build)'
+                    r'(?:\s+"[^"]*")*\s+"%s"' % re.escape(wanted), joined)
                 self.assertTrue(
                     named or built,
                     '%s/test.sh never writes %s (for test %r)'
@@ -118,10 +122,10 @@ class TestRegistryMatchesScripts(unittest.TestCase):
 
     def test_lookup_rejects_unknown_names(self):
         # This is what keeps a URL path out of a make invocation.
-        for bogus in ('bogus', 'check_kabi; id', '../../etc/passwd',
-                      'build_allmod ', ''):
+        for bogus in ('bogus', 'oe_build_ppc; id', '../../etc/passwd',
+                      'oe_build_x86_64 ', ''):
             self.assertIsNone(registry.find_test('euler', bogus), bogus)
-        self.assertIsNotNone(registry.find_test('euler', 'check_kabi'))
+        self.assertIsNotNone(registry.find_test('euler', 'oe_build_x86_64'))
 
     def test_secrets_are_marked(self):
         self.assertEqual(registry.SECRET_KEYS,
@@ -357,7 +361,7 @@ class TestConfigFile(unittest.TestCase):
             self.flags(TEST_OE_CHECKPATCH='no'), '/tmp/mirror')
         enabled = self.workspace.enabled_tests('euler')
         self.assertFalse(enabled['oe_checkpatch'])
-        self.assertTrue(enabled['build_allmod'])
+        self.assertTrue(enabled['oe_build_x86_64'])
 
     def test_redact_hides_secrets(self):
         self.write()
@@ -427,7 +431,7 @@ class TestJobStore(unittest.TestCase):
 
     def test_verdicts_are_collected(self):
         script = (r'printf "\033[0;32m\xe2\x9c\x93 PASS\033[0m: check_patch\n";'
-                  r'printf "\xe2\x9c\x97 FAIL: build_allmod\n";'
+                  r'printf "\xe2\x9c\x97 FAIL: oe_build_x86_64\n";'
                   r'printf "\xe2\x8a\x98 SKIP: boot_kernel\n";'
                   r'echo "gcc: warning about PASS: not a verdict"')
         job = self.store.submit('test_all', ['sh', '-c', script], 'verdicts',
@@ -436,9 +440,9 @@ class TestJobStore(unittest.TestCase):
         self.assertEqual(
             done['results'],
             [{'verdict': 'PASS', 'test': 'check_patch'},
-             {'verdict': 'FAIL', 'test': 'build_allmod'},
+             {'verdict': 'FAIL', 'test': 'oe_build_x86_64'},
              {'verdict': 'SKIP', 'test': 'boot_kernel'}])
-        self.assertEqual(done['failed_tests'], ['build_allmod'])
+        self.assertEqual(done['failed_tests'], ['oe_build_x86_64'])
 
     def test_log_is_read_incrementally(self):
         job = self.store.submit(
@@ -485,11 +489,11 @@ class TestJobStore(unittest.TestCase):
         """The runner used to capture make's stdout into the very file the
         test script writes, so both truncated each other."""
         job = self.store.submit(
-            'test', ['echo', 'from make'], 'make euler-test=check_kabi',
-            test_name='check_kabi', distro='euler')
+            'test', ['echo', 'from make'], 'make euler-test=oe_build_ppc',
+            test_name='oe_build_ppc', distro='euler')
         done = self.wait_for(job['id'])
         self.assertNotEqual(done['log_file'], done['test_log_file'])
-        self.assertTrue(done['test_log_file'].endswith('check_kabi.log'))
+        self.assertTrue(done['test_log_file'].endswith('oe_build_ppc.log'))
 
     def wait_until_running(self, job_id, timeout=10):
         deadline = time.time() + timeout
@@ -815,6 +819,92 @@ class TestBuildProgress(unittest.TestCase):
         # "Building   : " with no verdict is the announcement, not the result.
         self.assertIsNone(jobs._PHASE_RE.match('  Building   : starting'))
         self.assertIsNotNone(jobs._PHASE_RE.match('  Building   : PASS'))
+
+
+class TestOpenEulerBuildVerdicts(unittest.TestCase):
+    """What oe_build.sh concludes, with the compiler stubbed out.
+
+    The build itself takes an hour and is not what goes wrong.  What goes
+    wrong is the bookkeeping around it: openEuler forgives some warnings
+    on some branches, and an architecture their matrix does not build has
+    to report skipped rather than passed, or a run that compiled nothing
+    reads as a run that found nothing.
+    """
+
+    #: Replaces the real build.  $6 is the warnings file for the cross
+    #: path, and the function's exit status is make's.
+    HARNESS = r'''
+        . "%(root)s/euler/oe_build.sh"
+        _oe_cross_build() { %(stub)s; }
+        _oe_kabi_build()  { %(kabi)s; }
+        _oe_prepare_whitelists() { return 0; }
+        oe_build_arch "%(arch)s" >/dev/null 2>&1
+    '''
+
+    def build(self, arch, branch, stub=':', kabi=':'):
+        script = self.HARNESS % {
+            'root': PROJECT_ROOT, 'stub': stub, 'kabi': kabi, 'arch': arch,
+        }
+        env = dict(
+            os.environ,
+            SCRIPT_DIR=os.path.join(PROJECT_ROOT, 'euler'),
+            WORKDIR=PROJECT_ROOT,
+            LINUX_SRC_PATH=tempfile.gettempdir(),
+            OE_TARGET_BRANCH=branch,
+            BUILD_THREADS='1',
+            NUM_PATCHES='1',
+        )
+        return subprocess.call(['bash', '-c', script], env=env)
+
+    #: A warning on stderr from the incremental build after the patches.
+    WARNED = r'echo "fs/foo.c:12: warning: unused variable" > $6; true'
+    #: make exited non-zero.
+    BROKE = r'echo "error: no rule to make target" > $6; false'
+
+    def test_clean_build_passes(self):
+        self.assertEqual(self.build('ppc', 'OLK-6.6'), 0)
+
+    def test_a_warning_the_patch_introduced_fails(self):
+        self.assertEqual(self.build('ppc', 'OLK-6.6', self.WARNED), 1)
+
+    def test_their_olk_5_10_powerpc_exemption_is_honoured(self):
+        # openEuler tolerates powerpc warnings on OLK-5.10 and we cannot be
+        # stricter than the gate we are predicting.
+        self.assertEqual(self.build('ppc', 'OLK-5.10', self.WARNED), 0)
+
+    def test_the_exemption_is_only_that_branch_and_that_arch(self):
+        self.assertEqual(self.build('riscv64', 'OLK-5.10', self.WARNED), 1)
+        self.assertEqual(self.build('ppc', 'OLK-6.6', self.WARNED), 1)
+
+    def test_the_exemption_does_not_rescue_a_build_that_failed(self):
+        self.assertEqual(self.build('ppc', 'OLK-5.10', self.BROKE), 1)
+
+    def test_an_arch_they_do_not_build_is_skipped_not_passed(self):
+        # loongarch is false on every branch in their check_build.yaml,
+        # and 22.03 is aarch64 and x86_64 only.
+        self.assertEqual(self.build('loongarch', 'OLK-6.6'), 3)
+        self.assertEqual(self.build('riscv64', 'openEuler-22.03-LTS'), 3)
+        self.assertEqual(self.build('x86_64', 'openEuler-22.03-LTS',
+                                    kabi='true'), 0)
+
+    def test_a_failed_kabi_row_fails_the_test(self):
+        rows = (r'printf "| x86_64 allmodconfig build | pass |\n'
+                r'| x86_64 checkkabi | %s |\n" >> $8')
+        self.assertEqual(self.build('x86_64', 'OLK-6.6',
+                                    kabi=rows % 'pass'), 0)
+        self.assertEqual(self.build('x86_64', 'OLK-6.6',
+                                    kabi=rows % 'fail'), 1)
+
+    def test_a_broken_matrix_check_is_an_error_not_a_skip(self):
+        # check_branch.py exits 1 both for "this arch is off" and for a
+        # failed import.  Telling them apart is the difference between a
+        # build gate and a build gate that never runs.
+        script = (
+            '. "%s/euler/oe_build.sh"\n'
+            '_oe_arch_wanted x86_64 OLK-6.6 /nonexistent' % PROJECT_ROOT)
+        self.assertEqual(subprocess.call(['bash', '-c', script],
+                                         stdout=subprocess.DEVNULL,
+                                         stderr=subprocess.DEVNULL), 2)
 
 
 if __name__ == '__main__':
