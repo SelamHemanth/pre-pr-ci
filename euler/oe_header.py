@@ -62,8 +62,10 @@ _FIXES_RE = re.compile(r'^(\s*Fixes:\s+)([0-9a-f]{6,40})(\s*\(.*)$',
                        re.MULTILINE)
 
 #: KABI padding and similar have no upstream equivalent; openEuler files
-#: them under "virt inclusion".
-_KABI_RE = re.compile(r'\b(KABI|kabi|KAPI|kapi)\b')
+#: them under "virt inclusion".  Deliberately not bounded as a word:
+#: these turn up as kabi_reserve, check_kabi and KABI:, and all of them
+#: mean the same thing.
+_KABI_RE = re.compile(r'kabi|kapi', re.IGNORECASE)
 
 #: openEuler-24.03 backports must name the OLK-6.6 commit they came from.
 _CHERRY_PICK_RE = re.compile(
@@ -112,7 +114,7 @@ _FIX_RE = re.compile(
 _REVERT_RE = re.compile(r'^Revert\b', re.IGNORECASE)
 
 
-def decide_category(subject, message):
+def decide_category(subject, message, backport=True):
     """Work out what this patch is for, the way its author described it.
 
     Returns ``(category, why)``.  The reason is printed, because a
@@ -121,6 +123,15 @@ def decide_category(subject, message):
     explicit = _EXPLICIT_RE.search(message)
     if explicit:
         return explicit.group(1), 'the commit message says so'
+
+    # A patch with no upstream commit behind it that touches the kernel
+    # ABI is repairing something.  The only reason openEuler tracks KABI
+    # at all is that a module built against the released kernel has to
+    # keep loading, so a change there is answering a break, whatever the
+    # subject line calls it.  That outranks the wording tests below,
+    # which read "reserve padding" as a feature.
+    if not backport and _KABI_RE.search(subject + '\n' + message):
+        return 'bugfix', 'it changes the kernel ABI'
 
     if _CVE_RE.search(message):
         return 'security', 'the message cites a CVE'
@@ -273,8 +284,8 @@ def upstream_message(sha, mirror):
 
 # ------------------------------------------------------------------ rewrites
 
-def normalise_fixes(message, mirror, kernel):
-    """Rewrite Fixes: tags to the twelve characters format.py accepts.
+def normalise_fixes(message, mirror, kernel, strict=False):
+    """Rewrite Fixes: tags to the shape format.py accepts.
 
     Their regex is ``Fixes: ([0-9a-f]{12}) \\(.*\\)`` -- exactly twelve,
     so a seven character tag fails and a full forty character one fails
@@ -282,17 +293,53 @@ def normalise_fixes(message, mirror, kernel):
     tree rather than upstream, because that is where format.py resolves
     them, so an abbreviation is widened against the mirror and then cut
     rather than cut blindly.
+
+    The subject in the brackets is taken from the commit rather than
+    kept as written.  Their regex does not read it, but a person does,
+    and a Fixes: tag whose subject belongs to a different commit than
+    its SHA is a wrong answer that looks like a right one.
+
+    ``strict`` is for the patches their format.py checks the tag on:
+    no mainline or stable inclusion and category: bugfix, which is the
+    KABI case.  There it runs ``git rev-parse`` in the openEuler tree,
+    so the target has to be a commit in *that* tree -- an upstream SHA
+    the fork predates resolves in the mirror and fails their check --
+    and it must not be a merge.
     """
+    problems = []
+
     def fix(match):
         prefix, sha, rest = match.groups()
-        if len(sha) < 12:
-            widened = expand_sha(sha, mirror) or expand_sha(sha, kernel)
-            if not widened:
+        if strict:
+            full = expand_sha(sha, kernel)
+            if not full:
+                problems.append('%s is not a commit in the openEuler tree'
+                                % sha)
                 return match.group(0)
-            sha = widened
-        return '%s%s%s' % (prefix, sha[:12], rest)
+            if len(git(['log', '-1', '--format=%P', full],
+                       cwd=kernel).split()) > 1:
+                problems.append('%s is a merge commit' % sha)
+                return match.group(0)
+        else:
+            full = expand_sha(sha, mirror) or expand_sha(sha, kernel)
+            if not full:
+                return match.group(0)
 
-    return _FIXES_RE.sub(fix, message)
+        subject = (upstream_subject(full, kernel)
+                   or upstream_subject(full, mirror))
+        if not subject:
+            return '%s%s%s' % (prefix, full[:12], rest)
+        return '%s%s ("%s")' % (prefix, full[:12], subject)
+
+    out = _FIXES_RE.sub(fix, message)
+    if problems:
+        raise Refused(
+            'the Fixes: tag will not pass their format check: %s.\n'
+            '  This patch has no upstream commit behind it, so openEuler '
+            'resolves the tag against the openEuler tree itself, and it '
+            'is the only thing saying what the patch is for.'
+            % '; '.join(problems))
+    return out
 
 
 def header_lines(kind, tag, sha, category, bugzilla, cherry_pick):
@@ -359,13 +406,14 @@ def rewrite(patch, args):
         # the Fixes width are still ours to enforce.
         message = normalise_fixes(message, args.mirror, args.kernel)
         patch.set_message(add_signed_off_by(message, args.signer))
-        return 'already had a header'
+        return 'already had a header', None
 
     sha = upstream_sha(message)
     cherry_pick = None
+    strict_fixes = False
 
     if sha is None:
-        if not _KABI_RE.search(subject):
+        if not _KABI_RE.search(subject + '\n' + message):
             raise Refused(
                 'no upstream commit in the message and nothing marking it '
                 'as a KABI change, so there is no way to tell openEuler '
@@ -373,7 +421,7 @@ def rewrite(patch, args):
                 '  Add "commit <40-char sha> upstream." for a backport, or '
                 'write the inclusion header by hand for an original patch.')
         kind, tag = 'virt', None
-        category, why = decide_category(subject, message)
+        category, why = decide_category(subject, message, backport=False)
 
         # Their rule: a bugfix with no upstream commit behind it has to
         # say what it fixes.  We cannot invent that, and quietly filing
@@ -386,6 +434,12 @@ def rewrite(patch, args):
                 '  openEuler requires one for a bugfix that is not a '
                 'backport: Fixes: <12-char sha> ("subject of the bad '
                 'commit").' % why)
+
+        # And the tag has to name something.  A Fixes: line nobody can
+        # resolve is worse than none: it reads as answered and points
+        # nowhere, and for these patches it is the only thing saying
+        # what the change is for.
+        strict_fixes = True
     else:
         # Always resolve, even at full width.  A forty character SHA is
         # the right shape for their template and still names nothing,
@@ -434,7 +488,7 @@ def rewrite(patch, args):
             cherry_pick = found.group(0)
             message = _CHERRY_PICK_RE.sub('', message)
 
-    message = normalise_fixes(message, args.mirror, args.kernel)
+    message = normalise_fixes(message, args.mirror, args.kernel, strict_fixes)
 
     # sha is None on the virt path, which is what leaves out the
     # "commit" and "Reference" lines their third template does not have.

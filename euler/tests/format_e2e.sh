@@ -83,6 +83,10 @@ make_kernel_repo() {
     mkdir -p Documentation arch include drivers fs init ipc kernel lib )
   git -C "${KERNEL}" add -A
   git -C "${KERNEL}" commit -q -m 'base: empty kernel tree'
+  # Their format.py resolves a Fixes: tag against the openEuler tree,
+  # so the KABI fixture below has to name a commit in this repo.  The
+  # base survives the rewind, which the fixture commits do not.
+  BASE_SHA="$(git -C "${KERNEL}" rev-parse HEAD)"
 
   # ---- shapes prepare.sh should be able to complete a header for ----
 
@@ -99,12 +103,17 @@ Upstream body text." 'kernel/a.c'
 
 Upstream body text." 'kernel/e.c'
 
-  # A KABI fix: no upstream commit, KABI in the subject.  This one used
-  # to be given no Signed-off-by on purpose.
+  # A KABI fix: no upstream commit, KABI in the subject.  Nothing in the
+  # wording says "fix", but a change to the ABI with no upstream commit
+  # behind it is answering a break, so it is filed as a bugfix and has
+  # to name what it fixes.  The subject in the tag is deliberately wrong
+  # here: it should come out replaced with the real one.
   commit 'KABI: reserve padding in struct foo' \
     "Reserve space so the ABI survives the next field.
 
-No upstream equivalent." 'kernel/d.c'
+No upstream equivalent.
+
+Fixes: ${BASE_SHA:0:8} (\"a subject that is not this commit's\")" 'kernel/d.c'
 
   # A bugfix carrying a Fixes: tag too short for their regex, which
   # wants exactly twelve characters.
@@ -169,10 +178,26 @@ Upstream body text." 'kernel/f.c'
     "commit ffffffffffffffffffffffffffffffffffffffff upstream.
 
 Upstream body text." 'kernel/g.c'
+
+  # A KABI change with nothing saying what it fixes.  It reads as a
+  # feature -- "extend", not "fix" -- and used to be filed as one.
+  commit 'net: extend kabi reserved space in struct sock' \
+    "Widen the reserved area.
+
+No upstream equivalent." 'kernel/j.c'
+
+  # And one whose Fixes: tag names an upstream commit.  It resolves in
+  # the mirror, which is not where their format.py looks: for a patch
+  # with no upstream commit behind it they run git in the openEuler
+  # tree, and a SHA the fork predates is not there.
+  commit 'KABI: restore the symbol a backport dropped' \
+    "Put it back.
+
+Fixes: ${TAGGED_SHA:0:12} (\"an upstream commit this tree predates\")" 'kernel/k.c'
 }
 
 NUM_GOOD=5
-NUM_FIXTURES=9
+NUM_FIXTURES=11
 
 # ------------------------------------------------------------------- setup
 
@@ -266,6 +291,28 @@ if git -C "${KERNEL}" log -n "${NUM_GOOD}" --format='%B' |
   echo "  Fixes: tag normalised to twelve characters."
 else
   echo "  UNEXPECTED: no twelve-character Fixes: tag in the result."
+  failures=$((failures + 1))
+fi
+
+# The subject in a Fixes: tag comes from the commit, not from whatever
+# was typed.  Their regex never reads it, but a reviewer does, and a
+# subject belonging to some other commit is a wrong answer that looks
+# like a right one.
+if git -C "${KERNEL}" log -n "${NUM_GOOD}" --format='%B' |
+     grep -q 'a subject that is not this'; then
+  echo "  UNEXPECTED: a Fixes: tag kept a subject that is not the commit's."
+  failures=$((failures + 1))
+else
+  echo "  Fixes: subjects replaced with the ones the commits actually have."
+fi
+
+# A KABI change with no upstream commit is a bugfix whatever its
+# wording says, because the ABI only gets touched to answer a break.
+if git -C "${KERNEL}" log -n "${NUM_GOOD}" --format='%B' |
+     grep -A 3 '^virt inclusion' | grep -q '^category: bugfix'; then
+  echo "  A KABI change with no upstream commit is filed as a bugfix."
+else
+  echo "  UNEXPECTED: the KABI patch was not filed as a bugfix."
   failures=$((failures + 1))
 fi
 
