@@ -211,6 +211,11 @@ make_project_copy() {
   cp -al "${PROJECT}/euler" "${PROJECT}/lib" "${COPY}/" 2>/dev/null ||
     cp -a "${PROJECT}/euler" "${PROJECT}/lib" "${COPY}/"
 
+  # Unlink first.  When the copy is hardlinked -- which it is whenever
+  # the scratch directory shares a filesystem with the project -- a
+  # redirect into this path writes through to the developer's own
+  # .configure and points their kernel path at a fixture.
+  rm -f "${COPY}/euler/.configure"
   cat > "${COPY}/euler/.configure" <<EOF
 LINUX_SRC_PATH="${KERNEL}"
 SIGNER_NAME="Fixture Signer"

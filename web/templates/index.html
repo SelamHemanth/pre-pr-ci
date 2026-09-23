@@ -1397,6 +1397,24 @@ createApp({
     runningJob() { return this.activeJobs.find(j => j.status === 'running') || null; },
     busy() { return this.activeJobs.length > 0; },
 
+    // What the run is working on right now. Preparing names the patch
+    // it is applying; a test run names the test, which has to come
+    // from the registry because the job itself only counts how many
+    // have finished.
+    stageLabel() {
+      const j = this.runningJob;
+      if (!j) return '';
+      if (j.step_label) return j.step_label;
+      const test = this.tests.find(t => t.name === this.runningTest);
+      return test ? test.title : '';
+    },
+    stageCounter() {
+      const j = this.runningJob;
+      if (!j || !j.total_steps) return '';
+      const noun = j.kind === 'test_all' ? 'Test' : 'Patch';
+      return `${noun} ${j.step} of ${j.total_steps}`;
+    },
+
     subs() { return this.status.submodules || []; },
     subsReady() { return this.subs.length > 0 && this.subs.every(s => s.present); },
     subsMissing() { return this.subs.filter(s => !s.present); },
@@ -1488,6 +1506,14 @@ createApp({
 
   watch: {
     setupOpen(open) { localStorage.setItem('prci-setup-open', open ? '1' : '0'); },
+
+    // A finished checklist is only in the way, so fold it the moment
+    // the last step goes green. Deliberately not conditional on the
+    // stored preference: finishing the last step means the card was
+    // open, and leaving it open then is the case this is for. It can
+    // still be expanded by hand, and the count in the head says 4/4
+    // without anyone having to.
+    setupReady(ready) { if (ready) this.setupOpen = false; },
     configSummaryOpen(open) { localStorage.setItem('prci-config-open', open ? '1' : '0'); },
   },
 
@@ -1572,12 +1598,7 @@ createApp({
 
         this.status = await this.api('/api/status');
 
-        if (!this.sawStatus) {
-          this.sawStatus = true;
-          if (this.setupReady && localStorage.getItem('prci-setup-open') === null) {
-            this.setupOpen = false;
-          }
-        }
+        this.sawStatus = true;
 
         const jobs = await this.api('/api/jobs?limit=40');
         this.jobs = jobs.jobs;

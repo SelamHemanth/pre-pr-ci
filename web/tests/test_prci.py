@@ -599,6 +599,32 @@ class TestJobStore(unittest.TestCase):
 
         self.store.kill(running['id'])
 
+    def test_one_run_can_be_forgotten_without_the_rest(self):
+        # Clearing everything to be rid of one failed attempt takes the
+        # runs worth keeping with it, which is why people stop clearing.
+        doomed = self.store.submit('test', ['true'], 'true')
+        keeper = self.store.submit('test', ['true'], 'true')
+        self.wait_for(doomed['id'])
+        self.wait_for(keeper['id'])
+
+        ok, _ = self.store.forget(doomed['id'])
+        self.assertTrue(ok)
+        self.assertIsNone(self.store.get(doomed['id']))
+        self.assertIsNotNone(self.store.get(keeper['id']))
+
+    def test_a_run_still_going_cannot_be_forgotten(self):
+        running = self.store.submit('test', ['sleep', '30'], 'sleep')
+        ok, why = self.store.forget(running['id'])
+        self.assertFalse(ok)
+        self.assertIn('not finished', why)
+        self.assertIsNotNone(self.store.get(running['id']))
+        self.store.kill(running['id'])
+
+    def test_forgetting_a_job_that_is_not_there_says_so(self):
+        ok, why = self.store.forget('no-such-job')
+        self.assertFalse(ok)
+        self.assertIn('No such job', why)
+
     def test_argv_is_not_exposed_to_the_browser(self):
         job = self.store.submit('test', ['true'], 'true')
         self.assertNotIn('argv', job)
