@@ -1159,8 +1159,11 @@ class TestOpenEulerBuildVerdicts(unittest.TestCase):
         self.assertIn('checkdefconfig | pass', result)
         # Said on the log, never in the warnings file, which is a gate.
         self.assertEqual(warnings, '')
-        self.assertIn('CONFIG_ONE=y', log)
-        self.assertIn("this host's and not yours", log)
+        # Counted, not listed: the only symbols worth naming are the
+        # ones a patch could do something about.
+        self.assertIn('2 symbol(s) are unanswered', log)
+        self.assertNotIn('CONFIG_ONE', log)
+        self.assertNotIn('CONFIG_TWO', log)
 
     def test_a_symbol_the_series_really_added_still_fails(self):
         log, result, warnings = self.defconfig_check(
@@ -1168,8 +1171,10 @@ class TestOpenEulerBuildVerdicts(unittest.TestCase):
             before=self.FROM_THE_HOST)
         self.assertIn('checkdefconfig | fail', result)
         self.assertIn('CONFIG_THREE=y', warnings)
-        # Only the one the series is answerable for.
+        # Only the ones the series is answerable for, nowhere else.
         self.assertNotIn('CONFIG_ONE', warnings)
+        self.assertNotIn('CONFIG_TWO', warnings)
+        self.assertNotIn('CONFIG_ONE', log)
         self.assertIn('update_oedefconfig', warnings)
 
     def test_a_defconfig_that_answers_everything_passes_quietly(self):

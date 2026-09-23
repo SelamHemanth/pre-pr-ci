@@ -388,12 +388,15 @@ _oe_check_defconfig() {
 
   if [ -z "${added}" ]; then
     echo "| ${arch} checkdefconfig | pass |" >> "${result}"
-    # Said on the log and not in the warnings file, which is a gate:
-    # this is information about the machine, not a finding about the
-    # series, and it must not fail the run.
-    echo "  -> openeuler_defconfig does not answer these here, before the"
-    echo "     series as well, so they are this host's and not yours:"
-    printf '%s\n' "${mine}" | sed 's/^/       /'
+    # Counted, not listed.  The only symbols worth a reader's attention
+    # are the ones a patch could do something about, and these are not
+    # those: they are unanswered on this machine whatever is checked
+    # out.  Said on the log rather than in the warnings file, which is
+    # a gate, because it is a fact about the host and must not fail the
+    # run.
+    echo "  -> $(printf '%s\n' "${mine}" | wc -l) symbol(s) are unanswered"
+    echo "     before the series as well, so they are this host's offering"
+    echo "     and not the series' doing; not listed."
     return 0
   fi
 
