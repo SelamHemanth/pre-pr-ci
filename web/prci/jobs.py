@@ -251,7 +251,7 @@ class JobStore:
             test_name = job.get('test_name')
             self._save_locked()
 
-        needs_mirror = kind == 'build' or test_name == 'check_dependency'
+        needs_mirror = kind == 'prepare' or test_name == 'check_dependency'
 
         try:
             with open(log_path, 'w', buffering=1, errors='replace') as log_file:

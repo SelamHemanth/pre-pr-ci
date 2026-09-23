@@ -46,7 +46,7 @@ anolis-test:
 	bash anolis/test.sh $(anolis-test)
 endif
 
-.PHONY: help config build test list-tests clean reset distclean update-tests update
+.PHONY: help config prepare build ready test list-tests clean reset distclean update-tests update
 
 # Pull the latest version of this tool.  Deliberately not a prerequisite of
 # any other target: it used to run before config, build and test, which meant
@@ -102,8 +102,9 @@ help:
 	@echo ""
 	@echo "Usage:"
 	@echo "  make config              - Configure target distribution"
-	@echo "  make build               - Build kernel (generate/apply patches)"
-	@echo "  make test                - Run every enabled test"
+	@echo "  make prepare             - Get the patches ready to test (headers, sign-off)"
+	@echo "  make ready               - Say whether the patches are ready to test"
+	@echo "  make test                - Run every enabled test (needs make prepare first)"
 	@echo "  make list-tests          - List available tests for configured distro"
 	@echo "  make anolis-test=<name>  - Run one OpenAnolis test"
 	@echo "  make euler-test=<name>   - Run one openEuler test"
@@ -189,15 +190,26 @@ validate:
 		exit 1; \
 	fi
 
-# Build (default target)
-build: validate
+# Get the patches into the shape the distro's CI expects: metadata
+# header, sign-off, and for openEuler the Conflicts: section.  Nothing
+# here compiles anything, which is what "build" used to suggest.
+prepare: validate
 	@. $(DISTRO_CONFIG); \
-	if [ ! -f "$$DISTRO_DIR/build.sh" ]; then \
-		echo -e "$(RED)Error: Build script not found: $$DISTRO_DIR/build.sh$(NC)"; \
+	if [ ! -f "$$DISTRO_DIR/prepare.sh" ]; then \
+		echo -e "$(RED)Error: Prepare script not found: $$DISTRO_DIR/prepare.sh$(NC)"; \
 		exit 1; \
 	fi; \
-	echo -e "$(BLUE)Running $$DISTRO build...$(NC)"; \
-	bash $$DISTRO_DIR/build.sh
+	echo -e "$(BLUE)Preparing $$DISTRO patches...$(NC)"; \
+	bash $$DISTRO_DIR/prepare.sh
+
+# Kept so existing scripts and muscle memory keep working.
+build: prepare
+
+# Whether there is anything left to prepare.  prepare and test both ask
+# the same script, so this shows exactly what they will decide.
+ready: validate
+	@. $(DISTRO_CONFIG); \
+	bash $$DISTRO_DIR/ready.sh
 
 # Test
 test: validate

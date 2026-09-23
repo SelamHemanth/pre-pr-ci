@@ -59,7 +59,8 @@ git submodule update --init --recursive
 ### Command Line Interface
 
 * `make config`             - Configure target distribution
-* `make build`              - Build kernel
+* `make prepare`            - Get the patches ready to test
+* `make ready`              - Say whether the patches are ready to test
 * `make test`               - Run distro-specific tests
 * `make list-tests`         - List available tests for configured distro
 * `make anolis-test=<name>` - Run specific OpenAnolis test

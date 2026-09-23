@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: GPL-3.0-only
 #
 # Pre-PR CI - euler/tests/format_e2e.sh
-# End-to-end check that build.sh emits what openEuler's checkformat accepts
+# End-to-end check that prepare.sh emits what openEuler's checkformat accepts
 #
 # Copyright (C) 2025 Advanced Micro Devices, Inc.
 # Author: Hemanth Selam <Hemanth.Selam@amd.com>
@@ -11,13 +11,13 @@
 # it under the terms of the GNU General Public License as published by
 # the Free Software Foundation, version 3.
 #
-# build.sh writes the openEuler metadata header; openEuler's format.py
+# prepare.sh writes the openEuler metadata header; openEuler's format.py
 # decides whether that header is acceptable.  Nothing had ever run the
 # two against each other, and they disagreed in six places.
 #
-# So: a throwaway kernel repo holding one commit per shape build.sh has
-# to handle, build.sh run over it for real, and then their checkformat
-# run over the result.  A case that build.sh refuses outright counts as
+# So: a throwaway kernel repo holding one commit per shape prepare.sh has
+# to handle, prepare.sh run over it for real, and then their checkformat
+# run over the result.  A case that prepare.sh refuses outright counts as
 # handled -- refusing to emit a patch that will be rejected is the point.
 #
 # Usage: euler/tests/format_e2e.sh [mirror]
@@ -42,7 +42,7 @@ fi
 #
 # TAGGED is old enough to sit inside a release, which is the case that is
 # supposed to work.  UNTAGGED is past the newest tag, so "git describe
-# --contains" fails on it -- that is the case build.sh used to answer
+# --contains" fails on it -- that is the case prepare.sh used to answer
 # with the literal string "mainline".
 TAGGED_SHA='03b80ff8023adae6780e491f66e932df8165e3a0'
 TAGGED_SUBJ='selftests/ftrace: Add new test case which checks non unique symbol'
@@ -84,7 +84,7 @@ make_kernel_repo() {
   git -C "${KERNEL}" add -A
   git -C "${KERNEL}" commit -q -m 'base: empty kernel tree'
 
-  # ---- shapes build.sh should be able to complete a header for ----
+  # ---- shapes prepare.sh should be able to complete a header for ----
 
   # A backport of a commit that has shipped in a release.
   commit "${TAGGED_SUBJ}" \
@@ -92,7 +92,7 @@ make_kernel_repo() {
 
 Upstream body text." 'kernel/a.c'
 
-  # The same, written the way the stable trees write it.  build.sh used
+  # The same, written the way the stable trees write it.  prepare.sh used
   # to not recognise this at all and emit no header.
   commit "${TAGGED_SUBJ}" \
     "[ Upstream commit ${TAGGED_SHA} ]
@@ -131,7 +131,7 @@ Upstream body text.
 
   [ "${only_good}" = 1 ] && return 0
 
-  # ---- shapes build.sh should refuse, because the gate would ----
+  # ---- shapes prepare.sh should refuse, because the gate would ----
 
   # Past the newest tag, so no release contains it.  This used to be
   # given the *preceding* release, claiming it shipped in a version that
@@ -166,7 +166,7 @@ NUM_FIXTURES=9
 
 # ------------------------------------------------------------------- setup
 
-# A hardlinked copy, so build.sh's real .configure and the running service
+# A hardlinked copy, so prepare.sh's real .configure and the running service
 # are left alone.  The submodules are shared rather than copied; nothing
 # here writes to them.
 make_project_copy() {
@@ -192,7 +192,7 @@ EOF
 run_build() {
   local count="$1" rc=0
   make_project_copy "${count}"
-  ( cd "${COPY}" && bash euler/build.sh ) > "${SCRATCH}/build.log" 2>&1 || rc=$?
+  ( cd "${COPY}" && bash euler/prepare.sh ) > "${SCRATCH}/build.log" 2>&1 || rc=$?
   return ${rc}
 }
 
@@ -204,12 +204,12 @@ echo
 
 failures=0
 
-# ---- phase one: build.sh must refuse what the gate would reject -----------
+# ---- phase one: prepare.sh must refuse what the gate would reject -----------
 #
 # The point is not that these fail, it is that they fail here, before the
 # tree has been rewound and before anybody has waited for a CI run.
 
-echo "=== phase 1: patches build.sh should refuse ==="
+echo "=== phase 1: patches prepare.sh should refuse ==="
 make_kernel_repo 0
 build_rc=0
 run_build "${NUM_FIXTURES}" || build_rc=$?
@@ -217,13 +217,13 @@ run_build "${NUM_FIXTURES}" || build_rc=$?
 grep -E '^  (✓|✗)|^    ' "${SCRATCH}/build.log" | sed 's/^/  /' || true
 echo
 if [ "${build_rc}" -eq 21 ]; then
-  echo "  build.sh refused the series and left the tree alone, as it should."
+  echo "  prepare.sh refused the series and left the tree alone, as it should."
 else
-  echo "  UNEXPECTED: build.sh exited ${build_rc}, wanted 21 (refused)."
+  echo "  UNEXPECTED: prepare.sh exited ${build_rc}, wanted 21 (refused)."
   failures=$((failures + 1))
 fi
 
-# The tree must be exactly where it started.  A build.sh that refuses
+# The tree must be exactly where it started.  A prepare.sh that refuses
 # halfway and leaves the branch rewound is worse than one that never
 # checked.
 if [ -n "$(git -C "${KERNEL}" status --porcelain)" ]; then
@@ -238,14 +238,14 @@ echo
 
 # ---- phase two: what it accepts must pass their checkformat ---------------
 
-echo "=== phase 2: patches build.sh should complete ==="
+echo "=== phase 2: patches prepare.sh should complete ==="
 make_kernel_repo 1
 build_rc=0
 run_build "${NUM_GOOD}" || build_rc=$?
 grep -E '^  (✓|✗)|^    ' "${SCRATCH}/build.log" | sed 's/^/  /' || true
 echo
 if [ "${build_rc}" -ne 0 ]; then
-  echo "  UNEXPECTED: build.sh exited ${build_rc}; it should have finished."
+  echo "  UNEXPECTED: prepare.sh exited ${build_rc}; it should have finished."
   sed 's/^/    /' "${SCRATCH}/build.log"
   exit 1
 fi
@@ -274,8 +274,34 @@ echo
 
 NUM_FIXTURES="${NUM_GOOD}"
 
+# ---- preparing twice must be a no-op -------------------------------------
+#
+# Preparing rewrites history. Doing it again to a prepared series costs a
+# rebuild of everything downstream and replaces any Conflicts: text
+# written by hand with a fresh placeholder, so "already done" has to be
+# detected rather than discovered halfway through.
+
+head_before="$(git -C "${KERNEL}" rev-parse HEAD)"
+rerun_rc=0
+( cd "${COPY}" && bash euler/prepare.sh ) > "${SCRATCH}/rerun.log" 2>&1 || rerun_rc=$?
+
+if [ "${rerun_rc}" -ne 0 ]; then
+  echo "  UNEXPECTED: preparing an already-prepared series exited ${rerun_rc}."
+  failures=$((failures + 1))
+elif ! grep -q 'Already prepared' "${SCRATCH}/rerun.log"; then
+  echo "  UNEXPECTED: the second run did not recognise the series as prepared."
+  sed 's/^/    /' "${SCRATCH}/rerun.log" | head -n 20
+  failures=$((failures + 1))
+elif [ "$(git -C "${KERNEL}" rev-parse HEAD)" != "${head_before}" ]; then
+  echo "  UNEXPECTED: the second run rewrote the branch."
+  failures=$((failures + 1))
+else
+  echo "  Preparing twice is a no-op; the branch is untouched."
+fi
+echo
+
 if [ "${VERBOSE:-0}" = 1 ]; then
-  echo "=== the commit messages build.sh produced ==="
+  echo "=== the commit messages prepare.sh produced ==="
   git -C "${KERNEL}" log --format='%n----- %h %s%n%b' -n "${NUM_FIXTURES}" |
     sed 's/^/  /'
   echo
@@ -296,7 +322,7 @@ check_rc=$?
 
 # Every fixture here diverges from the commit it names, so checkconflict
 # has something to say about all of them.  It passing means the
-# Conflicts: sections build.sh wrote are in the shape their regex wants,
+# Conflicts: sections prepare.sh wrote are in the shape their regex wants,
 # which is the whole reason for generating them.
 oe_check checkconflict
 conflict_rc=$?
@@ -357,7 +383,7 @@ PY
 
 echo
 if [ "${check_rc}" -ne 0 ]; then
-  echo "  openEuler's checkformat rejected a patch build.sh was happy with."
+  echo "  openEuler's checkformat rejected a patch prepare.sh was happy with."
   failures=$((failures + 1))
 fi
 
@@ -370,7 +396,7 @@ fi
 if [ "${conflict_rc}" -eq 0 ]; then
   echo "  Conflicts: sections accepted by openEuler's checkconflict."
 else
-  echo "  UNEXPECTED: checkconflict rejected the Conflicts: sections build.sh wrote:"
+  echo "  UNEXPECTED: checkconflict rejected the Conflicts: sections prepare.sh wrote:"
   grep -vE '^\s*$' "${SCRATCH}/checkconflict.log" | tail -n 20 | sed 's/^/    /'
   failures=$((failures + 1))
 fi
@@ -378,8 +404,8 @@ fi
 echo
 echo "=== verdict ==="
 if [ "${failures}" -eq 0 ]; then
-  echo "  build.sh agrees with openEuler's checkformat and checkconflict."
+  echo "  prepare.sh agrees with openEuler's checkformat and checkconflict."
   exit 0
 fi
-echo "  ${failures} disagreement(s) between build.sh and openEuler's gate."
+echo "  ${failures} disagreement(s) between prepare.sh and openEuler's gate."
 exit 1

@@ -35,6 +35,7 @@ if WEB_DIR not in sys.path:
     sys.path.insert(0, WEB_DIR)
 
 from prci import jobs                                       # noqa: E402
+from prci import readiness                                  # noqa: E402
 from prci import repo                                       # noqa: E402
 from prci import registry                                   # noqa: E402
 from prci.distro import ConfigError, Workspace, redact       # noqa: E402
@@ -1003,6 +1004,129 @@ class TestOpenEulerBuildVerdicts(unittest.TestCase):
         self.assertEqual(subprocess.call(['bash', '-c', script],
                                          stdout=subprocess.DEVNULL,
                                          stderr=subprocess.DEVNULL), 2)
+
+
+class TestReadiness(unittest.TestCase):
+    """Whether the UI will let a test run.
+
+    An unprepared series fails openEuler's checks for reasons that are
+    the tool's omissions rather than the patch's faults, so the run
+    buttons are gated on this.  A gate that fails open is worse than no
+    gate: it looks like a verdict.
+    """
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp()
+        self.addCleanup(lambda: __import__('shutil').rmtree(self.root,
+                                                            True))
+        os.makedirs(os.path.join(self.root, 'euler'))
+        readiness.forget()
+
+    def write_ready(self, body):
+        path = os.path.join(self.root, 'euler', 'ready.sh')
+        with open(path, 'w') as f:
+            f.write('#!/usr/bin/env bash\n' + body + '\n')
+        os.chmod(path, 0o755)
+
+    def test_a_ready_series_is_ready(self):
+        self.write_ready('echo "all 3 commit(s) are ready to test"; exit 0')
+        ready, why = readiness.check(self.root, 'euler')
+        self.assertTrue(ready)
+        self.assertIn('ready to test', why)
+
+    def test_an_unready_series_reports_why(self):
+        self.write_ready('echo "abc123 subj: no inclusion header"; exit 1')
+        ready, why = readiness.check(self.root, 'euler')
+        self.assertFalse(ready)
+        self.assertIn('no inclusion header', why)
+
+    def test_a_missing_check_does_not_mean_ready(self):
+        ready, why = readiness.check(self.root, 'euler')
+        self.assertFalse(ready)
+        self.assertIn('no readiness check', why)
+
+    def test_a_broken_check_does_not_mean_ready(self):
+        self.write_ready('exit 3')
+        self.assertFalse(readiness.check(self.root, 'euler')[0])
+
+    def test_the_answer_is_cached_between_polls(self):
+        # The page polls every couple of seconds and the openEuler check
+        # renders a diff per commit, so asking every time is not free.
+        counter = os.path.join(self.root, 'runs')
+        self.write_ready('echo x >> "%s"; exit 0' % counter)
+        readiness.check(self.root, 'euler')
+        readiness.check(self.root, 'euler')
+        with open(counter) as f:
+            self.assertEqual(len(f.readlines()), 1)
+
+    def test_forget_asks_again(self):
+        counter = os.path.join(self.root, 'runs')
+        self.write_ready('echo x >> "%s"; exit 0' % counter)
+        readiness.check(self.root, 'euler')
+        readiness.forget('euler')
+        readiness.check(self.root, 'euler')
+        with open(counter) as f:
+            self.assertEqual(len(f.readlines()), 2)
+
+
+class TestReadyScripts(unittest.TestCase):
+    """The shipped ready.sh scripts, against a throwaway tree."""
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp()
+        self.addCleanup(lambda: __import__('shutil').rmtree(self.root,
+                                                            True))
+        self.kernel = os.path.join(self.root, 'kernel')
+        subprocess.check_call(['git', 'init', '-q', self.kernel])
+        for key, value in (('user.name', 'T'), ('user.email', 't@e.com'),
+                           ('commit.gpgsign', 'false')):
+            subprocess.check_call(['git', '-C', self.kernel, 'config',
+                                   key, value])
+
+    def commit(self, message):
+        path = os.path.join(self.kernel, 'f')
+        with open(path, 'a') as f:
+            f.write('x\n')
+        subprocess.check_call(['git', '-C', self.kernel, 'add', 'f'])
+        subprocess.check_call(['git', '-C', self.kernel, 'commit', '-q',
+                               '-m', message])
+
+    def run_ready(self, distro, config):
+        # A copy, so the developer's own .configure is never read or
+        # written by the tests.
+        import shutil
+        target = os.path.join(self.root, distro)
+        shutil.copytree(os.path.join(PROJECT_ROOT, distro), target,
+                        symlinks=True, dirs_exist_ok=True,
+                        ignore=shutil.ignore_patterns(
+                            'kernel', 'hulk_robot_test', '__pycache__'))
+        with open(os.path.join(target, '.configure'), 'w') as f:
+            f.write(config)
+        done = subprocess.run(
+            ['bash', os.path.join(target, 'ready.sh')],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        return done.returncode, done.stdout.decode()
+
+    ANOLIS = ('LINUX_SRC_PATH="%s"\nNUM_PATCHES=1\nANBZ_ID="1234"\n'
+              'SIGNER_NAME="T"\nSIGNER_EMAIL="t@e.com"\n')
+
+    def test_anolis_wants_the_anbz_tag_and_a_sign_off(self):
+        self.commit('a patch\n\nno tags here')
+        rc, out = self.run_ready('anolis', self.ANOLIS % self.kernel)
+        self.assertEqual(rc, 1)
+        self.assertIn('ANBZ: #1234', out)
+
+        self.commit('a patch\n\nANBZ: #1234\n\nSigned-off-by: T <t@e.com>')
+        rc, out = self.run_ready('anolis', self.ANOLIS % self.kernel)
+        self.assertEqual(rc, 0, out)
+
+    def test_a_short_branch_is_not_ready(self):
+        self.commit('only one\n\nANBZ: #1234\n\nSigned-off-by: T <t@e.com>')
+        config = self.ANOLIS.replace('NUM_PATCHES=1',
+                                     'NUM_PATCHES=5') % self.kernel
+        rc, out = self.run_ready('anolis', config)
+        self.assertEqual(rc, 1)
+        self.assertIn('expected 5', out)
 
 
 if __name__ == '__main__':

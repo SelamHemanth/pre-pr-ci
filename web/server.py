@@ -39,6 +39,7 @@ PROJECT_ROOT = os.path.dirname(WEB_DIR)
 if WEB_DIR not in sys.path:
     sys.path.insert(0, WEB_DIR)
 
+from prci import readiness                                   # noqa: E402
 from prci import registry                                    # noqa: E402
 from prci import repo                                        # noqa: E402
 from prci import submodules                                  # noqa: E402
@@ -76,6 +77,35 @@ def configured_distro():
             'success': False,
             'error': '%s is selected but not configured yet.'
                      % registry.DISTROS[distro],
+        }), 409)
+    return distro, None
+
+
+def series_readiness(distro):
+    """(ready, why) for a distro, using its configured kernel tree."""
+    config = workspace.read_config(distro) or {}
+    return readiness.check(PROJECT_ROOT, distro,
+                           kernel=config.get('LINUX_SRC_PATH'))
+
+
+def prepared_distro():
+    """Like configured_distro, but also insists the series is prepared.
+
+    Running the checks against an unprepared series measures what
+    preparation has not done yet and reports it against the patches,
+    which is worse than not running them: it looks like a verdict.
+    """
+    distro, error = configured_distro()
+    if error:
+        return None, error
+    ready, why = series_readiness(distro)
+    if not ready:
+        return None, (jsonify({
+            'success': False,
+            'error': 'The patches are not prepared yet, so there is nothing '
+                     'to test. Run "Prepare patches" first.',
+            'reason': why,
+            'needs_prepare': True,
         }), 409)
     return distro, None
 
@@ -202,6 +232,8 @@ def api_config_post():
     except ConfigError as exc:
         return jsonify({'success': False, 'errors': exc.errors}), 400
 
+    # NUM_PATCHES, the signer and the kernel path all feed the answer.
+    readiness.forget(distro)
     return jsonify({'success': True, 'distro': distro, 'warnings': notes})
 
 
@@ -216,8 +248,13 @@ def api_tests():
 
     enabled = workspace.enabled_tests(distro)
     latest = latest_result_per_test()
+    ready, why = series_readiness(distro)
     return jsonify({
         'distro': distro,
+        # The page greys out every run button on this, so it has to come
+        # from the same script the test run itself will consult.
+        'prepared': ready,
+        'prepared_reason': why,
         'tests': [
             {
                 'name': t.name,
@@ -234,18 +271,35 @@ def api_tests():
 
 # ── work ──────────────────────────────────────────────────────────────────
 
+@app.route('/api/prepare', methods=['POST'])
 @app.route('/api/build', methods=['POST'])
-def api_build():
+def api_prepare():
     distro, error = configured_distro()
     if error:
         return error
-    job = store.submit('build', ['make', 'build'], 'make build', distro=distro)
+    # Whatever it does changes the answer, and the page asks again as
+    # soon as the job finishes.
+    readiness.forget(distro)
+    job = store.submit('prepare', ['make', 'prepare'], 'make prepare',
+                       distro=distro)
     return jsonify({'success': True, 'job': job})
+
+
+@app.route('/api/ready')
+def api_ready():
+    distro, error = configured_distro()
+    if error:
+        return error
+    ready, why = readiness.check(
+        PROJECT_ROOT, distro,
+        kernel=(workspace.read_config(distro) or {}).get('LINUX_SRC_PATH'),
+        force=request.args.get('force') == '1')
+    return jsonify({'success': True, 'prepared': ready, 'reason': why})
 
 
 @app.route('/api/test/<test_name>', methods=['POST'])
 def api_test_one(test_name):
-    distro, error = configured_distro()
+    distro, error = prepared_distro()
     if error:
         return error
 
@@ -267,7 +321,7 @@ def api_test_one(test_name):
 
 @app.route('/api/test', methods=['POST'])
 def api_test_all():
-    distro, error = configured_distro()
+    distro, error = prepared_distro()
     if error:
         return error
 
@@ -286,6 +340,8 @@ def api_clean():
 
 @app.route('/api/reset', methods=['POST'])
 def api_reset():
+    # Reset rewinds the branch, which un-prepares it.
+    readiness.forget()
     job = store.submit('reset', ['make', 'reset'], 'make reset')
     return jsonify({'success': True, 'job': job})
 

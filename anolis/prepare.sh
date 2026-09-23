@@ -87,23 +87,18 @@ SOB_TAG="Signed-off-by: ${SIGNER_NAME} <${SIGNER_EMAIL}>"
 echo -e "${BLUE}Checking if commits are already tagged with metadata...${NC}"
 
 SKIP_APPLY=false
-all_tagged=true
-while IFS= read -r commit_hash; do
-  commit_msg="$(git log -1 --format="%B" "${commit_hash}")"
-  if ! echo "${commit_msg}" | grep -qF "${ANBZ_TAG}" || \
-     ! echo "${commit_msg}" | grep -qF "${SOB_TAG}"; then
-    all_tagged=false
-    break
-  fi
-done < <(git log --format="%H" -n "${NUM_PATCHES}" HEAD)
 
-if [ "${all_tagged}" = true ]; then
-  echo -e "${GREEN}All ${NUM_PATCHES} commits already contain ANBZ and Signed-off-by tags.${NC}"
-  echo -e "${YELLOW}Skipping format-patch, reset, modify, and apply steps.${NC}"
+# ready.sh is the one place that decides this, so prepare.sh, test.sh
+# and the web UI cannot disagree about whether there is work left.
+ready_rc=0
+ready_why="$(bash "${SCRIPT_DIR}/ready.sh" 2>&1)" || ready_rc=$?
+if [ "${ready_rc}" -eq 0 ]; then
+  echo -e "${GREEN}Already prepared: ${ready_why}${NC}"
+  echo -e "${YELLOW}Nothing to do. Run 'make test' to test them.${NC}"
   echo ""
   SKIP_APPLY=true
 else
-  echo -e "${BLUE}Commits not fully tagged. Running full patch generation and modification...${NC}"
+  echo -e "${BLUE}Not prepared yet (${ready_why}); preparing the series...${NC}"
 
   # Save current HEAD id for later reset (full SHA)
   HEAD_ID="$(git rev-parse --verify HEAD)"
@@ -204,7 +199,7 @@ if [ "${SKIP_APPLY}" = true ]; then
   echo -e "${GREEN}Patches already applied — skipping git am step.${NC}"
   echo -e "${YELLOW}Proceeding to next process (make test)...${NC}"
   echo ""
-  echo -e "${GREEN}✓ OpenAnolis build process completed successfully${NC}"
+  echo -e "${GREEN}✓ Patches are prepared for OpenAnolis${NC}"
   echo -e "Run ${YELLOW}'make test'${NC} to execute OpenAnolis-specific tests"
   exit 0
 fi
@@ -423,6 +418,6 @@ for pf in "${PATCH_LIST[@]}"; do
 done
 
 echo ""
-echo -e "${GREEN}✓ OpenAnolis build process completed successfully${NC}"
+echo -e "${GREEN}✓ Patches are prepared for OpenAnolis${NC}"
 echo -e "Run ${YELLOW}'make test'${NC} to execute OpenAnolis-specific tests"
 exit 0

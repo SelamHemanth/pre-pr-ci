@@ -78,39 +78,25 @@ fi
 
 SOB_TAG="Signed-off-by: ${SIGNER_NAME} <${SIGNER_EMAIL}>"
 
-echo -e "${BLUE}Checking if commits are already tagged with openEuler metadata...${NC}"
+echo -e "${BLUE}Checking whether the series has already been prepared...${NC}"
 
 # SKIP_APPLY=true means commits+patches are already in place — no git am needed
 SKIP_APPLY=false
 
-# Two requirements, and they apply to every commit.  KABI fixes used to
-# be excused the Signed-off-by, which openEuler's check_employee_id does
-# not excuse anybody: it fails any patch without one.  The inclusion line
-# is matched loosely because their third template accepts any word --
-# hulk, virt, maillist -- and this only decides whether there is work to
-# do, not whether the result is acceptable.
-all_tagged=true
-while IFS= read -r commit_hash; do
-  commit_msg="$(git log -1 --format="%B" "${commit_hash}")"
-
-  if ! echo "${commit_msg}" | grep -qE "^[[:alnum:] ]+ inclusion$"; then
-    all_tagged=false
-    break
-  fi
-  if ! echo "${commit_msg}" | grep -qF "${SOB_TAG}"; then
-    all_tagged=false
-    break
-  fi
-done < <(git log --format="%H" -n "${NUM_PATCHES}" HEAD)
-
-if [ "${all_tagged}" = true ]; then
-  echo -e "${GREEN}All ${NUM_PATCHES} commits already contain openEuler metadata.${NC}"
-  echo -e "${YELLOW}Skipping format-patch, backup, reset, metadata modification, and patch apply steps.${NC}"
+# ready.sh is the one place that decides this, because preparing a
+# series that is already prepared is not a harmless no-op: it rewrites
+# history, throws away any Conflicts: description written by hand, and
+# leaves the branch short of its commits if it is interrupted.
+ready_rc=0
+ready_why="$(bash "${SCRIPT_DIR}/ready.sh" 2>&1)" || ready_rc=$?
+if [ "${ready_rc}" -eq 0 ]; then
+  echo -e "${GREEN}Already prepared: ${ready_why}${NC}"
+  echo -e "${YELLOW}Nothing to do. Run 'make test' to test them.${NC}"
   echo ""
   SKIP_APPLY=true
 
 else
-  echo -e "${BLUE}Commits not fully tagged. Running full patch generation and modification...${NC}"
+  echo -e "${BLUE}Not prepared yet (${ready_why}); preparing the series...${NC}"
 
   # Save current HEAD id for later reset (full SHA)
   HEAD_ID="$(git rev-parse --verify HEAD)"
@@ -221,7 +207,7 @@ if [ "${SKIP_APPLY}" = true ]; then
   echo -e "${GREEN}Patches already applied — skipping git am step.${NC}"
   echo -e "${YELLOW}Proceeding to next process (make test)...${NC}"
   echo ""
-  echo -e "${GREEN}✓ openEuler build process completed successfully${NC}"
+  echo -e "${GREEN}✓ Patches are prepared for openEuler${NC}"
   echo -e "Run ${YELLOW}'make test'${NC} to execute openEuler-specific tests"
   exit 0
 fi
@@ -258,6 +244,6 @@ for pf in "${PATCH_LIST[@]}"; do
 done
 
 echo ""
-echo -e "${GREEN}✓ openEuler build process completed successfully${NC}"
+echo -e "${GREEN}✓ Patches are prepared for openEuler${NC}"
 echo -e "Run ${YELLOW}'make test'${NC} to execute openEuler-specific tests"
 exit 0

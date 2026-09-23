@@ -68,7 +68,7 @@ cd pre-pr-ci
 git submodule update --init --recursive
 
 make config      # Run the config wizard
-make build       # Generate and apply patches, then build
+make prepare     # Get the patches into the shape the distro's CI expects
 make test        # Run every enabled test
 make list-tests  # See what is available for this distro
 ```

@@ -113,6 +113,19 @@ fi
 : "${BUILD_THREADS:=$(nproc)}"
 : "${NUM_PATCHES:=1}"
 
+# Nothing here is worth running on an unprepared series.  Every check
+# reads the commit messages openEuler's gate reads, so testing before
+# the headers, sign-offs and Conflicts: sections are in place measures
+# the tool's own omissions and reports them as the patch's faults.
+ready_rc=0
+ready_why="$(bash "${SCRIPT_DIR}/ready.sh" 2>&1)" || ready_rc=$?
+if [ "${ready_rc}" -ne 0 ]; then
+  echo -e "${RED}The series is not prepared, so there is nothing to test yet.${NC}" >&2
+  echo -e "${YELLOW}  ${ready_why}${NC}" >&2
+  echo -e "${YELLOW}Run 'make prepare' first.${NC}" >&2
+  exit 22
+fi
+
 mkdir -p "${LOGS_DIR}"
 
 echo ""

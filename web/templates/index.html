@@ -841,20 +841,32 @@ footer a:hover { text-decoration: underline; }
       <div class="card" style="--i:2">
         <div class="card-head"><svg class="icon"><use href="#i-hammer"/></svg> Run</div>
         <div class="card-body">
-          <button class="btn btn-primary btn-block" @click="start('/api/build', 'build')"
-                  :disabled="busy || !status.configured">
-            <svg class="icon"><use href="#i-hammer"/></svg> Build patches
+          <button class="btn btn-primary btn-block" @click="start('/api/prepare', 'prepare')"
+                  :disabled="busy || !status.configured"
+                  :title="prepared
+                    ? 'Already prepared; running this again does nothing'
+                    : 'Add the metadata header, sign-off and any Conflicts: section the CI requires'">
+            <svg class="icon"><use href="#i-hammer"/></svg>
+            {{ prepared ? 'Patches prepared' : 'Prepare patches' }}
           </button>
           <button class="btn btn-block" @click="start('/api/test', 'all tests')"
-                  :disabled="busy || !status.configured">
+                  :disabled="busy || !status.configured || !prepared"
+                  :title="prepared
+                    ? 'Run every test with its checkbox ticked below'
+                    : 'Prepare the patches first'">
             <svg class="icon"><use href="#i-flask"/></svg> Run every enabled test
           </button>
           <button class="btn btn-danger btn-block" v-if="runningJob"
-                  @click="askKill(runningJob)">
+                  @click="askKill(runningJob)"
+                  title="Stop the job that is running now">
             <svg class="icon"><use href="#i-stop"/></svg> Stop current job
           </button>
           <div class="hint" v-if="!status.configured">
             Finish setup above before running anything.
+          </div>
+          <div class="hint" v-else-if="!prepared">
+            Nothing can be tested until the patches are prepared.
+            <span v-if="preparedReason">({{ preparedReason }})</span>
           </div>
         </div>
       </div>
@@ -947,7 +959,10 @@ footer a:hover { text-decoration: underline; }
                 <svg class="icon"><use href="#i-list"/></svg> Log
               </button>
               <button class="btn btn-sm btn-primary" @click="runTest(t)"
-                      :disabled="busy || !t.enabled">
+                      :disabled="busy || !t.enabled || !prepared"
+                      :title="!t.enabled ? 'Tick this test to run it'
+                              : (!prepared ? 'Prepare the patches first'
+                                 : 'Run just this test')">
                 <svg class="icon"><use href="#i-play"/></svg> Run
               </button>
             </div>
@@ -1215,6 +1230,11 @@ createApp({
       host: {},
       config: null,
       tests: [],
+      // Whether the series has been through "Prepare patches". Comes
+      // from the same script the run itself consults, so the buttons
+      // cannot offer something the backend will refuse.
+      prepared: false,
+      preparedReason: '',
       jobs: [],
 
       configOpen: false,
@@ -1459,6 +1479,8 @@ createApp({
           if (!wasConfigured || !this.tests.length) await this.loadConfig();
           const tests = await this.api('/api/tests');
           this.tests = tests.tests;
+          this.prepared = !!tests.prepared;
+          this.preparedReason = tests.prepared_reason || '';
         }
 
         if (this.logJob) {
@@ -1681,6 +1703,8 @@ createApp({
         }
         this.configOpen = false;
         this.tests = [];
+        this.prepared = false;
+        this.preparedReason = '';
         await this.refresh();
       } catch (error) {
         this.errors = (error.body && error.body.errors) || {};

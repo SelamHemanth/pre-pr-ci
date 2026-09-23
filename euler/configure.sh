@@ -373,5 +373,5 @@ echo "Patches to process: ${NUM_PATCHES}"
 echo "Build threads: ${BUILD_THREADS}"
 echo "Tests enabled: ${RUN_TESTS}"
 echo ""
-echo -e "Run ${YELLOW}'make build'${NC} to build"
+echo -e "Run ${YELLOW}'make prepare'${NC} to get the patches ready to test"
 exit 0
