@@ -445,14 +445,14 @@ def rewrite(patch, args):
     message = '\n'.join(header) + '\n' + message.lstrip('\n')
     message = add_signed_off_by(message, args.signer)
 
-    message, note = declare_conflicts(message, sha, args)
+    message, note, warning = declare_conflicts(message, sha, args)
     patch.set_message(message)
 
     described = '%s inclusion' % kind
     if tag:
         described += ' from %s' % tag
     described += ', category: %s (%s)' % (category, why)
-    return described + (', %s' % note if note else '')
+    return described + (', %s' % note if note else ''), warning
 
 
 def declare_conflicts(message, sha, args):
@@ -466,27 +466,40 @@ def declare_conflicts(message, sha, args):
 
     Which files differ is not something anybody can work out reliably
     by eye, and it is exactly what their comparison already computes.
-    So compute it the same way and write the section.  What this cannot
-    do is explain why, and it does not pretend to: the explanation is
-    taken from the [Backport Changes] note the author already writes,
-    or left as a prompt for them to fill in.
+    So compute it the same way and write the section.
+
+    What this cannot do is explain why, so it does not write a section
+    at all unless the author already has: the [Backport Changes] note
+    is the explanation, in the author's words, and moving it into the
+    brackets is the whole of the job.  Inventing a placeholder for a
+    commit that has no note would satisfy the gate with a sentence
+    nobody wrote and nobody means, and leave the commit worse than it
+    was found.
+
+    A commit that diverges with no note is therefore left exactly as
+    it is, and reported as a warning with the diff attached.  Most of
+    those are false positives -- a hunk landing at a different offset
+    reads as a difference to a byte-for-byte comparison -- and the
+    only way to tell is to look, so the report shows the difference
+    rather than asserting there is a problem.
     """
     if not sha or not args.commit:
-        return message, None
+        return message, None, None
     if oe_conflict.already_declared(message):
-        return message, None
+        return message, None, None
     if not oe_conflict.deviates(args.kernel, args.commit, args.mirror, sha):
-        return message, None
+        return message, None, None
 
     files = oe_conflict.differing_files(
         args.kernel, args.commit, args.mirror, sha)
     if not files:
-        return message, None
+        return message, None, None
 
     note = oe_conflict.existing_note(message)
-    if note:
-        message = oe_conflict.strip_note(message)
+    if not note:
+        return message, None, divergence_report(files, sha, args)
 
+    message = oe_conflict.strip_note(message)
     before, sign_offs = split_sign_offs(message)
     section = oe_conflict.section(files, note)
     # Their regex runs straight from the closing bracket into
@@ -496,8 +509,30 @@ def declare_conflicts(message, sha, args):
     # Tested-by lines carried down from upstream.
     message = '\n'.join(before + section.split('\n') + sign_offs) + '\n'
 
-    summary = 'Conflicts: %d file(s)' % len(files)
-    return message, summary + ('' if note else ', description left to you')
+    return message, 'Conflicts: %d file(s)' % len(files), None
+
+
+# Enough of the difference to recognise a renumbered hunk without
+# turning the prepare log into the diff itself.
+_REPORT_LINES = 40
+
+
+def divergence_report(files, sha, args):
+    """What to say about a divergence nobody has described."""
+    head = ['differs from upstream %s, and has no [Backport Changes] note '
+            'to turn into a Conflicts: section.' % sha[:12],
+            'checkconflict will ask for one naming:']
+    head += ['    %s' % f for f in files]
+
+    body = oe_conflict.difference(
+        args.kernel, args.commit, args.mirror, sha, files).split('\n')
+    if len(body) > _REPORT_LINES:
+        extra = len(body) - _REPORT_LINES
+        body = body[:_REPORT_LINES] + ['... %d more line(s)' % extra]
+
+    return '\n'.join(head + ['', 'How it differs:'] + body + [
+        '', 'If that is only context or line numbers moving, it is a false '
+        'positive and the commit is fine as it stands.'])
 
 
 _SOB_RE = re.compile(r'^Signed-off-by:\s')
@@ -556,7 +591,7 @@ def main():
 
     patch = Patch(args.patch)
     try:
-        summary = rewrite(patch, args)
+        summary, warning = rewrite(patch, args)
     except Refused as why:
         print('%s:\n  %s' % (os.path.basename(args.patch), why),
               file=sys.stderr)
@@ -564,6 +599,10 @@ def main():
 
     patch.save()
     print(summary)
+    if warning:
+        # Second line onwards, which is what prepare.sh indents under
+        # the patch it belongs to.
+        print(warning)
     return 0
 
 

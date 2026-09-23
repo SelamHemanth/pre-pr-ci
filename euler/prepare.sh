@@ -181,11 +181,17 @@ else
         --bugzilla "${BUGZILLA_ID}" \
         --signer "${SOB_TAG}" \
         --branch "${OE_TARGET_BRANCH:-OLK-6.6}" 2>&1); then
-      echo -e "  ${GREEN}✓${NC} $(basename "${p}") — ${summary}"
-      case "${summary}" in
-        *'description left to you'*)
-          undescribed+=("$(basename "${p}")") ;;
-      esac
+      # One line of summary, then an optional warning block: a commit
+      # that diverges from upstream with nothing in the message to
+      # explain it.  Those are usually false positives, so they are
+      # shown with the difference attached and nothing is changed.
+      first="${summary%%$'\n'*}"
+      echo -e "  ${GREEN}✓${NC} $(basename "${p}") — ${first}"
+      if [ "${summary}" != "${first}" ]; then
+        echo -e "    ${YELLOW}warning:${NC} ${summary#*$'\n'}" \
+          | sed '2,$s/^\(.\)/    \1/'
+        undescribed+=("$(basename "${p}")")
+      fi
     else
       echo -e "  ${RED}✗${NC} $(echo "${summary}" | sed '2,$s/^/    /')"
       refused=$((refused + 1))
@@ -200,16 +206,16 @@ else
     exit 21
   fi
 
-  # A Conflicts: section with a placeholder in the brackets satisfies
-  # checkconflict, because all their regex asks is that something is
-  # bracketed.  It will not satisfy a reviewer, and this is the one part
-  # of the section nothing here can work out: why the backport had to
-  # differ is in the submitter's head, not in the diff.
+  # Repeated at the end because the per-patch warnings scroll past,
+  # and these are the ones worth a second look before sending.  They
+  # are warnings and not errors on purpose: a byte-for-byte comparison
+  # calls a renumbered hunk a difference, so most are false positives,
+  # and the diff printed above each one is there to tell them apart.
   if [ "${#undescribed[@]}" -ne 0 ]; then
     echo ""
-    echo -e "${YELLOW}${#undescribed[@]} patch(es) differ from upstream and now carry a Conflicts:"
-    echo -e "section with a placeholder description. The gate accepts it; a reviewer"
-    echo -e "will not. Edit the text between the brackets before you send:${NC}"
+    echo -e "${YELLOW}${#undescribed[@]} patch(es) differ from upstream with nothing in the message"
+    echo -e "to explain it. Check the diff printed above each one: if the difference"
+    echo -e "is real, add a [Backport Changes] note saying why and prepare again.${NC}"
     for u in "${undescribed[@]}"; do
       echo -e "${YELLOW}  - ${u}${NC}"
     done

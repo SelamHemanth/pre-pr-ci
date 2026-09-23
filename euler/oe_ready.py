@@ -15,14 +15,13 @@
 Preparing a series rewrites history: it formats the commits out, edits
 every message, rewinds the branch and applies them back.  Doing that to
 a series that is already prepared is not harmless.  It costs a rebuild
-of everything downstream, it turns any hand-edited Conflicts:
-description into a fresh placeholder, and if it is interrupted the
-branch is left short of the commits it started with.
+of everything downstream, and if it is interrupted the branch is left
+short of the commits it started with.
 
 So the test has to be exact.  "Has a header" is not enough: a commit
-that deviates from upstream and has no Conflicts: section will be
-rejected by the gate, and the only thing that can add one is another
-pass.  Report that as work remaining, not as prepared.
+whose Conflicts: section sits in the wrong place looks finished and is
+still rejected by the gate, and only another pass will move it.
+Report that as work remaining, not as prepared.
 """
 
 import argparse
@@ -71,9 +70,11 @@ def unprepared(kernel, sha, msg, signer, mirror):
         ok, why = oe_conflict.format_ok(msg)
         return None if ok else why
 
-    if oe_conflict.deviates(kernel, sha, mirror, upstream):
-        return 'differs from upstream %s with no Conflicts: section' % (
-            upstream[:12])
+    # A divergence with no [Backport Changes] note is deliberately left
+    # alone by the prepare pass, so it is not work remaining: running
+    # again would report the same warning and change nothing.  Whether
+    # it needs a Conflicts: section is a judgement about the diff, and
+    # the prepare log shows the diff so it can be made.
     return None
 
 

@@ -331,9 +331,11 @@ oe_check checkformat
 check_rc=$?
 
 # Every fixture here diverges from the commit it names, so checkconflict
-# has something to say about all of them.  It passing means the
-# Conflicts: sections prepare.sh wrote are in the shape their regex wants,
-# which is the whole reason for generating them.
+# has something to say about all of them.  Only one carries a [Backport
+# Changes] note, and only that one gets a Conflicts: section, so a
+# wholesale pass is the wrong thing to ask for: what matters is that the
+# section written for the noted commit is in the shape their regex wants,
+# and that the rest were left alone and warned about instead.
 oe_check checkconflict
 conflict_rc=$?
 
@@ -403,11 +405,37 @@ if [ "${VERBOSE:-0}" = 1 ]; then
   echo
 fi
 
-if [ "${conflict_rc}" -eq 0 ]; then
-  echo "  Conflicts: sections accepted by openEuler's checkconflict."
+# The one commit that explains itself.  Their checker prints "check
+# conflict: <local sha> <subject>" and then, on the next line, whether
+# it passed -- the sha is the one in this tree, not the upstream one
+# the message names, so the subject is what identifies the commit.
+if awk -v subj="${CONFLICT_SUBJ}" '
+      index($0, "check conflict: ") && index($0, subj) { want = 1; next }
+      want && index($0, "check success") { ok = 1; want = 0; next }
+      want { bad = 1; want = 0 }
+      END { exit (ok && !bad) ? 0 : 1 }' "${SCRATCH}/checkconflict.log"; then
+  echo "  The Conflicts: section written from the author's note is accepted."
 else
-  echo "  UNEXPECTED: checkconflict rejected the Conflicts: sections prepare.sh wrote:"
+  echo "  UNEXPECTED: checkconflict rejected the section prepare.sh wrote:"
   grep -vE '^\s*$' "${SCRATCH}/checkconflict.log" | tail -n 20 | sed 's/^/    /'
+  failures=$((failures + 1))
+fi
+
+# And the ones that do not explain themselves.  Nothing here can write
+# their description, so prepare.sh has to say so and show the difference
+# rather than invent one or quietly move on.
+if grep -q 'no \[Backport Changes\] note' "${SCRATCH}/build.log" \
+   && grep -q 'How it differs:' "${SCRATCH}/build.log"; then
+  echo "  Divergences with no note are warned about, with the diff, and left alone."
+else
+  echo "  UNEXPECTED: a divergence with no note was not reported with its diff."
+  failures=$((failures + 1))
+fi
+
+# Left alone means left alone: no section, no invented description.
+if git -C "${KERNEL}" log -n "${NUM_FIXTURES}" --format=%B \
+   | grep -q 'Describe why here'; then
+  echo "  UNEXPECTED: a commit was given a description nobody wrote."
   failures=$((failures + 1))
 fi
 

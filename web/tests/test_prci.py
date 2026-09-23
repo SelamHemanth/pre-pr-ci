@@ -1048,10 +1048,11 @@ class TestConflictSection(unittest.TestCase):
         'Signed-off-by: ShilpaVPatil <ShilpaV.Patil@amd.com>\n'
     )
 
+    NOTE = '[Backport Changes]\nBecause the tree already had part of it.\n\n'
+
     def build(self, message, files=('arch/x86/include/asm/cpufeatures.h',)):
         note = oe_conflict.existing_note(message)
-        if note:
-            message = oe_conflict.strip_note(message)
+        message = oe_conflict.strip_note(message)
         message = oe_header.add_signed_off_by(
             message, 'Signed-off-by: Someone <s@example.com>')
         before, sign_offs = oe_header.split_sign_offs(message)
@@ -1061,7 +1062,7 @@ class TestConflictSection(unittest.TestCase):
     def test_the_section_sits_at_the_top_of_the_trailers(self):
         # Not wedged between the upstream sign-offs and ours: it is
         # replacing the author's own note, and belongs where that was.
-        out = self.build('subject\n\nBody text.\n\n'
+        out = self.build('subject\n\nBody text.\n\n' + self.NOTE
                          + self.UPSTREAM_TRAILERS)
         lines = out.split('\n')
         self.assertEqual(lines[lines.index('Conflicts:') - 1], '')
@@ -1081,18 +1082,17 @@ class TestConflictSection(unittest.TestCase):
                       'something else.\nEvery reference is by macro name.]',
                       out)
         self.assertNotIn('[Backport Changes]', out)
-        self.assertNotIn('Describe why here', out)
         # Taking the block out must not leave a hole behind it.
         self.assertNotIn('\n\n\n', out)
 
     def test_openeuler_accepts_what_we_produce(self):
         for message in (
-            'subject\n\nBody.\n\n' + self.UPSTREAM_TRAILERS,
+            'subject\n\nBody.\n\n' + self.NOTE + self.UPSTREAM_TRAILERS,
             'subject\n\nBody.\n\n[Backport Changes]\nBecause.\n\n'
             + self.UPSTREAM_TRAILERS,
             # A trailer group that does not open with a sign-off: the
             # section has to drop to the first one that follows.
-            'subject\n\nBody.\n\nReviewed-by: R <r@e.com>\n'
+            'subject\n\nBody.\n\n' + self.NOTE + 'Reviewed-by: R <r@e.com>\n'
             'Signed-off-by: S <s@e.com>\n',
         ):
             out = self.build(message)
@@ -1103,11 +1103,94 @@ class TestConflictSection(unittest.TestCase):
     def test_a_blank_line_before_the_sign_offs_is_rejected(self):
         # The layout that reads best is the one their regex refuses, so
         # this records why the section butts up against the sign-offs.
-        good = self.build('subject\n\nBody.\n\n' + self.UPSTREAM_TRAILERS)
+        good = self.build('subject\n\nBody.\n\n' + self.NOTE
+                          + self.UPSTREAM_TRAILERS)
         spaced = good.replace(']\nSigned-off-by: Perry',
                               ']\n\nSigned-off-by: Perry')
         self.assertTrue(oe_conflict.format_ok(good)[0])
         self.assertFalse(oe_conflict.format_ok(spaced)[0])
+
+
+class TestUndescribedDivergence(unittest.TestCase):
+    """What happens to a commit that diverges and says nothing about it.
+
+    A byte-for-byte comparison calls a hunk at a different offset a
+    difference, so most of these are false positives.  Nothing here
+    can tell which, so nothing here edits the commit: it warns, shows
+    the difference, and leaves the message as the author wrote it.
+    """
+
+    def setUp(self):
+        euler = os.path.join(PROJECT_ROOT, 'euler')
+        if euler not in sys.path:
+            sys.path.insert(0, euler)
+        global oe_conflict, oe_header
+        import oe_conflict
+        import oe_header
+
+    class Args(object):
+        kernel = '/k'
+        mirror = '/m'
+        commit = 'local1234'
+
+    def declare(self, message, monkey):
+        saved = {name: getattr(oe_conflict, name) for name in monkey}
+        for name, value in monkey.items():
+            setattr(oe_conflict, name, value)
+        self.addCleanup(lambda: [setattr(oe_conflict, n, v)
+                                 for n, v in saved.items()])
+        return oe_header.declare_conflicts(message, 'abcdef1234567890',
+                                           self.Args())
+
+    DIVERGES = {
+        'deviates': lambda *a: True,
+        'differing_files': lambda *a: ['drivers/cpufreq/amd-pstate.c'],
+        'difference': lambda *a: '--- a\n+++ b\n@@\n-old line\n+new line',
+    }
+
+    def test_a_commit_with_no_note_is_left_exactly_as_it_was(self):
+        message = 'subject\n\nBody.\n\nSigned-off-by: S <s@e.com>\n'
+        out, note, warning = self.declare(message, self.DIVERGES)
+        self.assertEqual(out, message)
+        self.assertIsNone(note)
+        self.assertTrue(warning)
+
+    def test_the_warning_names_the_files_and_shows_the_difference(self):
+        _, _, warning = self.declare(
+            'subject\n\nBody.\n\nSigned-off-by: S <s@e.com>\n', self.DIVERGES)
+        self.assertIn('drivers/cpufreq/amd-pstate.c', warning)
+        self.assertIn('-old line', warning)
+        self.assertIn('+new line', warning)
+        self.assertIn('false positive', warning)
+
+    def test_a_long_difference_is_cut_short(self):
+        long_diff = dict(self.DIVERGES,
+                         difference=lambda *a: '\n'.join(
+                             'line %d' % i for i in range(500)))
+        _, _, warning = self.declare(
+            'subject\n\nBody.\n\nSigned-off-by: S <s@e.com>\n', long_diff)
+        self.assertIn('more line(s)', warning)
+        self.assertLess(len(warning.split('\n')), 60)
+
+    def test_a_commit_that_matches_upstream_gets_no_warning(self):
+        out, note, warning = self.declare(
+            'subject\n\nBody.\n\nSigned-off-by: S <s@e.com>\n',
+            dict(self.DIVERGES, deviates=lambda *a: False))
+        self.assertIsNone(note)
+        self.assertIsNone(warning)
+
+    def test_readiness_does_not_hold_the_series_back_for_one(self):
+        # Nothing another pass can do about it, so reporting it as work
+        # remaining would block testing on a warning for good.
+        import oe_ready
+        saved = oe_conflict.deviates
+        oe_conflict.deviates = lambda *a: True
+        self.addCleanup(lambda: setattr(oe_conflict, 'deviates', saved))
+        why = oe_ready.unprepared(
+            '/k', 'sha', 'subject\n\nmainline inclusion\ncommit abcdef123456\n'
+            '\nSigned-off-by: S <s@e.com>\n',
+            'Signed-off-by: S <s@e.com>', '/m')
+        self.assertIsNone(why)
 
 
 class TestCleanTree(unittest.TestCase):

@@ -25,6 +25,7 @@ text between @@ markers blanked.  Get any of that wrong and we either
 invent conflicts that do not exist or miss the ones that do.
 """
 
+import difflib
 import os
 import re
 import subprocess
@@ -109,6 +110,28 @@ def differing_files(kernel, commit, mirror, upstream):
     return out
 
 
+def difference(kernel, commit, mirror, upstream, files):
+    """How the two renderings differ, file by file.
+
+    The comparison says *that* a backport differs from upstream; this
+    says how.  It is the only thing that answers the question the
+    submitter actually has, which is whether the difference is real or
+    whether the file merely sits at a different offset in this tree.
+    Without it the report is an accusation with no evidence.
+    """
+    out = []
+    for name in files:
+        here = rendered_diff(kernel, commit, name) or ''
+        there = rendered_diff(mirror, upstream, name) or ''
+        lines = list(difflib.unified_diff(
+            there.splitlines(True), here.splitlines(True),
+            fromfile='%s (upstream %s)' % (name, upstream[:12]),
+            tofile='%s (this tree)' % name, n=1))
+        if lines:
+            out.extend(line.rstrip('\n') for line in lines)
+    return '\n'.join(out)
+
+
 def deviates(kernel, commit, mirror, upstream):
     """Whether their checker would call this a conflict at all."""
     here = rendered_diff(kernel, commit)
@@ -165,9 +188,6 @@ def section(files, note):
     """
     out = ['Conflicts:']
     out += ['\t%s' % f for f in files]
-    if not note:
-        note = ('The backport differs from the upstream commit in the '
-                'file(s) above. Describe why here.')
     body = note.strip().split('\n')
     body[0] = '[' + body[0]
     body[-1] = body[-1] + ']'
