@@ -50,6 +50,8 @@ UNTAGGED_SHA='0b271f7d7f5ed45bc498a03ce0aa9cfd8402fc71'
 UNTAGGED_SUBJ='powerpc/iommu: Fix the overflow validation in iommu_tce_check_ioba'
 FIXES_SHA='e5ed101a602873d65d2d64edaba93e8c73ec1b0f'
 FIXES_SUBJ='mptcp: userspace pm allow creating id 0 subflow'
+CONFLICT_SHA='41b07476da38ac2878a14e5b8fe0312c41ea36e3'
+CONFLICT_SUBJ='ALSA: hda/realtek - ALC287 Realtek I2S speaker platform support'
 
 SCRATCH="$(mktemp -d)"
 trap 'rm -rf "${SCRATCH}"' EXIT
@@ -113,6 +115,20 @@ Fixes: ${TAGGED_SHA:0:8} (\"an earlier commit\")
 
 Upstream body text." 'kernel/h.c'
 
+  # A backport whose diff is nothing like the upstream commit's, which
+  # is what openEuler calls a conflict.  It carries the author's own
+  # explanation under the heading this tree writes it under; that prose
+  # should end up inside the brackets their checker wants.
+  commit "${CONFLICT_SUBJ}" \
+    "commit ${CONFLICT_SHA} upstream.
+
+Upstream body text.
+
+[Backport Changes]
+    The target tree already uses the neighbouring bit, so the flag moved
+    to the one it occupies upstream. Every reference is by macro name,
+    so no other file changes." 'kernel/i.c'
+
   [ "${only_good}" = 1 ] && return 0
 
   # ---- shapes build.sh should refuse, because the gate would ----
@@ -145,8 +161,8 @@ Upstream body text." 'kernel/f.c'
 Upstream body text." 'kernel/g.c'
 }
 
-NUM_GOOD=4
-NUM_FIXTURES=8
+NUM_GOOD=5
+NUM_FIXTURES=9
 
 # ------------------------------------------------------------------- setup
 
@@ -265,14 +281,25 @@ if [ "${VERBOSE:-0}" = 1 ]; then
   echo
 fi
 
-python3 "${COPY}/euler/oe_checks.py" checkformat \
-  --source "${PROJECT}/euler/hulk_robot_test" \
-  --kernel "${KERNEL}" \
-  --workdir "${COPY}" \
-  --mirror "${MIRROR}" \
-  --branch OLK-6.6 \
-  --count "${NUM_FIXTURES}" > "${SCRATCH}/checkformat.log" 2>&1
+oe_check() {
+  python3 "${COPY}/euler/oe_checks.py" "$1" \
+    --source "${PROJECT}/euler/hulk_robot_test" \
+    --kernel "${KERNEL}" \
+    --workdir "${COPY}" \
+    --mirror "${MIRROR}" \
+    --branch OLK-6.6 \
+    --count "${NUM_FIXTURES}" > "${SCRATCH}/$1.log" 2>&1
+}
+
+oe_check checkformat
 check_rc=$?
+
+# Every fixture here diverges from the commit it names, so checkconflict
+# has something to say about all of them.  It passing means the
+# Conflicts: sections build.sh wrote are in the shape their regex wants,
+# which is the whole reason for generating them.
+oe_check checkconflict
+conflict_rc=$?
 
 if [ "${VERBOSE:-0}" = 1 ]; then
   echo "=== openEuler checkformat ==="
@@ -334,9 +361,24 @@ if [ "${check_rc}" -ne 0 ]; then
   failures=$((failures + 1))
 fi
 
+if [ "${VERBOSE:-0}" = 1 ]; then
+  echo "=== openEuler checkconflict ==="
+  sed 's/^/  /' "${SCRATCH}/checkconflict.log"
+  echo
+fi
+
+if [ "${conflict_rc}" -eq 0 ]; then
+  echo "  Conflicts: sections accepted by openEuler's checkconflict."
+else
+  echo "  UNEXPECTED: checkconflict rejected the Conflicts: sections build.sh wrote:"
+  grep -vE '^\s*$' "${SCRATCH}/checkconflict.log" | tail -n 20 | sed 's/^/    /'
+  failures=$((failures + 1))
+fi
+
+echo
 echo "=== verdict ==="
 if [ "${failures}" -eq 0 ]; then
-  echo "  build.sh and openEuler's checkformat agree."
+  echo "  build.sh agrees with openEuler's checkformat and checkconflict."
   exit 0
 fi
 echo "  ${failures} disagreement(s) between build.sh and openEuler's gate."

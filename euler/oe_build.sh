@@ -120,8 +120,46 @@ _oe_setup_gcc() {
     echo "no bin directory inside ${tarball}" >&2
     return 1
   fi
+  # LD_LIBRARY_PATH is normally unset, and test.sh runs under "set -u",
+  # so appending to it directly aborts the test before the compiler is
+  # ever invoked.  Their script gets away with it because their builder
+  # exports one; ours does not.
   export PATH="${PATH}:${bin}"
-  export LD_LIBRARY_PATH="${LD_LIBRARY_PATH}:${bin%/bin}/lib"
+  export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:+${LD_LIBRARY_PATH}:}${bin%/bin}/lib"
+}
+
+# Was the tree already like this before the series?
+#
+# openEuler's CI never asks, because it builds their branch on their
+# builder with their compiler, so a failure there really is the
+# submitter's.  We build whatever tree the user points us at with
+# whatever gcc they have, and those two disagree: OLK-6.6 does not
+# compile its own hinic3 and hinic5 drivers under gcc 12.3, which has
+# nothing to do with anybody's patch.  Reporting that as "your series
+# was rejected" is worse than not checking, because it trains people to
+# ignore the result.
+#
+# Asked only after something has already failed, so a healthy tree pays
+# nothing for it.  Returns 0 when the failure is pre-existing.
+_oe_failed_before_the_series() {
+  local kernel="$1" kernel_arch="$2" cross="$3" jobs="$4" back="$5"
+  local head rc
+
+  [ "${back}" -gt 0 ] || return 1
+  cd "${kernel}" || return 1
+  head=$(git rev-parse HEAD) || return 1
+  git rev-parse --verify -q "HEAD~${back}" >/dev/null || return 1
+
+  echo "  -> it failed; rebuilding at HEAD~${back} to see whose fault it is"
+  git checkout -q "HEAD~${back}" || return 1
+  make ARCH="${kernel_arch}" CROSS_COMPILE="${cross}" allmodconfig \
+    >/dev/null 2>&1
+  make ARCH="${kernel_arch}" CROSS_COMPILE="${cross}" -j"${jobs}" \
+    >/dev/null 2>&1
+  rc=$?
+  git checkout -q "${head}" || return 1
+
+  [ ${rc} -ne 0 ]
 }
 
 # checkbuild.sh.  Baseline build, then the patches, then an incremental
@@ -158,7 +196,7 @@ _oe_cross_build() {
 # checkkabi.sh.  Four checks, each a row in their result table.
 _oe_kabi_build() {
   local kernel="$1" kernel_arch="$2" cross="$3" jobs="$4" arch="$5"
-  local whitelists="$6" warnings="$7" result="$8"
+  local whitelists="$6" warnings="$7" result="$8" back="$9"
 
   cd "${kernel}" || return 1
 
@@ -170,6 +208,14 @@ _oe_kabi_build() {
   if make ARCH="${kernel_arch}" CROSS_COMPILE="${cross}" -j"${jobs}" \
       >/dev/null 2>"${warnings}"; then
     echo "| ${arch} allmodconfig build | pass |" >> "${result}"
+  elif _oe_failed_before_the_series "${kernel}" "${kernel_arch}" \
+      "${cross}" "${jobs}" "${back}"; then
+    echo "| ${arch} allmodconfig build | broken already, not your series |" \
+      >> "${result}"
+    # The warnings belong to the same pre-existing breakage, and
+    # keeping them would fail the series through the warning gate
+    # after the row above declined to.
+    : > "${warnings}"
   else
     echo "| ${arch} allmodconfig build | fail |" >> "${result}"
   fi
@@ -261,7 +307,8 @@ _oe_check_defconfig() {
 
 # Entry point.  Prints a report and answers:
 #   0 everything passed, 1 something failed, 2 could not run,
-#   3 this architecture is not built on this branch
+#   3 this architecture is not built on this branch,
+#   4 the tree does not build without the series either
 oe_build_arch() {
   local arch="$1"
   local kernel="${LINUX_SRC_PATH}"
@@ -303,7 +350,7 @@ oe_build_arch() {
       echo "  -> KABI whitelists unavailable, the ABI will not be compared"
     }
     _oe_kabi_build "${kernel}" "${kernel_arch}" "${cross}" "${jobs}" \
-      "${arch}" "${KABI_KERNEL_DIR}" "${warnings}" "${result}"
+      "${arch}" "${KABI_KERNEL_DIR}" "${warnings}" "${result}" "${back}"
   else
     # The row records whether make succeeded.  Whether it complained on
     # the way is a separate question, asked once below for both paths, so
@@ -312,6 +359,11 @@ oe_build_arch() {
     if _oe_cross_build "${kernel}" "${kernel_arch}" "${cross}" "${jobs}" \
         "${back}" "${warnings}"; then
       echo "| ${arch} allmodconfig build | pass |" >> "${result}"
+    elif _oe_failed_before_the_series "${kernel}" "${kernel_arch}" \
+        "${cross}" "${jobs}" "${back}"; then
+      echo "| ${arch} allmodconfig build | broken already, not your series |" \
+        >> "${result}"
+      : > "${warnings}"
     else
       echo "| ${arch} allmodconfig build | fail |" >> "${result}"
     fi
@@ -321,9 +373,15 @@ oe_build_arch() {
   cat "${result}"
   echo
 
+  # "broken already" deliberately does not contain "fail", so a tree
+  # that does not compile without the series reports as unbuildable
+  # rather than as a rejected patch.  The distinction is the difference
+  # between a result somebody acts on and one they learn to ignore.
   local rc=0
-  if grep -q 'fail' "${result}"; then
+  if grep -q '| fail |' "${result}"; then
     rc=1
+  elif grep -q 'broken already' "${result}"; then
+    rc=4
   fi
 
   if [ -s "${warnings}" ]; then

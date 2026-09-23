@@ -35,6 +35,9 @@ import re
 import subprocess
 import sys
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import oe_conflict
+
 #: The separator between openEuler's header and the original commit
 #: message.  Their templates accept 16 to 80 dashes.
 SEPARATOR = '-' * 32
@@ -432,6 +435,7 @@ def rewrite(patch, args):
             message = _CHERRY_PICK_RE.sub('', message)
 
     message = normalise_fixes(message, args.mirror, args.kernel)
+
     # sha is None on the virt path, which is what leaves out the
     # "commit" and "Reference" lines their third template does not have.
     header = header_lines(kind, tag, sha, category, args.bugzilla,
@@ -439,12 +443,71 @@ def rewrite(patch, args):
     # The trailing newline is the blank line their templates require
     # after the separator; joining the list alone does not produce it.
     message = '\n'.join(header) + '\n' + message.lstrip('\n')
-    patch.set_message(add_signed_off_by(message, args.signer))
+    message = add_signed_off_by(message, args.signer)
+
+    message, note = declare_conflicts(message, sha, args)
+    patch.set_message(message)
 
     described = '%s inclusion' % kind
     if tag:
         described += ' from %s' % tag
-    return '%s, category: %s (%s)' % (described, category, why)
+    described += ', category: %s (%s)' % (category, why)
+    return described + (', %s' % note if note else '')
+
+
+def declare_conflicts(message, sha, args):
+    """Add the Conflicts: section when the backport diverges upstream.
+
+    openEuler renders your commit and the upstream one as diffs and
+    compares them byte for byte.  Any difference at all -- a hunk
+    dropped, a line renumbered, a neighbouring change already in the
+    tree -- means the message has to name every file that differs and
+    say why, or checkconflict rejects the patch.
+
+    Which files differ is not something anybody can work out reliably
+    by eye, and it is exactly what their comparison already computes.
+    So compute it the same way and write the section.  What this cannot
+    do is explain why, and it does not pretend to: the explanation is
+    taken from the [Backport Changes] note the author already writes,
+    or left as a prompt for them to fill in.
+    """
+    if not sha or not args.commit:
+        return message, None
+    if oe_conflict.already_declared(message):
+        return message, None
+    if not oe_conflict.deviates(args.kernel, args.commit, args.mirror, sha):
+        return message, None
+
+    files = oe_conflict.differing_files(
+        args.kernel, args.commit, args.mirror, sha)
+    if not files:
+        return message, None
+
+    note = oe_conflict.existing_note(message)
+    if note:
+        message = oe_conflict.strip_note(message)
+
+    body, trailers = split_trailers(message)
+    section = oe_conflict.section(files, note)
+    # Their regex runs straight from the closing bracket into
+    # "Signed-off-by:", so the section goes immediately above the
+    # trailer block with no blank line after it.
+    message = '\n'.join(body + [''] + section.split('\n') + trailers) + '\n'
+
+    summary = 'Conflicts: %d file(s)' % len(files)
+    return message, summary + ('' if note else ', description left to you')
+
+
+def split_trailers(message):
+    """Split a message into its body lines and its final trailer block."""
+    lines = message.rstrip('\n').split('\n')
+    end = len(lines)
+    while end > 0 and _TRAILER_RE.match(lines[end - 1]):
+        end -= 1
+    body = lines[:end]
+    while body and not body[-1].strip():
+        body.pop()
+    return body, lines[end:]
 
 
 def main():
@@ -454,6 +517,9 @@ def main():
                         help="clone of Linus's tree, for SHA and tag lookups")
     parser.add_argument('--kernel', required=True,
                         help='the openEuler tree the patch is destined for')
+    parser.add_argument('--commit', default='',
+                        help='the original commit this patch was formatted '
+                             'from, for comparing against upstream')
     parser.add_argument('--bugzilla', required=True)
     parser.add_argument('--signer', required=True,
                         help='the full "Signed-off-by: Name <mail>" line')

@@ -133,6 +133,14 @@ else
   mv "${TMP_FORMAT_DIR}"/*.patch "${PATCHES_DIR}/" 2>/dev/null || true
   rm -rf "${TMP_FORMAT_DIR}"
 
+  # The commits the patches were formatted from, oldest first, which is
+  # the order format-patch numbers them in.  They survive the rewind
+  # below as unreferenced objects, and oe_header.py needs them: telling
+  # whether a backport diverges from upstream means diffing the commit
+  # against the upstream one, and a patch file on its own is not enough
+  # to do that the way openEuler does it.
+  mapfile -t ORIG_COMMITS < <(git rev-list --reverse -n "${NUM_PATCHES}" HEAD)
+
   # Reset repo back by NUM_PATCHES commits so we can re-apply
   if ! git reset --hard "HEAD~${NUM_PATCHES}" >/dev/null 2>&1; then
     echo -e "${RED}Could not rewind ${NUM_PATCHES} commits; refusing to continue.${NC}" >&2
@@ -149,17 +157,26 @@ else
   # rejected by the gate later.  Better to stop here, where the tree has
   # not been rewound yet and the message says what is missing.
   refused=0
+  idx=0
+  undescribed=()
   for p in "${PATCHES_DIR}"/*.patch; do
     [ -f "${p}" ] || continue
     cp -f "${p}" "${BKP_DIR}/$(basename "${p}")"
+    orig="${ORIG_COMMITS[${idx}]:-}"
+    idx=$((idx + 1))
 
     if summary=$(python3 "${SCRIPT_DIR}/oe_header.py" "${p}" \
         --mirror "${TORVALDS_REPO}" \
         --kernel "${LINUX_SRC_PATH}" \
+        --commit "${orig}" \
         --bugzilla "${BUGZILLA_ID}" \
         --signer "${SOB_TAG}" \
         --branch "${OE_TARGET_BRANCH:-OLK-6.6}" 2>&1); then
       echo -e "  ${GREEN}✓${NC} $(basename "${p}") — ${summary}"
+      case "${summary}" in
+        *'description left to you'*)
+          undescribed+=("$(basename "${p}")") ;;
+      esac
     else
       echo -e "  ${RED}✗${NC} $(echo "${summary}" | sed '2,$s/^/    /')"
       refused=$((refused + 1))
@@ -172,6 +189,21 @@ else
     echo -e "${YELLOW}Nothing has been applied; restoring ${HEAD_ID}.${NC}" >&2
     git reset --hard "${HEAD_ID}" >/dev/null 2>&1 || true
     exit 21
+  fi
+
+  # A Conflicts: section with a placeholder in the brackets satisfies
+  # checkconflict, because all their regex asks is that something is
+  # bracketed.  It will not satisfy a reviewer, and this is the one part
+  # of the section nothing here can work out: why the backport had to
+  # differ is in the submitter's head, not in the diff.
+  if [ "${#undescribed[@]}" -ne 0 ]; then
+    echo ""
+    echo -e "${YELLOW}${#undescribed[@]} patch(es) differ from upstream and now carry a Conflicts:"
+    echo -e "section with a placeholder description. The gate accepts it; a reviewer"
+    echo -e "will not. Edit the text between the brackets before you send:${NC}"
+    for u in "${undescribed[@]}"; do
+      echo -e "${YELLOW}  - ${u}${NC}"
+    done
   fi
 fi
 

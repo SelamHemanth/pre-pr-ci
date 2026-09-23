@@ -245,6 +245,7 @@ run_oe_build() {
     0) pass "${test_name}" ;;
     3) skip "${test_name}" "openEuler does not build ${arch} on ${OE_TARGET_BRANCH:-OLK-6.6}" ;;
     2) skip "${test_name}" "The build could not be set up (see ${log})" ;;
+    4) skip "${test_name}" "The tree does not build ${arch} without your series either (see ${log})" ;;
     *) fail "${test_name}" "openEuler's ${arch} build gate rejected the series (see ${log})" ;;
   esac
 

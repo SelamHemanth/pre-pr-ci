@@ -917,12 +917,14 @@ class TestOpenEulerBuildVerdicts(unittest.TestCase):
         _oe_cross_build() { %(stub)s; }
         _oe_kabi_build()  { %(kabi)s; }
         _oe_prepare_whitelists() { return 0; }
+        _oe_failed_before_the_series() { return %(prior)s; }
         oe_build_arch "%(arch)s" >/dev/null 2>&1
     '''
 
-    def build(self, arch, branch, stub=':', kabi=':'):
+    def build(self, arch, branch, stub=':', kabi=':', broken_before=False):
         script = self.HARNESS % {
             'root': PROJECT_ROOT, 'stub': stub, 'kabi': kabi, 'arch': arch,
+            'prior': '0' if broken_before else '1',
         }
         env = dict(
             os.environ,
@@ -957,6 +959,23 @@ class TestOpenEulerBuildVerdicts(unittest.TestCase):
 
     def test_the_exemption_does_not_rescue_a_build_that_failed(self):
         self.assertEqual(self.build('ppc', 'OLK-5.10', self.BROKE), 1)
+
+    def test_a_tree_that_was_already_broken_is_not_the_series_fault(self):
+        # OLK-6.6 does not compile its own hinic drivers under gcc 12.3.
+        # Calling that a rejected patch teaches people to ignore the
+        # result, which costs more than the check is worth.
+        self.assertEqual(
+            self.build('ppc', 'OLK-6.6', self.BROKE, broken_before=True), 4)
+        self.assertEqual(
+            self.build('x86_64', 'OLK-6.6',
+                       kabi=r'printf "| x86_64 allmodconfig build '
+                            r'| broken already, not your series |\n" >> $8',
+                       broken_before=True),
+            4)
+
+    def test_the_same_failure_on_a_clean_tree_is_the_series_fault(self):
+        self.assertEqual(
+            self.build('ppc', 'OLK-6.6', self.BROKE, broken_before=False), 1)
 
     def test_an_arch_they_do_not_build_is_skipped_not_passed(self):
         # loongarch is false on every branch in their check_build.yaml,
