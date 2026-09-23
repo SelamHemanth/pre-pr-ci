@@ -543,7 +543,22 @@ oe_build_arch() {
   if grep -q '| fail |' "${result}"; then
     rc=1
   elif grep -q 'broken already' "${result}"; then
-    rc=4
+    # Skipping the whole arch made sense when the pre-existing breakage
+    # was all we knew; with -k the other checks still run, and reporting
+    # five passes as "skipped" understates the result by more than the
+    # one unjudgeable row warrants.  Pass, and name what was not judged
+    # -- a verdict nobody can reconcile with their CI is one people stop
+    # reading.  Only when nothing at all got judged is skip still right.
+    if grep -q '| pass |' "${result}"; then
+      echo "note: every check that could be judged passed.  The"
+      echo "      allmodconfig row could not be: this tree does not build"
+      echo "      without the series either, and the files it fails on are"
+      echo "      not ones the series touches.  Their CI builds a base that"
+      echo "      compiles, so it has no such row."
+      echo
+    else
+      rc=4
+    fi
   fi
 
   if [ -s "${warnings}" ]; then

@@ -970,13 +970,22 @@ class TestOpenEulerBuildVerdicts(unittest.TestCase):
         _oe_kabi_build()  { %(kabi)s; }
         _oe_prepare_whitelists() { return 0; }
         _oe_failed_before_the_series() { return %(prior)s; }
-        oe_build_arch "%(arch)s" >/dev/null 2>&1
+        oe_build_arch "%(arch)s" %(quiet)s
     '''
 
     def build(self, arch, branch, stub=':', kabi=':', broken_before=False):
+        return self._run(arch, branch, stub, kabi, broken_before,
+                         quiet='>/dev/null 2>&1')[0]
+
+    def build_output(self, arch, branch, stub=':', kabi=':',
+                     broken_before=False):
+        return self._run(arch, branch, stub, kabi, broken_before,
+                         quiet='2>&1')[1]
+
+    def _run(self, arch, branch, stub, kabi, broken_before, quiet):
         script = self.HARNESS % {
             'root': PROJECT_ROOT, 'stub': stub, 'kabi': kabi, 'arch': arch,
-            'prior': '0' if broken_before else '1',
+            'prior': '0' if broken_before else '1', 'quiet': quiet,
         }
         env = dict(
             os.environ,
@@ -987,7 +996,10 @@ class TestOpenEulerBuildVerdicts(unittest.TestCase):
             BUILD_THREADS='1',
             NUM_PATCHES='1',
         )
-        return subprocess.call(['bash', '-c', script], env=env)
+        done = subprocess.run(['bash', '-c', script], env=env,
+                              stdout=subprocess.PIPE,
+                              stderr=subprocess.STDOUT)
+        return done.returncode, done.stdout.decode('utf-8', 'replace')
 
     #: A warning on stderr from the incremental build after the patches.
     WARNED = r'echo "fs/foo.c:12: warning: unused variable" > $6; true'
@@ -1024,6 +1036,32 @@ class TestOpenEulerBuildVerdicts(unittest.TestCase):
                             r'| broken already, not your series |\n" >> $8',
                        broken_before=True),
             4)
+
+    def test_checks_that_did_run_and_pass_are_not_reported_as_skipped(self):
+        # Their job passes every row, because they build a base that
+        # compiles. Ours can be pointed at a tree that does not, and
+        # calling the whole arch skipped on the strength of one row
+        # nobody can be blamed for buries five checks that genuinely
+        # ran. A verdict that cannot be reconciled with theirs is one
+        # people stop reading.
+        self.assertEqual(
+            self.build('x86_64', 'OLK-6.6',
+                       kabi=r'printf "| x86_64 allmodconfig build '
+                            r'| broken already, not your series |\n'
+                            r'| x86_64 openeuler_defconfig | pass |\n'
+                            r'| x86_64 checkkabi | pass |\n" >> $8',
+                       broken_before=True),
+            0)
+
+    def test_the_pass_still_says_which_check_went_unjudged(self):
+        out = self.build_output(
+            'x86_64', 'OLK-6.6',
+            kabi=r'printf "| x86_64 allmodconfig build '
+                 r'| broken already, not your series |\n'
+                 r'| x86_64 checkkabi | pass |\n" >> $8',
+            broken_before=True)
+        self.assertIn('allmodconfig', out)
+        self.assertIn('not ones the series touches', out)
 
     def test_the_same_failure_on_a_clean_tree_is_the_series_fault(self):
         self.assertEqual(
