@@ -201,7 +201,7 @@ run_oe_check() {
     --kernel "${LINUX_SRC_PATH}" \
     --workdir "${WORKDIR}" \
     --mirror "${TORVALDS_REPO:-}" \
-    --branch "${OE_TARGET_BRANCH:-master}" \
+    --branch "${OE_TARGET_BRANCH:-OLK-6.6}" \
     --count "${NUM_PATCHES:-5}" 2>&1 | tee "${log}"
 
   case "${PIPESTATUS[0]}" in

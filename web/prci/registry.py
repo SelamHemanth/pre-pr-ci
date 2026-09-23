@@ -160,6 +160,19 @@ CONFIG_FIELDS = {
                      default='bugfix',
                      options=('feature', 'bugfix', 'performance', 'security')),
             FieldDef('NUM_PATCHES', 'Number of patches', 'number', default=5),
+            # The branch the series is aimed at, which decides more than it
+            # looks like it should: openEuler's conf/check_build.yaml keys
+            # the architecture matrix by it, and the ABI whitelist for a
+            # branch lives on a differently named branch of another repo.
+            # It used to be readable only from the environment, with one
+            # default in the checks and another in the builds.
+            FieldDef('OE_TARGET_BRANCH', 'Target branch', 'select',
+                     default='OLK-6.6',
+                     options=('OLK-6.6', 'OLK-5.10', 'openEuler-1.0-LTS',
+                              'openEuler-22.03-LTS', 'openEuler-25.03',
+                              'master'),
+                     hint='Decides which architectures are built and which '
+                          'KABI whitelist applies'),
         ),
         'build': _COMMON_FIELDS['build'],
         'host': _COMMON_FIELDS['host'],
