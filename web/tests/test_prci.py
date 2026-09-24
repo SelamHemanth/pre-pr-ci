@@ -23,6 +23,7 @@ becomes invisible.  That had already happened to euler's check_kabi.
 import os
 import re
 import shutil
+import signal
 import stat
 import subprocess
 import sys
@@ -1134,6 +1135,115 @@ class TestOpenEulerBuildVerdicts(unittest.TestCase):
         # One line per file: a single bad struct produces a dozen errors
         # and would otherwise crowd out the other drivers.
         self.assertEqual(out.count('drivers/net/first/one.c'), 1)
+
+    def reported(self, *errors):
+        log = tempfile.NamedTemporaryFile('w', suffix='.log', delete=False)
+        log.write(''.join(e + '\n' for e in errors))
+        log.close()
+        self.addCleanup(os.unlink, log.name)
+        return self.shell('_oe_report_errors %s' % log.name)
+
+    def test_the_error_survives_however_long_the_path_is(self):
+        # A driver that includes across directories carries enough ..
+        # to fill the line on its own, and the message -- the half
+        # worth reading -- was what got cut. Nobody can act on a line
+        # that stops at "error:".
+        deep = ('drivers/net/ethernet/vendor/product/src/library/host/'
+                'service/nic/linux/../../../sdk/knldk/lld/../cqm/'
+                'cqm_bitmap_table.c')
+        out = self.reported('%s:443:10: error: positional initialization '
+                            'of field in a struct declared with the '
+                            'designated_init attribute '
+                            '[-Werror=designated-init]' % deep)
+        self.assertIn('positional initialization', out)
+        # And the .. are resolved, or the path alone is unreadable.
+        self.assertNotIn('..', out)
+
+    def test_the_flag_that_classifies_the_error_is_never_cut_off(self):
+        # gcc puts it last, so a plain truncation drops exactly the
+        # word that says what kind of failure this is.
+        out = self.reported('drivers/x/y.c:1:1: error: %s '
+                            '[-Werror=incompatible-pointer-types]'
+                            % ('a very wordy diagnostic ' * 8))
+        self.assertIn('[-Werror=incompatible-pointer-types]', out)
+        self.assertIn('...', out)
+        self.assertEqual(out.count('-Werror'), 1)
+
+    def test_a_short_message_is_left_alone(self):
+        out = self.reported('drivers/x/y.c:1:1: error: short and sweet')
+        self.assertIn('error: short and sweet', out)
+        self.assertNotIn('...', out)
+
+    def a_repo_on_a_branch(self):
+        repo = tempfile.mkdtemp(prefix='prci-head-')
+        self.addCleanup(shutil.rmtree, repo, ignore_errors=True)
+        run = lambda *a: subprocess.check_call(
+            a, cwd=repo, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        run('git', 'init', '-q', '-b', 'mywork', '.')
+        run('git', 'config', 'user.email', 't@t')
+        run('git', 'config', 'user.name', 't')
+        for text in ('one', 'two'):
+            with open(os.path.join(repo, 'f'), 'w') as handle:
+                handle.write(text)
+            run('git', 'add', 'f')
+            run('git', 'commit', '-qm', text)
+        return repo
+
+    def branch_of(self, repo):
+        out = subprocess.run(['git', 'symbolic-ref', '--quiet', '--short',
+                              'HEAD'], cwd=repo, stdout=subprocess.PIPE)
+        return out.stdout.decode().strip() or '(detached)'
+
+    def test_a_baseline_build_leaves_you_on_your_branch(self):
+        # "git checkout <sha>" detaches, so coming back to what
+        # "git rev-parse HEAD" returned leaves the tree off its branch
+        # even when nothing went wrong. Every commit is still there and
+        # git says "HEAD detached at ...", so it reads as damage, and
+        # the next commit the user makes lands nowhere.
+        repo = self.a_repo_on_a_branch()
+        self.shell('''
+            cd %s
+            head=$(_oe_where_we_are)
+            git checkout -q HEAD~1
+            git checkout -q "${head}"
+        ''' % repo)
+        self.assertEqual(self.branch_of(repo), 'mywork')
+
+    def test_an_interrupted_baseline_build_puts_the_branch_back(self):
+        # The window is a build, so it is minutes long and Ctrl-C lands
+        # inside it far more often than not.
+        repo = self.a_repo_on_a_branch()
+        script = '''
+            . %(root)s/euler/oe_build.sh
+            cd %(repo)s
+            _oe_hold_head %(repo)s "$(_oe_where_we_are)"
+            git checkout -q HEAD~1
+            sleep 30
+        ''' % {'root': PROJECT_ROOT, 'repo': repo}
+        child = subprocess.Popen(['bash', '-c', script],
+                                 stdout=subprocess.DEVNULL,
+                                 stderr=subprocess.DEVNULL)
+        time.sleep(1.5)
+        child.send_signal(signal.SIGINT)
+        child.wait(timeout=30)
+        self.assertEqual(self.branch_of(repo), 'mywork')
+
+    def test_a_tree_with_no_branch_is_left_where_it_was(self):
+        repo = self.a_repo_on_a_branch()
+        subprocess.check_call(['git', 'checkout', '-q', '--detach', 'HEAD'],
+                              cwd=repo)
+        was = subprocess.check_output(['git', 'rev-parse', 'HEAD'],
+                                      cwd=repo).decode().strip()
+        self.shell('''
+            cd %s
+            head=$(_oe_where_we_are)
+            git checkout -q HEAD~1
+            git checkout -q "${head}"
+        ''' % repo)
+        now = subprocess.check_output(['git', 'rev-parse', 'HEAD'],
+                                      cwd=repo).decode().strip()
+        self.assertEqual(now, was)
+        self.assertEqual(self.branch_of(repo), '(detached)')
 
     def attribution(self, errored, touched):
         """_oe_broke_its_own_files, with git answering for the series."""

@@ -166,9 +166,32 @@ _oe_report_errors() {
   [ -n "${lines}" ] || return 0
 
   echo "  -> first error(s), one per file:"
-  # Long include-relative paths wrap into unreadability; the directory
-  # is what identifies the driver, so keep the head of the line.
-  echo "${lines}" | cut -c1-160 | sed 's/^/       /'
+  # The path and the message compete for one line, and a driver that
+  # includes across directories brings enough .. along to win it --
+  # leaving the error cut off at "error:", which is the half worth
+  # reading.  Normalise the path away and give each its own line.
+  local line path rest where message flag
+  printf '%s\n' "${lines}" | while IFS= read -r line; do
+    path=${line%%:*}
+    rest=${line#*:}
+    where=${rest%%: *}
+    message=${rest#*: }
+    path=$(realpath -m --relative-to=. "${path}" 2>/dev/null \
+           || echo "${path}")
+    echo "       ${path}:${where}"
+    # gcc puts the flag that classifies the error last, in brackets, so
+    # truncating the tail drops the one word saying what kind of
+    # failure this is.  Set it aside, then elide the prose if need be.
+    flag=''
+    case "${message}" in
+      *\ \[-W*\]) flag=" [${message##*[}" ; message=${message% [*} ;;
+    esac
+    if [ ${#message} -le 110 ]; then
+      echo "         ${message}${flag}"
+    else
+      echo "         ${message:0:107}...${flag}"
+    fi
+  done
 }
 
 # The files the compiler reported an error in, as paths from the kernel
@@ -205,6 +228,47 @@ _oe_broke_its_own_files() {
   comm -12 <(printf '%s\n' "${errors}") <(printf '%s\n' "${series}")
 }
 
+# Three places below check out HEAD~n, do something that takes minutes,
+# and check the branch back out afterwards.  A Ctrl-C inside that window
+# leaves the tree detached at HEAD~n, which looks exactly like the whole
+# series having vanished and says nothing about why or how to undo it.
+# prepare.sh already learned this; the build never did.
+_OE_HELD_DIR=''
+_OE_HELD_HEAD=''
+
+# Where to come back to, as a name rather than a commit.  "git checkout
+# <sha>" detaches, so restoring what "git rev-parse HEAD" returned
+# leaves the tree off its branch even when everything went right: the
+# commits are all there, git says "HEAD detached at ...", and the next
+# thing the user does lands nowhere.  Ask for the branch and fall back
+# to the commit only when there genuinely is no branch.
+_oe_where_we_are() {
+  git symbolic-ref --quiet --short HEAD 2>/dev/null || git rev-parse HEAD
+}
+
+_oe_restore_head() {
+  local rc=$?
+  trap - EXIT INT TERM
+  if [ -n "${_OE_HELD_HEAD}" ]; then
+    echo "  -> putting the tree back to ${_OE_HELD_HEAD}" >&2
+    git -C "${_OE_HELD_DIR}" checkout -q "${_OE_HELD_HEAD}" \
+      >/dev/null 2>&1 || true
+    _OE_HELD_HEAD=''
+  fi
+  exit "${rc}"
+}
+
+_oe_hold_head() {
+  _OE_HELD_DIR="$1"
+  _OE_HELD_HEAD="$2"
+  trap _oe_restore_head EXIT INT TERM
+}
+
+_oe_release_head() {
+  _OE_HELD_HEAD=''
+  trap - EXIT INT TERM
+}
+
 # Was the tree already like this before the series?
 #
 # openEuler's CI never asks, because it builds their branch on their
@@ -225,10 +289,11 @@ _oe_failed_before_the_series() {
 
   [ "${back}" -gt 0 ] || return 1
   cd "${kernel}" || return 1
-  head=$(git rev-parse HEAD) || return 1
+  head=$(_oe_where_we_are) || return 1
   git rev-parse --verify -q "HEAD~${back}" >/dev/null || return 1
 
   echo "  -> it failed; rebuilding at HEAD~${back} to see whose fault it is"
+  _oe_hold_head "${kernel}" "${head}"
   git checkout -q "HEAD~${back}" || return 1
   make ARCH="${kernel_arch}" CROSS_COMPILE="${cross}" allmodconfig \
     >/dev/null 2>&1
@@ -241,6 +306,7 @@ _oe_failed_before_the_series() {
     >/dev/null 2>"${baseline}"
   rc=$?
   git checkout -q "${head}" || return 1
+  _oe_release_head
 
   [ ${rc} -ne 0 ]
 }
@@ -254,17 +320,19 @@ _oe_cross_build() {
   cd "${kernel}" || return 1
 
   local head
-  head=$(git rev-parse HEAD) || return 1
+  head=$(_oe_where_we_are) || return 1
 
   if [ "${back}" -gt 0 ] && git rev-parse --verify -q "HEAD~${back}" >/dev/null
   then
     echo "  -> baseline build at HEAD~${back}, warnings from it are not yours"
+    _oe_hold_head "${kernel}" "${head}"
     git checkout -q "HEAD~${back}" || return 1
     make ARCH="${kernel_arch}" CROSS_COMPILE="${cross}" allmodconfig \
       >/dev/null 2>&1
     make ARCH="${kernel_arch}" CROSS_COMPILE="${cross}" -k -j"${jobs}" \
       >/dev/null 2>&1
     git checkout -q "${head}" || return 1
+    _oe_release_head
   else
     echo "  -> no baseline available, every warning will be reported"
   fi
@@ -424,11 +492,13 @@ _oe_check_defconfig() {
   local before='' head
   if [ "${back}" -gt 0 ] && git rev-parse --verify -q "HEAD~${back}" >/dev/null
   then
-    head=$(git rev-parse HEAD) || return 1
+    head=$(_oe_where_we_are) || return 1
+    _oe_hold_head "${kernel}" "${head}"
     if git checkout -q "HEAD~${back}" 2>/dev/null; then
       before=$(_oe_new_symbols "arch/${src}/configs/openeuler_defconfig")
       git checkout -q "${head}" || return 1
     fi
+    _oe_release_head
   fi
 
   local added
