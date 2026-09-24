@@ -108,12 +108,15 @@ Upstream body text." 'kernel/e.c'
   # behind it is answering a break, so it is filed as a bugfix and has
   # to name what it fixes.  The subject in the tag is deliberately wrong
   # here: it should come out replaced with the real one.
+  # It signs itself: nothing upstream is behind it, so the sign-off is
+  # the author certifying their own work and not ours to add for them.
   commit 'KABI: reserve padding in struct foo' \
     "Reserve space so the ABI survives the next field.
 
 No upstream equivalent.
 
-Fixes: ${BASE_SHA:0:8} (\"a subject that is not this commit's\")" 'kernel/d.c'
+Fixes: ${BASE_SHA:0:8} (\"a subject that is not this commit's\")
+Signed-off-by: Fixture <fixture@example.com>" 'kernel/d.c'
 
   # A bugfix carrying a Fixes: tag too short for their regex, which
   # wants exactly twelve characters.
@@ -193,11 +196,20 @@ No upstream equivalent." 'kernel/j.c'
   commit 'KABI: restore the symbol a backport dropped' \
     "Put it back.
 
-Fixes: ${TAGGED_SHA:0:12} (\"an upstream commit this tree predates\")" 'kernel/k.c'
+Fixes: ${TAGGED_SHA:0:12} (\"an upstream commit this tree predates\")
+Signed-off-by: Fixture <fixture@example.com>" 'kernel/k.c'
+
+  # Original work nobody signed.  We will not sign it on the author's
+  # behalf, and their format.py rejects a patch with no Signed-off-by
+  # at all, so it has to come back here rather than at their gate.
+  commit 'KABI: widen a field without signing for it' \
+    "Nothing upstream, and no sign-off.
+
+Fixes: ${BASE_SHA:0:12} (\"an earlier commit\")" 'kernel/l.c'
 }
 
 NUM_GOOD=5
-NUM_FIXTURES=11
+NUM_FIXTURES=12
 
 # ------------------------------------------------------------------- setup
 
@@ -321,7 +333,7 @@ else
   failures=$((failures + 1))
 fi
 
-# Every patch needs one, including the KABI fix that used to be exempt.
+# Their format.py rejects a patch carrying none at all, whoever signed.
 missing_sob=$(git -C "${KERNEL}" log -n "${NUM_GOOD}" --format='%H %B' |
   awk '/^[0-9a-f]{40} /{if (h && !s) print h; h=$1; s=0}
        /^Signed-off-by:/{s=1}
@@ -330,6 +342,30 @@ if [ "${missing_sob}" -eq 0 ]; then
   echo "  Signed-off-by on every patch."
 else
   echo "  UNEXPECTED: ${missing_sob} patch(es) without Signed-off-by."
+  failures=$((failures + 1))
+fi
+
+# But whose differs.  A backport is somebody else's work being carried
+# across and the added sign-off says who carried it; a patch with
+# nothing upstream behind it is original work, and certifying that is
+# the author's to do.
+signed_virt=$(git -C "${KERNEL}" log -n "${NUM_GOOD}" --format='%H%x00%B' |
+  awk -v RS='\0' '/virt inclusion/ && /Signed-off-by: Fixture Signer/' |
+  wc -l)
+if [ "${signed_virt}" -eq 0 ]; then
+  echo "  No sign-off added to the patch with nothing upstream behind it."
+else
+  echo "  UNEXPECTED: signed for the author on a non-upstream patch."
+  failures=$((failures + 1))
+fi
+
+signed_backports=$(git -C "${KERNEL}" log -n "${NUM_GOOD}" --format='%H%x00%B' |
+  awk -v RS='\0' '/mainline inclusion/ && /Signed-off-by: Fixture Signer/' |
+  wc -l)
+if [ "${signed_backports}" -gt 0 ]; then
+  echo "  Backports still carry the sign-off of whoever carried them."
+else
+  echo "  UNEXPECTED: backports lost their Signed-off-by too."
   failures=$((failures + 1))
 fi
 echo

@@ -34,6 +34,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import oe_conflict
 
 _INCLUSION_RE = re.compile(r'^[A-Za-z0-9 ]+ inclusion\s*$', re.MULTILINE)
+_SOB_RE = re.compile(r'^Signed-off-by:\s', re.MULTILINE)
 
 
 def commits(kernel, count):
@@ -54,10 +55,21 @@ def unprepared(kernel, sha, msg, signer, mirror):
     """Why this commit still needs a pass, or None if it is ready."""
     if not _INCLUSION_RE.search(msg):
         return 'no inclusion header'
-    if signer not in msg:
-        return 'no %s' % signer.split(':')[0]
 
     upstream = oe_conflict.mainline_commit(msg)
+
+    # A backport carries the sign-off of whoever carried it across, and
+    # the prepare pass adds it.  A patch with nothing upstream behind it
+    # is original work, which that pass will not sign on the author's
+    # behalf, so looking for our own line here would report every such
+    # commit as unprepared forever.  Their format.py wants a sign-off
+    # either way, and that much is still checked.
+    if upstream:
+        if signer not in msg:
+            return 'no %s' % signer.split(':')[0]
+    elif not _SOB_RE.search(msg):
+        return 'no Signed-off-by'
+
     if not upstream:
         return None
 

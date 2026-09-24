@@ -29,6 +29,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import types
 import unittest
 
 WEB_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -1545,6 +1546,74 @@ class TestUndescribedDivergence(unittest.TestCase):
             '\nSigned-off-by: S <s@e.com>\n',
             'Signed-off-by: S <s@e.com>', '/m')
         self.assertIsNone(why)
+
+
+class TestWhoSignsWhat(unittest.TestCase):
+    """Whose Signed-off-by goes on which patch.
+
+    A backport is somebody else's work being carried across, and the
+    sign-off the prepare pass adds says that much: this is who carried
+    it.  A patch with nothing upstream behind it is original work, and
+    the sign-off on it certifies the DCO for something the author
+    wrote.  Nobody can make that certification on their behalf.
+
+    It still has to be there.  openEuler's format.py rejects a patch
+    with no Signed-off-by at all, whoever signed, so leaving one off
+    would just move the failure to their gate.
+    """
+
+    SIGNER = 'Signed-off-by: Carrier <c@example.com>'
+
+    def rewrite(self, message, subject='a subject'):
+        patch = types.SimpleNamespace(
+            message=message, subject=subject,
+            set_message=lambda m: setattr(patch, 'message', m))
+        args = types.SimpleNamespace(
+            signer=self.SIGNER, mirror='/m', kernel='/k',
+            bugzilla='12345', branch='OLK-6.6')
+        oe_header.rewrite(patch, args)
+        return patch.message
+
+    def test_original_work_is_not_signed_for_its_author(self):
+        out = self.rewrite(
+            'virt inclusion\ncategory: bugfix\n\n'
+            'Body.\n\nSigned-off-by: Author <a@example.com>\n')
+        self.assertIn('Signed-off-by: Author', out)
+        self.assertNotIn(self.SIGNER, out)
+
+    def test_original_work_nobody_signed_is_refused(self):
+        # Writing it out unsigned would only move the failure to their
+        # gate, which is the one thing this tool exists to prevent.
+        with self.assertRaises(oe_header.Refused) as caught:
+            self.rewrite('virt inclusion\ncategory: bugfix\n\nBody.\n')
+        self.assertIn('author', str(caught.exception).lower())
+
+    def test_a_backport_still_gets_the_carriers_sign_off(self):
+        out = self.rewrite(
+            'mainline inclusion\ncommit abcdef123456\ncategory: bugfix\n\n'
+            'commit abcdef1234567890abcdef1234567890abcdef12 upstream.\n\n'
+            'Body.\n\nSigned-off-by: Author <a@example.com>\n')
+        self.assertIn(self.SIGNER, out)
+
+    def test_readiness_does_not_want_our_name_on_original_work(self):
+        # The prepare pass will never add it, so looking for it here
+        # would report the commit as unprepared for good and block
+        # every run behind it.
+        import oe_ready
+        why = oe_ready.unprepared(
+            '/k', 'sha',
+            'subject\n\nvirt inclusion\ncategory: bugfix\n\n'
+            'Signed-off-by: Author <a@example.com>\n',
+            self.SIGNER, '/m')
+        self.assertIsNone(why)
+
+    def test_readiness_still_wants_somebody_to_have_signed(self):
+        import oe_ready
+        why = oe_ready.unprepared(
+            '/k', 'sha', 'subject\n\nvirt inclusion\ncategory: bugfix\n',
+            self.SIGNER, '/m')
+        self.assertIsNotNone(why)
+        self.assertIn('Signed-off-by', why)
 
 
 class TestCleanTree(unittest.TestCase):

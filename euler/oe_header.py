@@ -374,11 +374,35 @@ def header_lines(kind, tag, sha, category, bugzilla, cherry_pick):
 _TRAILER_RE = re.compile(r'^[A-Z][A-Za-z-]*(-by)?:\s')
 
 
+def require_sign_off(message):
+    """Insist the author signed a patch we are not going to sign for them.
+
+    A backport is somebody else's work carried across, and the
+    sign-off added to it says exactly that much: this is who moved it.
+    A patch with no upstream commit behind it is original work, and
+    the sign-off on that is the author certifying the DCO for
+    something they wrote.  Nobody else can make that certification for
+    them, so this pass does not.
+
+    It still has to be there.  Their format.py rejects a patch with no
+    Signed-off-by at all, so writing one out unsigned would only move
+    the failure to their gate, which is the one thing this is for.
+    """
+    for line in message.split('\n'):
+        if _SOB_RE.match(line):
+            return
+    raise Refused(
+        'no upstream commit behind this one, so it is original work and '
+        'the Signed-off-by has to be the author\'s own.\n'
+        '  Sign it and prepare again: git commit --amend -s.  openEuler\'s '
+        'format.py rejects a patch carrying no Signed-off-by.')
+
+
 def add_signed_off_by(message, signer):
     """Append the Signed-off-by, as the last line of the trailer block.
 
-    format.py wants one on every patch, including the KABI ones that
-    used to be exempted here for a reason it does not recognise.
+    Only for patches that came from upstream; see require_sign_off for
+    why the others are the author's to sign.
 
     The blank line matters: git only treats the final paragraph as
     trailers when every line in it is one, so putting a Signed-off-by
@@ -405,7 +429,11 @@ def rewrite(patch, args):
         # Already carries a header, so only the Signed-off-by rule and
         # the Fixes width are still ours to enforce.
         message = normalise_fixes(message, args.mirror, args.kernel)
-        patch.set_message(add_signed_off_by(message, args.signer))
+        if upstream_sha(message) is None:
+            require_sign_off(message)
+        else:
+            message = add_signed_off_by(message, args.signer)
+        patch.set_message(message)
         return 'already had a header', None
 
     sha = upstream_sha(message)
@@ -497,7 +525,11 @@ def rewrite(patch, args):
     # The trailing newline is the blank line their templates require
     # after the separator; joining the list alone does not produce it.
     message = '\n'.join(header) + '\n' + message.lstrip('\n')
-    message = add_signed_off_by(message, args.signer)
+    # sha is None exactly when nothing upstream is behind this patch.
+    if sha is None:
+        require_sign_off(message)
+    else:
+        message = add_signed_off_by(message, args.signer)
 
     message, note, warning = declare_conflicts(message, sha, args)
     patch.set_message(message)
