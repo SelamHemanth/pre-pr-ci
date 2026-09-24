@@ -80,41 +80,35 @@ _KABI_ARCHES = ('x86_64', 'aarch64')
 #: the table entirely would take their TEST_* keys out of .configure
 #: and silently forget which ones the user had turned on.
 _ARCHES_IF_UNREADABLE = ('aarch64', 'arm', 'x86_64', 'ppc', 'ppc64',
-                         'riscv64')
+                         'riscv64', 'loongarch')
 
 _MATRIX_LINE_RE = re.compile(r'^\s+([A-Za-z0-9_]+):\s*(true|false)\s*$')
 
 
 def architectures_they_build():
-    """Every architecture true on at least one branch of their matrix.
+    """Every architecture named in their matrix, whatever it is set to.
 
-    loongarch is in their file and false on every branch in it, so it
-    is a job openEuler's CI runs nowhere.  Offering it put a seventh
-    build in a list their gate only ever shows six of, which reads as
-    a check they skipped rather than one that does not exist.
+    Their CI shows a check_build row for each of these, loongarch
+    included, even though it is false on every branch in the file --
+    the job exists and reports that it had nothing to do.  Listing
+    only the true ones made loongarch vanish from a list their own
+    page shows, which is its own kind of wrong answer.
 
-    Kept branch-independent on purpose.  Which of these a given branch
-    builds is decided per run, by oe_build.sh asking this same file,
-    and an architecture that drops out there reports as skipped --
-    which is true, and different from not existing.
+    Branch-independent on purpose.  Which of them a given branch
+    actually compiles is decided per run, by oe_build.sh asking this
+    same file through their check_branch.py, and one that drops out
+    there reports as skipped -- which is what their job does too.
     """
-    order, built = [], set()
+    order = []
     try:
         with open(_CHECK_BUILD_YAML) as handle:
             for line in handle:
                 found = _MATRIX_LINE_RE.match(line)
-                if not found:
-                    continue
-                arch = found.group(1)
-                if arch not in order:
-                    order.append(arch)
-                if found.group(2) == 'true':
-                    built.add(arch)
+                if found and found.group(1) not in order:
+                    order.append(found.group(1))
     except OSError:
         return _ARCHES_IF_UNREADABLE
-    if not built:
-        return _ARCHES_IF_UNREADABLE
-    return tuple(arch for arch in order if arch in built)
+    return tuple(order) or _ARCHES_IF_UNREADABLE
 
 
 def _build_tests():

@@ -80,11 +80,8 @@ class TestRegistryMatchesScripts(unittest.TestCase):
     def test_both_sides_read_the_same_architecture_matrix(self):
         """registry.py and oe_build.sh must not hold two copies of it.
 
-        They did, and the copies disagreed: the interface offered a
-        loongarch build, which openEuler's conf/check_build.yaml marks
-        false on every branch in it, so their gate has no such job at
-        all.  Seven builds where they show six reads as a check they
-        skipped rather than one that does not exist.
+        They did, and the copies disagreed, which is the only way a
+        list read off one file can come out two different lengths.
         """
         out = subprocess.run(
             ['bash', '-c',
@@ -96,13 +93,19 @@ class TestRegistryMatchesScripts(unittest.TestCase):
                          list(registry.architectures_they_build()))
 
     def test_the_architectures_come_from_their_file(self):
+        """Every name we offer is a name their matrix names.
+
+        Whether a branch has it on is a separate question, answered per
+        run by the build itself.  Reading only the true rows dropped
+        loongarch, and a missing row reads as a check that does not
+        exist rather than one this branch turns off.
+        """
         theirs = read_file('euler', 'hulk_robot_test', 'openEuler', 'conf',
                            'check_build.yaml')
-        for arch in registry.architectures_they_build():
-            self.assertRegex(theirs, r'(?m)^\s+%s:\s*true\s*$' % arch)
-        # Present in their file and true nowhere in it, so not a job.
-        self.assertIn('loongarch:', theirs)
-        self.assertNotIn('loongarch', registry.architectures_they_build())
+        ours = registry.architectures_they_build()
+        for arch in ours:
+            self.assertRegex(theirs, r'(?m)^\s+%s:\s*(true|false)\s*$' % arch)
+        self.assertIn('loongarch', ours)
 
     def test_verdict_names_are_registry_names(self):
         """A PASS:/FAIL: line has to name a test the interface knows.

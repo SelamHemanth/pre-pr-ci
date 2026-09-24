@@ -50,32 +50,30 @@ _oe_arch_spec() {
   esac
 }
 
-# Every architecture openEuler builds on any branch, from their matrix.
+# Every architecture named in their matrix, whatever it is set to.
 #
-# loongarch is in that file and false on every branch of it, so it is a
-# job their CI runs nowhere.  Offering it locally put a seventh build in
-# a list their gate only ever shows six of, which reads as a check they
-# skipped rather than one that does not exist.  Read rather than copied,
-# so a submodule update is all it takes to follow them.
+# Their CI shows a check_build row for each of these, loongarch
+# included, even though it is false on every branch in the file: the
+# job exists and reports that it had nothing to do.  Read rather than
+# copied, so a submodule update is all it takes to follow them.
 #
-# Deliberately not per-branch: which of these a given branch builds is
-# decided per run by _oe_branch_builds, and an architecture that drops
-# out there reports as skipped, which is true and not the same thing.
+# Deliberately not per-branch: which of them a given branch compiles is
+# decided per run by _oe_branch_builds, and one that drops out there
+# reports as skipped, which is what their job does too.
 _oe_arches_they_build() {
   local conf="${SCRIPT_DIR}/hulk_robot_test/openEuler/conf/check_build.yaml"
   if [ ! -f "${conf}" ]; then
     # The submodule is not checked out, so every build would skip
     # anyway; naming none of them would just hide that.
-    echo 'aarch64 arm x86_64 ppc ppc64 riscv64'
+    echo 'aarch64 arm x86_64 ppc ppc64 riscv64 loongarch'
     return 0
   fi
   awk -F: '
     /^[[:space:]]+[A-Za-z0-9_]+:[[:space:]]*(true|false)[[:space:]]*$/ {
-      gsub(/[[:space:]]/, "", $1); gsub(/[[:space:]]/, "", $2)
+      gsub(/[[:space:]]/, "", $1)
       if (!($1 in seen)) { seen[$1] = 1; order[++n] = $1 }
-      if ($2 == "true") built[$1] = 1
     }
-    END { for (i = 1; i <= n; i++) if (order[i] in built) printf "%s ", order[i] }
+    END { for (i = 1; i <= n; i++) printf "%s ", order[i] }
   ' "${conf}"
 }
 

@@ -107,7 +107,7 @@ pipeline {
            multiSelectDelimiter: ',',
            visibleItemCount: 8,
            description: 'Select one or more Euler test cases',
-           value: 'oe_checkpatch,oe_checkformat,oe_checkdepend,oe_checkkabi,oe_checkconflict,oe_checkbinary,oe_build_x86_64,oe_build_aarch64,oe_build_arm,oe_build_ppc,oe_build_ppc64,oe_build_riscv64,all'
+           value: 'oe_checkpatch,oe_checkformat,oe_checkdepend,oe_checkkabi,oe_checkconflict,oe_checkbinary,oe_build_x86_64,oe_build_aarch64,oe_build_arm,oe_build_ppc,oe_build_ppc64,oe_build_riscv64,oe_build_loongarch,all'
         ) 
 
 }
@@ -841,7 +841,8 @@ def euler_test_configuration() {
             "oe_build_arm"     : "make euler-test=oe_build_arm",
             "oe_build_ppc"     : "make euler-test=oe_build_ppc",
             "oe_build_ppc64"   : "make euler-test=oe_build_ppc64",
-            "oe_build_riscv64" : "make euler-test=oe_build_riscv64"
+            "oe_build_riscv64" : "make euler-test=oe_build_riscv64",
+            "oe_build_loongarch" : "make euler-test=oe_build_loongarch"
         ]
 
         def selectedTests = params.Euler_Selected_tests
