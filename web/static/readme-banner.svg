@@ -1,0 +1,203 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 340" width="1200" height="340"
+     role="img" aria-label="Pre-PR CI -- run the distribution's own gate before you send the patch">
+  <title>Pre-PR CI</title>
+
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%"   stop-color="#0a0e16"/>
+      <stop offset="55%"  stop-color="#111827"/>
+      <stop offset="100%" stop-color="#1a1330"/>
+    </linearGradient>
+
+    <linearGradient id="brand" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%"   stop-color="#8fa4ff"/>
+      <stop offset="55%"  stop-color="#667eea"/>
+      <stop offset="100%" stop-color="#a78bfa"/>
+    </linearGradient>
+
+    <linearGradient id="go" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%"   stop-color="#48bb78"/>
+      <stop offset="100%" stop-color="#38ef7d"/>
+    </linearGradient>
+
+    <linearGradient id="sheen" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%"   stop-color="#ffffff" stop-opacity="0"/>
+      <stop offset="50%"  stop-color="#ffffff" stop-opacity=".55"/>
+      <stop offset="100%" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+
+    <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M40 0H0V40" fill="none" stroke="#667eea" stroke-opacity=".10" stroke-width="1"/>
+    </pattern>
+
+    <filter id="glow" x="-60%" y="-60%" width="220%" height="220%">
+      <feGaussianBlur stdDeviation="5" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+
+    <!-- The tagline is revealed by widening this window over it. -->
+    <clipPath id="typing"><rect id="typewin" class="type" x="188" y="150" width="530" height="34"/></clipPath>
+
+    <style>
+      /* Everything is declarative: an SVG loaded through &lt;img&gt; runs CSS
+         and SMIL but never script, so this has to animate without one.
+
+         Every base rule below is the *finished* state, and the keyframes
+         rewind from it.  A renderer that ignores CSS -- a thumbnailer, a
+         PDF export, reduced-motion -- then gets a complete banner rather
+         than frame zero, which is an empty rail and no tagline. */
+      .drift  { animation: drift 8s linear infinite; }
+      @keyframes drift { to { transform: translate(40px, 40px); } }
+
+      .breathe { animation: breathe 4s ease-in-out infinite; transform-origin: 92px 130px; }
+      @keyframes breathe { 0%,100% { transform: scale(1); } 50% { transform: scale(1.04); } }
+
+      .spin { animation: spin 14s linear infinite; transform-origin: 92px 130px; }
+      @keyframes spin { to { transform: rotate(360deg); } }
+
+      .tick { stroke-dasharray: 74; stroke-dashoffset: 0;
+              animation: draw 4s ease-in-out infinite; }
+      @keyframes draw { 0% { stroke-dashoffset: 74; } 22%,78% { stroke-dashoffset: 0; }
+                        100% { stroke-dashoffset: 74; } }
+
+      .sheen { animation: sheen 7s ease-in-out infinite; }
+      @keyframes sheen { 0%,70% { transform: translateX(0); }
+                         94%,100% { transform: translateX(1420px); } }
+
+      .type { animation: type 9s steps(49) infinite; }
+      @keyframes type { 0% { width: 0; } 34%,88% { width: 530px; } 100% { width: 0; } }
+
+      .caret { animation: caret 9s steps(49) infinite, blink .9s step-end infinite; }
+      @keyframes caret { 0% { transform: translateX(-530px); }
+                         34%,88% { transform: translateX(0); }
+                         100% { transform: translateX(-530px); } }
+      @keyframes blink { 50% { opacity: 0; } }
+
+      /* One 9s lap of the gate.  Each stage settles 1s after the one
+         before it, which is also the order test.sh runs them in. */
+      .rail  { stroke-dasharray: 900; stroke-dashoffset: 0;
+               animation: rail 9s cubic-bezier(.4,0,.2,1) infinite; }
+      @keyframes rail { 0% { stroke-dashoffset: 900; } 78%,100% { stroke-dashoffset: 0; } }
+
+      .node  { animation: node 9s ease-in-out infinite; }
+      @keyframes node { 0%,8% { opacity: .30; } 16%,94% { opacity: 1; } 100% { opacity: .30; } }
+
+      .mark  { stroke-dasharray: 26; stroke-dashoffset: 0;
+               animation: mark 9s ease-out infinite; }
+      @keyframes mark { 0%,9% { stroke-dashoffset: 26; } 15%,94% { stroke-dashoffset: 0; }
+                        100% { stroke-dashoffset: 26; } }
+
+      .halo  { animation: halo 9s ease-out infinite; transform-box: fill-box;
+               transform-origin: center; }
+      @keyframes halo { 0%,8% { opacity: 0; transform: scale(.5); }
+                        18% { opacity: .55; transform: scale(1.5); }
+                        30%,100% { opacity: 0; transform: scale(1.7); } }
+
+      .s2 { animation-delay: .78s } .s3 { animation-delay: 1.56s }
+      .s4 { animation-delay: 2.34s } .s5 { animation-delay: 3.12s }
+      .s6 { animation-delay: 3.90s } .s7 { animation-delay: 4.68s }
+
+      .ttl { font: 700 54px ui-sans-serif, -apple-system, "Segoe UI", Roboto, sans-serif; }
+      .tag { font: 400 21px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+      .cap { font: 600 12.5px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+             letter-spacing: .4px; }
+
+      /* The base rules above are already the finished state, so this only
+         has to stop things moving. */
+      @media (prefers-reduced-motion: reduce) {
+        .drift,.breathe,.spin,.tick,.sheen,.type,.caret,.rail,.node,.mark,.halo
+          { animation: none; }
+      }
+    </style>
+  </defs>
+
+  <rect width="1200" height="340" rx="18" fill="url(#bg)"/>
+  <g clip-path="inset(0 round 18px)">
+    <rect class="drift" x="-40" y="-40" width="1280" height="420" fill="url(#grid)"/>
+  </g>
+
+  <!-- mark ========================================================== -->
+  <g class="spin" opacity=".5">
+    <circle cx="92" cy="130" r="60" fill="none" stroke="url(#brand)"
+            stroke-width="2" stroke-dasharray="6 14" stroke-linecap="round"/>
+  </g>
+  <g class="breathe">
+    <path d="M92 76 L136 92 L136 143 Q136 172 92 190 Q48 172 48 143 L48 92 Z"
+          fill="#667eea" fill-opacity=".14" stroke="url(#brand)" stroke-width="2.5"/>
+    <circle cx="92" cy="130" r="27" fill="url(#go)" filter="url(#glow)" opacity=".92"/>
+    <path class="tick" d="M79 130 L89 141 L106 119" fill="none" stroke="#04140a"
+          stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+
+  <!-- wordmark ====================================================== -->
+  <text class="ttl" x="188" y="118" fill="url(#brand)">Pre-PR CI</text>
+  <!-- Parked off-canvas by its own x, not by a transform: a renderer that
+       skips CSS then leaves it there instead of painting a grey slab over
+       the wordmark. ==== -->
+  <rect class="sheen" x="-170" y="66" width="150" height="76"
+        fill="url(#sheen)" opacity=".40"/>
+
+  <g clip-path="url(#typing)">
+    <text class="tag" x="188" y="175" fill="#8b9bb4"
+      >their gate, their code, before you send the patch</text>
+  </g>
+  <rect class="caret" x="718" y="154" width="2.5" height="26" fill="#38ef7d"/>
+
+  <!-- the gate ====================================================== -->
+  <g transform="translate(0 252)">
+    <line x1="130" y1="0" x2="1070" y2="0" stroke="#2a3449" stroke-width="3"
+          stroke-linecap="round"/>
+    <line class="rail" x1="130" y1="0" x2="1070" y2="0" stroke="url(#brand)"
+          stroke-width="3" stroke-linecap="round"/>
+
+    <g class="node">
+      <circle class="halo" cx="130" cy="0" r="15" fill="#38ef7d"/>
+      <circle cx="130" cy="0" r="15" fill="#0d1424" stroke="url(#go)" stroke-width="2.5"/>
+      <path class="mark" d="M123 0 L128 6 L137 -6" fill="none" stroke="#38ef7d"
+            stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+      <text class="cap" x="130" y="36" fill="#8b9bb4" text-anchor="middle">prepare</text>
+    </g>
+    <g class="node s2">
+      <circle class="halo s2" cx="287" cy="0" r="15" fill="#38ef7d"/>
+      <circle cx="287" cy="0" r="15" fill="#0d1424" stroke="url(#go)" stroke-width="2.5"/>
+      <path class="mark s2" d="M280 0 L285 6 L294 -6" fill="none" stroke="#38ef7d"
+            stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+      <text class="cap" x="287" y="36" fill="#8b9bb4" text-anchor="middle">checkpatch</text>
+    </g>
+    <g class="node s3">
+      <circle class="halo s3" cx="443" cy="0" r="15" fill="#38ef7d"/>
+      <circle cx="443" cy="0" r="15" fill="#0d1424" stroke="url(#go)" stroke-width="2.5"/>
+      <path class="mark s3" d="M436 0 L441 6 L450 -6" fill="none" stroke="#38ef7d"
+            stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+      <text class="cap" x="443" y="36" fill="#8b9bb4" text-anchor="middle">format</text>
+    </g>
+    <g class="node s4">
+      <circle class="halo s4" cx="600" cy="0" r="15" fill="#38ef7d"/>
+      <circle cx="600" cy="0" r="15" fill="#0d1424" stroke="url(#go)" stroke-width="2.5"/>
+      <path class="mark s4" d="M593 0 L598 6 L607 -6" fill="none" stroke="#38ef7d"
+            stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+      <text class="cap" x="600" y="36" fill="#8b9bb4" text-anchor="middle">kabi</text>
+    </g>
+    <g class="node s5">
+      <circle class="halo s5" cx="757" cy="0" r="15" fill="#38ef7d"/>
+      <circle cx="757" cy="0" r="15" fill="#0d1424" stroke="url(#go)" stroke-width="2.5"/>
+      <path class="mark s5" d="M750 0 L755 6 L764 -6" fill="none" stroke="#38ef7d"
+            stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+      <text class="cap" x="757" y="36" fill="#8b9bb4" text-anchor="middle">build</text>
+    </g>
+    <g class="node s6">
+      <circle class="halo s6" cx="913" cy="0" r="15" fill="#38ef7d"/>
+      <circle cx="913" cy="0" r="15" fill="#0d1424" stroke="url(#go)" stroke-width="2.5"/>
+      <path class="mark s6" d="M906 0 L911 6 L920 -6" fill="none" stroke="#38ef7d"
+            stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+      <text class="cap" x="913" y="36" fill="#8b9bb4" text-anchor="middle">boot</text>
+    </g>
+    <g class="node s7">
+      <circle class="halo s7" cx="1070" cy="0" r="17" fill="#38ef7d"/>
+      <circle cx="1070" cy="0" r="17" fill="#0d1424" stroke="url(#go)" stroke-width="3"/>
+      <path class="mark s7" d="M1062 0 L1068 7 L1079 -7" fill="none" stroke="#38ef7d"
+            stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+      <text class="cap" x="1070" y="38" fill="#38ef7d" text-anchor="middle">verdict</text>
+    </g>
+  </g>
+</svg>
