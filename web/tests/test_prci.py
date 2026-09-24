@@ -92,6 +92,50 @@ class TestRegistryMatchesScripts(unittest.TestCase):
         self.assertEqual(out.stdout.decode().split(),
                          list(registry.architectures_they_build()))
 
+    def test_the_checks_are_titled_the_way_their_ci_titles_them(self):
+        """A row here is read against a row on their PR comment.
+
+        Ours said "Coding style", "Commit message", "Kernel ABI"; theirs
+        says checkpatch, checkformat, checkkabi.  Comparing the two
+        meant translating every line, which is exactly the friction the
+        architecture names had before they were changed to match.
+        """
+        titles = [t.title for t in registry.TESTS['euler']
+                  if not t.name.startswith('oe_build')]
+        self.assertEqual(titles, ['checkpatch', 'checkformat', 'checkdepend',
+                                  'checkkabi', 'checkconflict', 'checkbinary'])
+        # And each is the name their own script is called, so the title
+        # is the thing to grep their source for.
+        for title in titles:
+            self.assertTrue(
+                os.path.exists(os.path.join(
+                    PROJECT_ROOT, 'euler', 'hulk_robot_test', 'openEuler',
+                    '%s.sh' % title.replace('checkbinary', 'checkbinaryfile'))
+                ) or title in read_file('euler', 'hulk_robot_test',
+                                        'openEuler', 'checkcustom.sh'),
+                '%s is not a name their CI uses' % title)
+
+    def test_an_architecture_their_branch_has_off_reports_what_theirs_does(self):
+        """Their job runs, compiles nothing, and is green.
+
+        checkbuild.sh asks check_branch.py and exits 0 above the
+        compile, so their PR comment shows SUCCESS for it -- their own
+        console log reads "loongarch is set to false, exit" and then
+        "Finished: SUCCESS".  Calling that a skip locally put a word in
+        the column their green tick sits in, for the one row a reader
+        is most likely to compare.
+        """
+        theirs = read_file('euler', 'hulk_robot_test', 'openEuler',
+                           'checkbuild.sh')
+        # Their exit 0 is above the build, which is why it is green.
+        gate = theirs.index('check_branch.py')
+        self.assertLess(gate, theirs.index('build_kernel\n'))
+        self.assertRegex(theirs[gate:], r'IS_SKIP.*\n.*-ne 0.*\n\s*exit 0')
+        # oe_build.sh turns that sentence into 3, and test.sh passes on 3.
+        self.assertIn("*'is set to false'*) return 3 ;;",
+                      read_file('euler', 'oe_build.sh'))
+        self.assertRegex(read_script('euler'), r'(?m)^\s*3\)\s*pass ')
+
     def test_the_architectures_come_from_their_file(self):
         """Every name we offer is a name their matrix names.
 

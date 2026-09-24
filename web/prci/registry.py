@@ -178,28 +178,32 @@ TESTS = {
     # checkpatch, commit-format and dependency tests used to sit here and
     # were removed: a second opinion that drifts from the gate deciding
     # whether a patch is accepted is worse than no opinion at all.
+    # Titled with their own check names, not ours.  A row here is meant
+    # to be read against a row on their PR comment, and "Coding style"
+    # against "checkpatch" made that a translation exercise every time.
+    # What each one does is the description's job.
     'euler': (
-        TestDef('oe_checkpatch', 'Coding style',
+        TestDef('oe_checkpatch', 'checkpatch',
                 'Runs checkpatch.pl the way openEuler does, skipping '
                 'backports that match upstream exactly',
                 'oe_checkpatch.log', 'TEST_OE_CHECKPATCH'),
-        TestDef('oe_checkformat', 'Commit message',
+        TestDef('oe_checkformat', 'checkformat',
                 'Checks the inclusion header, category, bugzilla link and '
                 'sign-off on every commit',
                 'oe_checkformat.log', 'TEST_OE_CHECKFORMAT'),
-        TestDef('oe_checkdepend', 'Missing fixes',
+        TestDef('oe_checkdepend', 'checkdepend',
                 'Looks for upstream commits that fix yours and are not in '
                 'the series',
                 'oe_checkdepend.log', 'TEST_OE_CHECKDEPEND'),
-        TestDef('oe_checkkabi', 'Kernel ABI',
+        TestDef('oe_checkkabi', 'checkkabi',
                 'Flags changes to the structures and symbols that modules '
                 'built against this kernel rely on',
                 'oe_checkkabi.log', 'TEST_OE_CHECKKABI'),
-        TestDef('oe_checkconflict', 'Backport differences',
+        TestDef('oe_checkconflict', 'checkconflict',
                 'Checks that every commit differing from upstream says '
                 'which files differ and why',
                 'oe_checkconflict.log', 'TEST_OE_CHECKCONFLICT'),
-        TestDef('oe_checkbinary', 'Binary files',
+        TestDef('oe_checkbinary', 'checkbinary',
                 'Rejects binary files added or changed by the series',
                 'oe_checkbinary.log', 'TEST_OE_CHECKBINARY'),
 

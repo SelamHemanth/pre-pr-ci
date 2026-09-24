@@ -157,7 +157,9 @@ fi
 
 pass() {
   local test_name="$1"
+  local reason="${2:-}"
   echo -e "${GREEN}✓ PASS${NC}: ${test_name}"
+  [ -n "$reason" ] && echo -e "  ${reason}"
   TEST_RESULTS+=("PASS:${test_name}")
   ((PASSED_TESTS++))
   ((TOTAL_TESTS++))
@@ -281,7 +283,12 @@ run_oe_build() {
 
   case "${PIPESTATUS[0]}" in
     0) pass "${test_name}" ;;
-    3) skip "${test_name}" "openEuler does not build ${arch} on ${OE_TARGET_BRANCH:-OLK-6.6}" ;;
+    # Their job for an architecture their branch has off runs, prints
+    # "<arch> is set to false, exit", and exits 0 above the compile --
+    # so their PR comment shows it SUCCESS.  Theirs is the row this is
+    # read against, so this says what theirs says, and says why, which
+    # theirs does not.
+    3) pass "${test_name}" "openEuler has ${arch} off for ${OE_TARGET_BRANCH:-OLK-6.6}, so their job exits without compiling and reports SUCCESS" ;;
     2) skip "${test_name}" "The build could not be set up (see ${log})" ;;
     4) warn "${test_name}" "The tree does not build ${arch} without your series either (see ${log})" ;;
     *) fail "${test_name}" "openEuler's ${arch} build gate rejected the series (see ${log})" ;;
