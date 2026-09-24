@@ -59,6 +59,21 @@ CHECKS = {
 #: Checks that read linux_path and the branch names out of the config file.
 NEEDS_CONFIG = ('checkformat', 'checkdepend', 'checkconflict')
 
+#: Checks openEuler reports and does not reject on.
+#:
+#: Their checkcustom.sh log_warns every result alike and exits zero
+#: whatever any of them said, so the wording that decides anything is
+#: the one in pr_comment_api.py, which is what a reviewer reads:
+#: checkformat, checkdepend and checkbinary say FAILED, and checkkabi
+#: says WARNING.  The "failed" flag computed beside that wording is
+#: discarded by its only caller -- "_, comment_str = _custom_result()".
+#:
+#: Not a judgement that the check does not matter.  A kabi keyword in a
+#: commit message is worth reading and is still reported.  But calling
+#: it a rejection that their gate will not make is the disagreement
+#: that teaches people to stop believing this tool.
+ONLY_WARNS = ('checkkabi',)
+
 #: The four shapes the scripts report in.  They do not agree, and reading
 #: the wrong one turns a failure into a pass, so all four are handled:
 #:
@@ -356,6 +371,9 @@ def main():
             cwd=args.kernel, env=env)
 
     status, detail = verdict(lines)
+    if status == 'fail' and args.check in ONLY_WARNS:
+        status = 'warn'
+        detail += ', which openEuler reports without rejecting'
     _say('')
     _say('openEuler %s: %s (%s, exit %d)' % (args.check, status, detail, code))
 

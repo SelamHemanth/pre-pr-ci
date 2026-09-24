@@ -829,6 +829,47 @@ class TestOpenEulerVerdicts(unittest.TestCase):
             self.assertEqual(self.verdict(['---- result ----', line])[0],
                              'pass')
 
+    def test_a_kabi_keyword_is_reported_and_not_rejected(self):
+        """openEuler warns on this one; it does not turn the patch away.
+
+        Their checkcustom.sh log_warns every result alike and exits
+        zero regardless, so the wording that means anything is in
+        pr_comment_api.py, where checkformat, checkdepend and
+        checkbinary say FAILED and this one says WARNING -- and the
+        "failed" flag computed next to it goes to an underscore at its
+        only call site.
+
+        So the script really does print "failed:1" for a kabi keyword
+        and the series really is accepted.  Reading that as a
+        rejection makes us stricter than the gate we exist to predict,
+        which is the disagreement people stop believing us over.
+        """
+        import oe_checks
+        # The line their script prints, and ours read, unchanged.
+        lines = ['---- checkkabi result ----',
+                 'total:100 failed:1 success:99']
+        self.assertEqual(oe_checks.verdict(lines)[0], 'fail')
+        self.assertIn('checkkabi', oe_checks.ONLY_WARNS)
+
+    def test_no_other_check_is_downgraded(self):
+        # Everything else in their comment says FAILED, and quietly
+        # forgiving one of those would hide a real rejection.
+        import oe_checks
+        self.assertEqual(sorted(oe_checks.ONLY_WARNS), ['checkkabi'])
+        for check in oe_checks.CHECKS:
+            if check != 'checkkabi':
+                self.assertNotIn(check, oe_checks.ONLY_WARNS)
+
+    def test_their_own_wording_is_what_we_followed(self):
+        """Pinned to their source, so an update that changes it shows up."""
+        api = read_file('euler', 'hulk_robot_test', 'openEuler', 'lib',
+                        'pr_comment_api.py')
+        self.assertIn('checkkabi WARNING', api)
+        for other in ('checkformat', 'checkdepend', 'checkbinary'):
+            self.assertIn('%s FAILED' % other, api)
+        # And the flag it sets is discarded by the only caller.
+        self.assertIn('_, comment_str = _custom_result(', api)
+
     def test_depend_names_failures_and_never_counts_them(self):
         status, detail = self.verdict(
             ['---- results ----',
