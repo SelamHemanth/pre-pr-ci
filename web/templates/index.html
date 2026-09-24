@@ -238,7 +238,7 @@ header {
 /* A verdict appearing is the thing you are waiting for, so it pops rather
    than fading in.  Keyed on the verdict in the template, so it replays when
    PASS becomes FAIL. */
-.badge-pass, .badge-fail, .badge-skip { animation: badge-pop var(--t-slow) var(--ease-spring); }
+.badge-pass, .badge-fail, .badge-skip, .badge-warn { animation: badge-pop var(--t-slow) var(--ease-spring); }
 @keyframes badge-pop {
     from { opacity: 0; transform: scale(.7); }
     to   { opacity: 1; transform: scale(1); }
@@ -575,6 +575,7 @@ body.dragging .log-panel { transition: none; }
 .log-body .ln-pass { color: #3ddc97; }
 .log-body .ln-fail { color: #ff6b5e; }
 .log-body .ln-skip { color: #ffb454; }
+.log-body .ln-warn { color: #ffb454; }
 .log-body .ln-cmd  { color: #5b8dff; font-weight: 600; }
 .log-body .ln-dim  { color: #7d8799; }
 
@@ -1528,6 +1529,7 @@ createApp({
         let cls = '';
         if (/(^|[^A-Za-z])PASS\b/.test(text)) cls = 'ln-pass';
         else if (/(^|[^A-Za-z])FAIL\b/.test(text)) cls = 'ln-fail';
+        else if (/(^|[^A-Za-z])WARN\b/.test(text)) cls = 'ln-warn';
         else if (/(^|[^A-Za-z])SKIP\b/.test(text)) cls = 'ln-skip';
         else if (text.startsWith('$ ')) cls = 'ln-cmd';
         else if (text.startsWith('[repo-sync]') || text.startsWith('---')) cls = 'ln-dim';
@@ -2034,7 +2036,8 @@ createApp({
         // job status, because no single job owns it.
         pass: 'badge-pass',
         fail: 'badge-fail',
-        skip: 'badge-warn',
+        warn: 'badge-warn',
+        skip: 'badge-skip',
       }[status] || 'badge-neutral';
     },
 

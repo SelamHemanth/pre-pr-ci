@@ -854,22 +854,60 @@ class TestOpenEulerVerdicts(unittest.TestCase):
         self.assertEqual(oe_checks.verdict(lines)[0], 'fail')
         self.assertIn('checkkabi', oe_checks.ONLY_WARNS)
 
+    def test_a_conflict_is_reported_and_not_rejected(self):
+        """Same row of their table, same reasoning as the kabi one.
+
+        check_conflict.py counts a failure for every patch that will
+        not apply to the branch as it stands, so a series rebased onto
+        anything newer than their snapshot scores dozens of them --
+        36 of 100 on the tree this was written against.  Their comment
+        says WARNING and their gate takes the series.
+        """
+        import oe_checks
+        lines = ['---- result ----', 'total: 100 failed: 36 success: 64']
+        self.assertEqual(oe_checks.verdict(lines)[0], 'fail')
+        self.assertIn('checkconflict', oe_checks.ONLY_WARNS)
+
     def test_no_other_check_is_downgraded(self):
         # Everything else in their comment says FAILED, and quietly
         # forgiving one of those would hide a real rejection.
         import oe_checks
-        self.assertEqual(sorted(oe_checks.ONLY_WARNS), ['checkkabi'])
+        self.assertEqual(sorted(oe_checks.ONLY_WARNS),
+                         ['checkconflict', 'checkkabi'])
         for check in oe_checks.CHECKS:
-            if check != 'checkkabi':
+            if check not in ('checkkabi', 'checkconflict'):
                 self.assertNotIn(check, oe_checks.ONLY_WARNS)
 
     def test_their_own_wording_is_what_we_followed(self):
-        """Pinned to their source, so an update that changes it shows up."""
+        """Pinned to their source, so an update that changes it shows up.
+
+        The wording that decides this is the cell in their status
+        table, not the prose underneath it: for checkconflict the two
+        disagree outright, the paragraph saying "checkconflict FAILED"
+        while the table cell it sits under says WARNING.  The table is
+        the row a reader sees against the check name, the "failed"
+        flag beside it is thrown away by its only caller, and their
+        gate does take a series with conflicts -- so the table is the
+        one to follow.
+        """
         api = read_file('euler', 'hulk_robot_test', 'openEuler', 'lib',
                         'pr_comment_api.py')
-        self.assertIn('checkkabi WARNING', api)
-        for other in ('checkformat', 'checkdepend', 'checkbinary'):
-            self.assertIn('%s FAILED' % other, api)
+
+        def cell(check):
+            found = re.search(
+                r'<th>%s</th>.*?\.format\(\s*"([^"]+)"' % check,
+                api, re.S)
+            self.assertIsNotNone(found, 'no status row for %s' % check)
+            return found.group(1)
+
+        warning, failed = '&#9888; WARNING', '&#10060; FAILED'
+        for warns in ('checkkabi', 'checkconflict'):
+            self.assertEqual(cell(warns), warning)
+        for rejects in ('checkformat', 'checkdepend', 'checkbinary'):
+            self.assertEqual(cell(rejects), failed)
+        # checkpatch is the one that is both, by its own two flags.
+        self.assertIn('pres = "%s"' % failed, api)
+        self.assertIn('pres = "%s"' % warning, api)
         # And the flag it sets is discarded by the only caller.
         self.assertIn('_, comment_str = _custom_result(', api)
 
@@ -901,6 +939,68 @@ class TestOpenEulerVerdicts(unittest.TestCase):
              'total:2 failed:2 warning:0 success:0'])
         self.assertEqual(status, 'fail')
         self.assertIn('2 failed', detail)
+
+
+class TestWarnTravels(unittest.TestCase):
+    """A warning has to survive the whole way to the screen.
+
+    It starts as an exit status from oe_checks.py, becomes a WARN: line
+    in test.sh, is read back out of the log by the job parser and is
+    finally a badge in the interface.  Any one of those four links
+    missing turns it back into the thing it must not be: a pass that
+    nobody reads, or a failure that stops a series openEuler accepts.
+    """
+
+    def test_warn_has_an_exit_status_of_its_own(self):
+        # Sharing pass's 0 is what made these read as passes.  Sharing
+        # fail's 1 is what made them read as rejections.
+        script = read_file('euler', 'oe_checks.py')
+        found = re.search(r"\{'pass':\s*(\d+).*?'warn':\s*(\d+).*?"
+                          r"'fail':\s*(\d+)", script, re.S)
+        self.assertIsNotNone(found, 'oe_checks.py has no exit status map')
+        passed, warned, failed = (int(n) for n in found.groups())
+        self.assertNotEqual(warned, passed)
+        self.assertNotEqual(warned, failed)
+
+    def test_test_sh_reads_that_status(self):
+        script = read_script('euler')
+        self.assertRegex(script, r'(?m)^\s*5\)\s*warn ')
+
+    def test_a_warn_is_not_counted_as_a_pass_or_a_failure(self):
+        script = read_script('euler')
+        self.assertRegex(script, r'(?m)^\s*warn\(\)\s*\{')
+        self.assertIn('WARN:${test_name}', script)
+        self.assertIn('((WARNED_TESTS++))', script)
+        # And it must not be the thing that fails the run, because it
+        # does not fail theirs.
+        self.assertRegex(script, r'WARNED_TESTS\}"?\s*-gt 0')
+
+    def test_the_log_parser_recognises_the_line_test_sh_writes(self):
+        from prci.jobs import _RESULT_RE
+        for line in ('WARN: oe_checkkabi',
+                     '\u26a0 WARN: oe_checkconflict',
+                     '  \u26a0 WARN : oe_build_x86_64 '):
+            found = _RESULT_RE.match(line)
+            self.assertIsNotNone(found, 'parser drops %r' % line)
+            self.assertEqual(found.group(1), 'WARN')
+
+    def test_the_interface_has_a_badge_for_it(self):
+        page = read_file('web', 'templates', 'index.html')
+        self.assertRegex(page, r"warn:\s*'badge-warn'")
+        self.assertRegex(page, r'\.badge-warn\s*\{')
+        # A pass badge and a warn badge that look alike would defeat
+        # the point of separating them.
+        self.assertNotRegex(page, r"pass:\s*'badge-warn'")
+
+    def test_every_status_the_parser_knows_can_be_shown(self):
+        """The parser and the interface must agree on the set of them."""
+        from prci.jobs import _RESULT_RE
+        page = read_file('web', 'templates', 'index.html')
+        for status in re.search(r'\(([A-Z|]+)\)',
+                                _RESULT_RE.pattern).group(1).split('|'):
+            self.assertRegex(
+                page, r"%s:\s*'badge-[a-z]+'" % status.lower(),
+                'the interface cannot show a %s verdict' % status)
 
 
 class TestBuildProgress(unittest.TestCase):

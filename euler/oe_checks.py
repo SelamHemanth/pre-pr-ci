@@ -63,16 +63,28 @@ NEEDS_CONFIG = ('checkformat', 'checkdepend', 'checkconflict')
 #:
 #: Their checkcustom.sh log_warns every result alike and exits zero
 #: whatever any of them said, so the wording that decides anything is
-#: the one in pr_comment_api.py, which is what a reviewer reads:
-#: checkformat, checkdepend and checkbinary say FAILED, and checkkabi
-#: says WARNING.  The "failed" flag computed beside that wording is
-#: discarded by its only caller -- "_, comment_str = _custom_result()".
+#: in pr_comment_api.py, which is what a reviewer reads.  Its status
+#: table is explicit about which is which:
 #:
-#: Not a judgement that the check does not matter.  A kabi keyword in a
-#: commit message is worth reading and is still reported.  But calling
-#: it a rejection that their gate will not make is the disagreement
-#: that teaches people to stop believing this tool.
-ONLY_WARNS = ('checkkabi',)
+#:   checkpatch      FAILED on errors, WARNING on warnings alone
+#:   checkformat     FAILED
+#:   checkdepend     FAILED
+#:   checkkabi       WARNING
+#:   checkconflict   WARNING
+#:   checkbinary     FAILED
+#: Read from the cells of that table, not the prose under it: for
+#: checkconflict the paragraph says "checkconflict FAILED" while the
+#: row it explains says WARNING.  The row is what a reader sees.
+#:
+#: The "failed" flag computed beside that table is discarded by its
+#: only caller -- "_, comment_str = _custom_result(...)".
+#:
+#: Not a judgement that these do not matter.  A kabi keyword in a
+#: commit message and a diff that no longer matches upstream are both
+#: worth reading, and both are still reported, loudly.  But calling
+#: them rejections their gate will not make is the disagreement that
+#: teaches people to stop believing this tool.
+ONLY_WARNS = ('checkkabi', 'checkconflict')
 
 #: The four shapes the scripts report in.  They do not agree, and reading
 #: the wrong one turns a failure into a pass, so all four are handled:
@@ -377,7 +389,11 @@ def main():
     _say('')
     _say('openEuler %s: %s (%s, exit %d)' % (args.check, status, detail, code))
 
-    return {'pass': 0, 'warn': 0, 'fail': 1, 'error': 2}[status]
+    # warn is its own status, not a quiet pass.  It used to exit zero
+    # and be reported as PASS, which is how a run with two checkpatch
+    # warnings and thirty-six conflicts read as entirely clean.  Their
+    # own summary table has three states and so does this.
+    return {'pass': 0, 'warn': 5, 'fail': 1, 'error': 2}[status]
 
 
 if __name__ == '__main__':

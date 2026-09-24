@@ -72,7 +72,7 @@ _ANSI_RE = re.compile(
 # Anchored on purpose: build output quotes strings like "PASS:" and an
 # unanchored match turned compiler noise into test results.
 _RESULT_RE = re.compile(
-    r'^\s*(?:[\u2713\u2717\u2298]\s*)?(PASS|FAIL|SKIP)\s*:\s*(\S+)\s*$'
+    r'^\s*(?:[\u2713\u2717\u2298\u26a0]\s*)?(PASS|FAIL|SKIP|WARN)\s*:\s*(\S+)\s*$'
 )
 
 

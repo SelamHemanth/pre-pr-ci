@@ -144,6 +144,7 @@ TOTAL_TESTS=0
 PASSED_TESTS=0
 FAILED_TESTS=0
 SKIPPED_TESTS=0
+WARNED_TESTS=0
 
 if [ $(arch) == "x86_64" ]; then
   kernel_arch="x86"
@@ -179,6 +180,21 @@ skip() {
   [ -n "$reason" ] && echo -e "  Reason: ${reason}"
   TEST_RESULTS+=("SKIP:${test_name}")
   ((SKIPPED_TESTS++))
+  ((TOTAL_TESTS++))
+}
+
+# The check ran, found something, and openEuler would still take the
+# series.  Folding this into pass is how a run with two checkpatch
+# warnings and thirty-six conflicts read as entirely clean; folding it
+# into fail is how a tool gets ignored.  Their own summary table has
+# three states, so this has three states.
+warn() {
+  local test_name="$1"
+  local reason="${2:-}"
+  echo -e "${YELLOW}⚠ WARN${NC}: ${test_name}"
+  [ -n "$reason" ] && echo -e "  Reason: ${reason}"
+  TEST_RESULTS+=("WARN:${test_name}")
+  ((WARNED_TESTS++))
   ((TOTAL_TESTS++))
 }
 
@@ -228,6 +244,7 @@ run_oe_check() {
   case "${PIPESTATUS[0]}" in
     0) pass "${test_name}" ;;
     3) skip "${test_name}" "No commits to check" ;;
+    5) warn "${test_name}" "openEuler reports this and still takes the series (see ${log})" ;;
     2) fail "${test_name}" "The check could not run (see ${log})" ;;
     *) fail "${test_name}" "openEuler ${check} rejected the series (see ${log})" ;;
   esac
@@ -266,7 +283,7 @@ run_oe_build() {
     0) pass "${test_name}" ;;
     3) skip "${test_name}" "openEuler does not build ${arch} on ${OE_TARGET_BRANCH:-OLK-6.6}" ;;
     2) skip "${test_name}" "The build could not be set up (see ${log})" ;;
-    4) skip "${test_name}" "The tree does not build ${arch} without your series either (see ${log})" ;;
+    4) warn "${test_name}" "The tree does not build ${arch} without your series either (see ${log})" ;;
     *) fail "${test_name}" "openEuler's ${arch} build gate rejected the series (see ${log})" ;;
   esac
 
@@ -373,6 +390,7 @@ fi
   echo "Total Tests: ${TOTAL_TESTS}"
   echo "Passed: ${PASSED_TESTS}"
   echo "Failed: ${FAILED_TESTS}"
+  echo "Warned: ${WARNED_TESTS}"
   echo "Skipped: ${SKIPPED_TESTS}"
 } > "${TEST_LOG}"
 
@@ -382,14 +400,22 @@ echo -e "${GREEN}============${NC}"
 echo "Total Tests: ${TOTAL_TESTS}"
 echo -e "Passed:  ${GREEN}${PASSED_TESTS}${NC}"
 echo -e "Failed:  ${RED}${FAILED_TESTS}${NC}"
+echo -e "Warned:  ${YELLOW}${WARNED_TESTS}${NC}"
 echo -e "Skipped: ${YELLOW}${SKIPPED_TESTS}${NC}"
 echo ""
 echo -e "${BLUE}Full report: ${TEST_LOG}${NC}"
 echo ""
 
+# A warning does not change the exit status, because it does not change
+# openEuler's: they report these and take the series anyway.  It is said
+# out loud rather than counted as a pass, which is the whole difference.
 if [ "${FAILED_TESTS}" -gt 0 ]; then
   echo -e "${RED}✗ Some tests failed${NC}"
   exit 1
+elif [ "${WARNED_TESTS}" -gt 0 ]; then
+  echo -e "${YELLOW}⚠ Nothing was rejected, but ${WARNED_TESTS} check(s) have"
+  echo -e "  something to read before you send this${NC}"
+  exit 0
 else
   echo -e "${GREEN}✓ All tests passed or skipped${NC}"
   exit 0
