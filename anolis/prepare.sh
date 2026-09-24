@@ -169,6 +169,19 @@ else
         }
       }' "${p}" > "${p}.tmp" && mv "${p}.tmp" "${p}"
 
+    # Say where a backport came from, between the ANBZ tag and the
+    # body, as cloud-kernel !13995 does.  Resolved against the mirror
+    # rather than asked for, because the author already knows and the
+    # tree can be read.  Original work resolves to nothing and is left
+    # alone: there is no commit for it to point at.
+    if [ -n "${TORVALDS_REPO:-}" ] && [ -d "${TORVALDS_REPO}" ]; then
+      if upstream_sha=$(python3 "${SCRIPT_DIR}/upstream_ref.py" \
+            --mirror "${TORVALDS_REPO}" --patch "${p}") \
+         && [ -n "${upstream_sha}" ]; then
+        echo "  ${BLUE}$(basename "${p}")${NC}: from ${upstream_sha:0:12} upstream"
+      fi
+    fi
+
     # Insert Signed-off-by before first '---'
     SOB_LINE="Signed-off-by: ${SIGNER_NAME} <${SIGNER_EMAIL}>"
     if ! grep -qF "${SOB_LINE}" "${p}"; then

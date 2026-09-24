@@ -996,6 +996,102 @@ class TestOpenEulerVerdicts(unittest.TestCase):
         self.assertIn('2 failed', detail)
 
 
+class TestAnolisUpstreamReference(unittest.TestCase):
+    """A backport in Anolis says which commit it came from.
+
+    Pinned to cloud-kernel !13995, which went in with their review
+    check green, so the shape here is one Anolis actually accepted
+    rather than one inferred from documentation.
+    """
+
+    MERGED = (
+        'iommu/amd: Add SNP page mode 0 support\n'
+        '\n'
+        'ANBZ: #48382\n'
+        '\n'
+        'commit cb2860ad6c4ff7e15bb69c7e3a6842bbea743229 upstream.\n'
+        '\n'
+        'Newer AMD IOMMUs supports DTE[Mode]=0 for SNP-enabled system.\n'
+        '\n'
+        'Signed-off-by: Vasant Hegde <vasant.hegde@amd.com>\n'
+        'Signed-off-by: mohanasv <mohanasv@amd.com>'
+    )
+
+    def setUp(self):
+        sys.path.insert(0, os.path.join(PROJECT_ROOT, 'anolis'))
+        import upstream_ref
+        self.ref = upstream_ref
+
+    def without_the_line(self):
+        return self.MERGED.replace(
+            'commit cb2860ad6c4ff7e15bb69c7e3a6842bbea743229 upstream.\n\n',
+            '')
+
+    def test_the_line_they_merged_is_recognised(self):
+        self.assertEqual(self.ref.declared_sha(self.MERGED),
+                         'cb2860ad6c4ff7e15bb69c7e3a6842bbea743229')
+        self.assertIsNone(self.ref.declared_sha(self.without_the_line()))
+
+    def test_inserting_it_reproduces_what_they_merged(self):
+        """Byte for byte, or it is a different convention.
+
+        The blank line either side is part of it.  An earlier pattern
+        ended "\\s*$", and because \\s matches newlines under MULTILINE
+        it ran past the blank line after the tag and put the insert one
+        line too far down.
+        """
+        self.assertEqual(
+            self.ref.insert_into(self.without_the_line(),
+                                 'cb2860ad6c4ff7e15bb69c7e3a6842bbea743229'),
+            self.MERGED)
+
+    def test_preparing_twice_does_not_say_it_twice(self):
+        self.assertEqual(
+            self.ref.insert_into(self.MERGED,
+                                 'cb2860ad6c4ff7e15bb69c7e3a6842bbea743229'),
+            self.MERGED)
+
+    def test_a_message_with_no_anbz_tag_is_refused_not_mangled(self):
+        # Nowhere to put it means the message is not in their shape at
+        # all, and guessing a position would produce something that
+        # reads right and is not.
+        with self.assertRaises(self.ref.Unresolved):
+            self.ref.insert_into('a subject\n\nbody\n', 'a' * 40)
+
+    def test_a_cherry_pick_records_the_sha_itself(self):
+        # Cheaper than the mirror and right even when the subject was
+        # reworded on the way down.
+        self.assertEqual(
+            self.ref.cherry_picked_sha(
+                'subject\n\nbody\n\n(cherry picked from commit %s)\n' % ('b' * 40)),
+            'b' * 40)
+
+    def test_the_patch_subject_drops_the_patch_prefix(self):
+        self.assertEqual(
+            self.ref.patch_subject(
+                'From: a <a@b.c>\nSubject: [PATCH v3 2/7] iommu/amd: a thing\n\n'),
+            'iommu/amd: a thing')
+
+    def test_a_folded_subject_is_put_back_together(self):
+        # git wraps long subjects across lines, and half a subject
+        # matches nothing in the mirror.
+        self.assertEqual(
+            self.ref.patch_subject(
+                'Subject: [PATCH] iommu/amd: a subject long enough that git\n'
+                ' folded it across two lines\n\nbody\n'),
+            'iommu/amd: a subject long enough that git folded it across '
+            'two lines')
+
+    def test_readiness_asks_for_it(self):
+        # The gate passed a series with the line missing from every
+        # commit, which is the one thing a reader cannot reconstruct.
+        ready = read_file('anolis', 'ready.sh')
+        self.assertIn('upstream_ref.py', ready)
+
+    def test_preparation_writes_it(self):
+        self.assertIn('upstream_ref.py', read_file('anolis', 'prepare.sh'))
+
+
 class TestWarnTravels(unittest.TestCase):
     """A warning has to survive the whole way to the screen.
 

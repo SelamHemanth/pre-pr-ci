@@ -70,4 +70,22 @@ while IFS= read -r sha; do
   fi
 done < <(git log --format='%H' -n "${NUM_PATCHES}" HEAD)
 
+# A backport says where it came from.  cloud-kernel !13995 went in with
+# "commit <sha> upstream." between the ANBZ tag and the body, and this
+# gate used to pass a series with that line missing from every commit,
+# which is the one thing a reader of the message cannot reconstruct.
+#
+# Only for commits that are backports: upstream_ref asks the mirror
+# whether the patch exists there, and says nothing about original work,
+# which has no commit to point at.
+if [ -n "${TORVALDS_REPO:-}" ] && [ -d "${TORVALDS_REPO}" ]; then
+  if ! missing="$(python3 "${SCRIPT_DIR}/upstream_ref.py" \
+        --mirror "${TORVALDS_REPO}" \
+        --kernel "${LINUX_SRC_PATH}" \
+        --count "${NUM_PATCHES}")"; then
+    printf '%s\n' "${missing}"
+    exit 1
+  fi
+fi
+
 echo "all ${NUM_PATCHES} commit(s) are ready to test"
