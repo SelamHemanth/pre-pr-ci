@@ -76,13 +76,21 @@ list_tests() {
   echo -e "  6. oe_checkbinary      Binary files added by the series"
   echo ""
   echo -e "${CYAN}Builds, one per architecture, an hour each:${NC}"
-  echo -e "  7. oe_build_x86_64     allmodconfig, defconfig, KABI, defconfig drift"
-  echo -e "  8. oe_build_aarch64    as above, cross compiled            [off]"
-  echo -e "  9. oe_build_arm        allmodconfig, cross compiled        [off]"
-  echo -e " 10. oe_build_ppc        allmodconfig, cross compiled        [off]"
-  echo -e " 11. oe_build_ppc64      allmodconfig, cross compiled        [off]"
-  echo -e " 12. oe_build_riscv64    allmodconfig, cross compiled        [off]"
-  echo -e " 13. oe_build_loongarch  allmodconfig, cross compiled        [off]"
+  # Listed from their conf/check_build.yaml, so this says what their CI
+  # has jobs for rather than what we once wrote down.
+  n=6
+  for a in $(_oe_arches_they_build); do
+    n=$((n + 1))
+    if _oe_arch_has_kabi "${a}"; then
+      what='allmodconfig, defconfig, KABI, defconfig drift'
+    else
+      what='allmodconfig, cross compiled'
+    fi
+    # Only x86_64 runs unasked: the rest are an hour of one machine
+    # each, which openEuler spends across a fleet and we would not.
+    [ "${a}" = 'x86_64' ] || what="${what}  [off]"
+    printf '%3d. %-20s %s\n' "${n}" "oe_build_${a}" "${what}"
+  done
   echo ""
   echo -e "  [off] means not enabled by default; openEuler runs these in"
   echo -e "  parallel across a fleet and we would run them in series."
@@ -265,13 +273,6 @@ run_oe_build() {
   echo ""
 }
 
-test_oe_build_x86_64()    { run_oe_build "x86_64"; }
-test_oe_build_aarch64()   { run_oe_build "aarch64"; }
-test_oe_build_arm()       { run_oe_build "arm"; }
-test_oe_build_ppc()       { run_oe_build "ppc"; }
-test_oe_build_ppc64()     { run_oe_build "ppc64"; }
-test_oe_build_riscv64()   { run_oe_build "riscv64"; }
-test_oe_build_loongarch() { run_oe_build "loongarch"; }
 
 # ---- TEST EXECUTION ----
 
@@ -302,37 +303,29 @@ if [ -n "$SPECIFIC_TEST" ]; then
     oe_checkbinary)
       test_oe_checkbinary
       ;;
-    oe_build_x86_64)
-      test_oe_build_x86_64
-      ;;
-    oe_build_aarch64)
-      test_oe_build_aarch64
-      ;;
-    oe_build_arm)
-      test_oe_build_arm
-      ;;
-    oe_build_ppc)
-      test_oe_build_ppc
-      ;;
-    oe_build_ppc64)
-      test_oe_build_ppc64
-      ;;
-    oe_build_riscv64)
-      test_oe_build_riscv64
-      ;;
-    oe_build_loongarch)
-      test_oe_build_loongarch
+    oe_build_*)
+      # Their matrix decides which of these exist, so asking for one
+      # that is not in it is the same mistake as a misspelt name.
+      arch="${SPECIFIC_TEST#oe_build_}"
+      if printf '%s\n' $(_oe_arches_they_build) | grep -qx "${arch}"; then
+        run_oe_build "${arch}"
+      else
+        echo -e "${RED}Error: openEuler does not build ${arch}${NC}"
+        echo ""
+        echo "Architectures in their conf/check_build.yaml:"
+        for a in $(_oe_arches_they_build); do echo "  - oe_build_${a}"; done
+        exit 1
+      fi
       ;;
     *)
       echo -e "${RED}Error: Unknown test '$SPECIFIC_TEST'${NC}"
       echo ""
       echo "Available tests:"
       for t in oe_checkpatch oe_checkformat oe_checkdepend oe_checkkabi \
-               oe_checkconflict oe_checkbinary \
-               oe_build_x86_64 oe_build_aarch64 oe_build_arm oe_build_ppc \
-               oe_build_ppc64 oe_build_riscv64 oe_build_loongarch; do
+               oe_checkconflict oe_checkbinary; do
         echo "  - ${t}"
       done
+      for a in $(_oe_arches_they_build); do echo "  - oe_build_${a}"; done
       echo ""
       echo "Run '$0 list' for detailed information"
       exit 1
@@ -352,13 +345,14 @@ else
   # Then the builds, native first.  The cross builds default to off: one
   # allmodconfig per architecture is openEuler's fleet working in
   # parallel and our one machine working in series.
-  [ "${TEST_OE_BUILD_X86_64:-yes}" == "yes" ]   && test_oe_build_x86_64
-  [ "${TEST_OE_BUILD_AARCH64:-no}" == "yes" ]   && test_oe_build_aarch64
-  [ "${TEST_OE_BUILD_ARM:-no}" == "yes" ]       && test_oe_build_arm
-  [ "${TEST_OE_BUILD_PPC:-no}" == "yes" ]       && test_oe_build_ppc
-  [ "${TEST_OE_BUILD_PPC64:-no}" == "yes" ]     && test_oe_build_ppc64
-  [ "${TEST_OE_BUILD_RISCV64:-no}" == "yes" ]   && test_oe_build_riscv64
-  [ "${TEST_OE_BUILD_LOONGARCH:-no}" == "yes" ] && test_oe_build_loongarch
+  # x86_64 first, then the rest in their matrix's own order.
+  for arch in $(_oe_arches_they_build | tr ' ' '\n' | grep -x x86_64) \
+              $(_oe_arches_they_build | tr ' ' '\n' | grep -vx x86_64); do
+    flag="TEST_OE_BUILD_$(echo "${arch}" | tr '[:lower:]' '[:upper:]')"
+    default='no'
+    [ "${arch}" = 'x86_64' ] && default='yes'
+    [ "${!flag:-${default}}" == "yes" ] && run_oe_build "${arch}"
+  done
 fi
 
 # ---- SUMMARY ----

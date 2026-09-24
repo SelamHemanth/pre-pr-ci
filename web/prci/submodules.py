@@ -24,7 +24,7 @@ import logging
 import os
 import subprocess
 
-from . import repo
+from . import registry, repo
 
 log = logging.getLogger(__name__)
 
@@ -41,14 +41,14 @@ NEEDED_BY = {
     # compare against them.
     'euler/kernel': ('oe_build_x86_64', 'oe_build_aarch64'),
     # hulk_robot_test carries the six checks, the build matrix and the
-    # cross toolchains, so every euler test needs it.
+    # cross toolchains, so every euler test needs it.  The builds are
+    # named from that same matrix rather than listed again here, where
+    # a new architecture would be missed and reported as working.
     'euler/hulk_robot_test': ('oe_checkpatch', 'oe_checkformat',
                               'oe_checkdepend', 'oe_checkkabi',
-                              'oe_checkconflict', 'oe_checkbinary',
-                              'oe_build_x86_64', 'oe_build_aarch64',
-                              'oe_build_arm', 'oe_build_ppc',
-                              'oe_build_ppc64', 'oe_build_riscv64',
-                              'oe_build_loongarch'),
+                              'oe_checkconflict', 'oe_checkbinary') +
+                             tuple('oe_build_%s' % arch for arch
+                                   in registry.architectures_they_build()),
 }
 
 

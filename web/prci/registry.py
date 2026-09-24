@@ -19,6 +19,8 @@ the job runner resolve those from this one table, so a name that only exists
 here is a test the user can start but never see the output of.
 """
 
+import os
+import re
 from collections import namedtuple
 
 #: A single test case.
@@ -56,6 +58,86 @@ DISTROS = {
     'anolis': 'OpenAnolis',
     'euler': 'openEuler',
 }
+
+#: Their architecture matrix, read rather than copied.  An architecture
+#: listed here that we leave out is a failure their gate finds and ours
+#: never looks for; one we invent is a test with no counterpart in the
+#: gate this exists to predict.
+_CHECK_BUILD_YAML = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+    'euler', 'hulk_robot_test', 'openEuler', 'conf', 'check_build.yaml')
+
+#: Only where their CI's name for it differs from the key in that file.
+_THEIR_NAME = {'ppc': 'PPC'}
+
+#: The two openEuler ships, and so the two whose ABI it promises: their
+#: checkkabi.sh compares the ABI and the shipping config on these, and
+#: their checkbuild.sh only compiles the rest.
+_KABI_ARCHES = ('x86_64', 'aarch64')
+
+#: Used only when the hulk_robot_test submodule is not checked out, in
+#: which case every build test skips anyway -- but dropping them from
+#: the table entirely would take their TEST_* keys out of .configure
+#: and silently forget which ones the user had turned on.
+_ARCHES_IF_UNREADABLE = ('aarch64', 'arm', 'x86_64', 'ppc', 'ppc64',
+                         'riscv64')
+
+_MATRIX_LINE_RE = re.compile(r'^\s+([A-Za-z0-9_]+):\s*(true|false)\s*$')
+
+
+def architectures_they_build():
+    """Every architecture true on at least one branch of their matrix.
+
+    loongarch is in their file and false on every branch in it, so it
+    is a job openEuler's CI runs nowhere.  Offering it put a seventh
+    build in a list their gate only ever shows six of, which reads as
+    a check they skipped rather than one that does not exist.
+
+    Kept branch-independent on purpose.  Which of these a given branch
+    builds is decided per run, by oe_build.sh asking this same file,
+    and an architecture that drops out there reports as skipped --
+    which is true, and different from not existing.
+    """
+    order, built = [], set()
+    try:
+        with open(_CHECK_BUILD_YAML) as handle:
+            for line in handle:
+                found = _MATRIX_LINE_RE.match(line)
+                if not found:
+                    continue
+                arch = found.group(1)
+                if arch not in order:
+                    order.append(arch)
+                if found.group(2) == 'true':
+                    built.add(arch)
+    except OSError:
+        return _ARCHES_IF_UNREADABLE
+    if not built:
+        return _ARCHES_IF_UNREADABLE
+    return tuple(arch for arch in order if arch in built)
+
+
+def _build_tests():
+    """One test per architecture, named the way their CI names it.
+
+    "Build for arm64" and "Build for powerpc" were ours, and reading a
+    result against their job list meant translating every row back.
+    """
+    out = []
+    for arch in architectures_they_build():
+        if arch in _KABI_ARCHES:
+            what = ('Full build, then compares the ABI and the shipping '
+                    'config against openEuler')
+        else:
+            what = 'Cross-compiles the tree, as their check_build job does'
+        out.append(TestDef(
+            'oe_build_%s' % arch,
+            _THEIR_NAME.get(arch, arch),
+            what,
+            'oe_build_%s.log' % arch,
+            'TEST_OE_BUILD_%s' % arch.upper(),
+            arch == 'x86_64'))
+    return tuple(out)
 
 TESTS = {
     'anolis': (
@@ -129,38 +211,9 @@ TESTS = {
 
         # One test per architecture, because that is one job per
         # architecture in their CI, and because a local run wants to say
-        # "powerpc only" without editing anything.  Which of these their
-        # gate would actually run depends on the target branch; each test
-        # asks their conf/check_build.yaml and skips if the answer is no.
-        #
-        # x86_64 and aarch64 additionally compare the ABI and the
-        # defconfig, exactly as their checkkabi.sh does -- those two
-        # architectures are the ones openEuler ships, so they are the ones
-        # whose ABI is promised.
-        TestDef('oe_build_x86_64', 'Build for x86_64',
-                'Full build, then compares the ABI and the shipping '
-                'config against openEuler',
-                'oe_build_x86_64.log', 'TEST_OE_BUILD_X86_64'),
-        TestDef('oe_build_aarch64', 'Build for arm64',
-                'Full build, then compares the ABI and the shipping '
-                'config against openEuler',
-                'oe_build_aarch64.log', 'TEST_OE_BUILD_AARCH64', False),
-        TestDef('oe_build_arm', 'Build for arm (32-bit)',
-                'Cross-compiles the tree for 32-bit arm',
-                'oe_build_arm.log', 'TEST_OE_BUILD_ARM', False),
-        TestDef('oe_build_ppc', 'Build for powerpc',
-                'Cross-compiles the tree for 32-bit powerpc',
-                'oe_build_ppc.log', 'TEST_OE_BUILD_PPC', False),
-        TestDef('oe_build_ppc64', 'Build for powerpc64',
-                'Cross-compiles the tree for 64-bit powerpc',
-                'oe_build_ppc64.log', 'TEST_OE_BUILD_PPC64', False),
-        TestDef('oe_build_riscv64', 'Build for riscv64',
-                'Cross-compiles the tree for 64-bit RISC-V',
-                'oe_build_riscv64.log', 'TEST_OE_BUILD_RISCV64', False),
-        TestDef('oe_build_loongarch', 'Build for loongarch',
-                'Cross-compiles the tree for LoongArch',
-                'oe_build_loongarch.log', 'TEST_OE_BUILD_LOONGARCH', False),
-    ),
+        # "powerpc only" without editing anything.  The list comes from
+        # their own conf/check_build.yaml; see architectures_they_build.
+    ) + _build_tests(),
 }
 
 _COMMON_FIELDS = {

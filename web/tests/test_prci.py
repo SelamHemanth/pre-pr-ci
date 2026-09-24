@@ -62,11 +62,47 @@ class TestRegistryMatchesScripts(unittest.TestCase):
         for distro in registry.DISTROS:
             script = read_script(distro)
             for test in registry.tests_for(distro):
+                if test.name.startswith('oe_build_'):
+                    # These are dispatched by pattern, from the same
+                    # matrix the registry reads; the two lists are
+                    # compared against each other below.
+                    self.assertRegex(
+                        script, r'(?m)^\s*oe_build_\*\)\s*$',
+                        '%s/test.sh has no pattern label for the builds'
+                        % distro)
+                    continue
                 # The dispatcher is a case statement: "  <name>)"
                 self.assertRegex(
                     script, r'(?m)^\s*%s\)\s*$' % re.escape(test.name),
                     '%s/test.sh has no case label for %r'
                     % (distro, test.name))
+
+    def test_both_sides_read_the_same_architecture_matrix(self):
+        """registry.py and oe_build.sh must not hold two copies of it.
+
+        They did, and the copies disagreed: the interface offered a
+        loongarch build, which openEuler's conf/check_build.yaml marks
+        false on every branch in it, so their gate has no such job at
+        all.  Seven builds where they show six reads as a check they
+        skipped rather than one that does not exist.
+        """
+        out = subprocess.run(
+            ['bash', '-c',
+             '. "%s/euler/oe_build.sh"; _oe_arches_they_build' % PROJECT_ROOT],
+            env=dict(os.environ,
+                     SCRIPT_DIR=os.path.join(PROJECT_ROOT, 'euler')),
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        self.assertEqual(out.stdout.decode().split(),
+                         list(registry.architectures_they_build()))
+
+    def test_the_architectures_come_from_their_file(self):
+        theirs = read_file('euler', 'hulk_robot_test', 'openEuler', 'conf',
+                           'check_build.yaml')
+        for arch in registry.architectures_they_build():
+            self.assertRegex(theirs, r'(?m)^\s+%s:\s*true\s*$' % arch)
+        # Present in their file and true nowhere in it, so not a job.
+        self.assertIn('loongarch:', theirs)
+        self.assertNotIn('loongarch', registry.architectures_they_build())
 
     def test_verdict_names_are_registry_names(self):
         """A PASS:/FAIL: line has to name a test the interface knows.
@@ -101,7 +137,11 @@ class TestRegistryMatchesScripts(unittest.TestCase):
                 joined = re.sub(r'\\\n\s*', ' ', script)
                 wanted = stem
                 if stem.startswith('oe_build_'):
-                    wanted = stem[len('oe_build_'):]
+                    # run_oe_build is now called once per architecture
+                    # in their matrix rather than once per literal
+                    # name, so the name to look for is the variable.
+                    wanted = 'arch'
+                    named = named or 'run_oe_build "${arch}"' in script
                 built = re.search(
                     r'run_(?:kernel_build|oe_check|oe_build)'
                     r'(?:\s+"[^"]*")*\s+"%s"' % re.escape(wanted), joined)
@@ -114,10 +154,37 @@ class TestRegistryMatchesScripts(unittest.TestCase):
         for distro in registry.DISTROS:
             script = read_script(distro)
             for test in registry.tests_for(distro):
+                if test.name.startswith('oe_build_'):
+                    # Built from the architecture rather than written
+                    # out; checked by the test below, which runs the
+                    # script's own line to see what name it arrives at.
+                    continue
                 self.assertIn(
                     test.config_key, script,
                     '%s/test.sh ignores %s, so disabling %r in the UI would '
                     'have no effect' % (distro, test.config_key, test.name))
+
+    def test_the_build_switches_reach_the_names_the_ui_writes(self):
+        """The UI's TEST_* key and the script's variable must be one name.
+
+        The script derives it now instead of spelling each one out, so
+        a mismatch would not be one typo in one line: every build would
+        silently ignore its switch and run, or not run, regardless.
+
+        So run the script's own line rather than a copy of it.
+        """
+        script = read_script('euler')
+        line = next(l.strip() for l in script.split('\n')
+                    if l.strip().startswith('flag='))
+        for arch in registry.architectures_they_build():
+            out = subprocess.run(
+                ['bash', '-c', 'arch=%s; %s; printf %%s "$flag"'
+                 % (arch, line)], stdout=subprocess.PIPE)
+            self.assertEqual(
+                out.stdout.decode(),
+                registry.find_test('euler', 'oe_build_%s' % arch).config_key,
+                'the switch for %s does not reach the key the UI writes'
+                % arch)
 
     def test_the_registry_lists_tests_in_the_order_they_run(self):
         """The page works out which test is running from this order.
