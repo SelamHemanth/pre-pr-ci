@@ -1154,6 +1154,53 @@ class TestWarnTravels(unittest.TestCase):
                 'the interface cannot show a %s verdict' % status)
 
 
+class TestNoDistroIsChosenForYou(unittest.TestCase):
+    """The distro picker starts empty.
+
+    The two gates run different checks and reject different things, so a
+    preselected one quietly predicts the wrong CI: the run goes green
+    against a gate the series was never going to face.  Nothing about this
+    host says where the patches are headed either, so detection is shown
+    as a note and never selected.
+    """
+
+    def setUp(self):
+        self.page = read_file('web', 'templates', 'index.html')
+
+    def test_the_form_starts_with_no_distribution(self):
+        found = re.search(r'form:\s*\{\s*distro:\s*(.+?),', self.page)
+        self.assertIsNotNone(found, 'cannot find the form initialiser')
+        self.assertIn(found.group(1), ("''", '""'),
+                      'the form is preloaded with %s' % found.group(1))
+
+    def test_no_distribution_is_named_as_a_fallback(self):
+        """Not 'the saved one, or else euler'."""
+        found = re.search(r'this\.form\.distro\s*=\s*([^;]+);', self.page,
+                          re.S)
+        self.assertIsNotNone(found, 'cannot find where the picker is set')
+        for distro in registry.DISTROS:
+            self.assertNotIn("'%s'" % distro, found.group(1),
+                             'the picker falls back to %s' % distro)
+        self.assertNotIn('detected_distro', found.group(1),
+                         'the picker is filled from host detection')
+
+    def test_the_host_it_detected_is_shown_but_not_selected(self):
+        self.assertIn('status.detected_distro', self.page,
+                      'the detected distro is not surfaced at all')
+
+    def test_saving_without_one_is_refused_rather_than_guessed(self):
+        self.assertRegex(self.page, r':disabled="saving \|\| !form\.distro"')
+
+        server = read_file('web', 'server.py')
+        self.assertRegex(server, r"if not distro:\s*\n\s*return jsonify")
+
+        root = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        with self.assertRaises(ConfigError) as caught:
+            Workspace(root).write_config('', {}, {}, '/tmp/mirror')
+        self.assertIn('distro', caught.exception.errors)
+
+
 class TestBuildProgress(unittest.TestCase):
     """The build scripts' own output is what drives the build progress bar."""
 

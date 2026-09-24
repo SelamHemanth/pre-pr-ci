@@ -107,18 +107,26 @@ python3 web/server.py
 
      **Test Options:**
 
-     | Test                        | Description                  | Purpose                                    |
-     |-----------------------------|------------------------------|--------------------------------------------|
-     | check_dependency            | Verify required dependencies | Ensures all bug-fix commits are backported |
-     | check_kconfig               | Validate Kconfig settings    | Ensures config validity                    |
-     | build_allyes_config         | Build with allyesconfig      | Compile w/ all enabled options             |
-     | build_allno_config          | Build with allnoconfig       | Minimal kernel build                       |
-     | build_anolis_defconfig      | Build with anolis_defconfig  | Production default config                  |
-     | build_anolis_debug          | Build with debug config      | Enable debugging features                  |
-     | anck_rpm_build              | Build ANCK RPM packages      | RPMs for installation                      |
-     | check_kapi                  | Check KAPI compatibility     | ABI compatibility checks                   |
-     | boot_kernel_rpm             | Automated VM boot test       | Install, boot, and verify kernel on VM     |
-     | build_perf                  | Build perf tool              | Ensures perf tool work properly            |
+     The names are theirs: the left column is what their `tone-cli`
+     caselist dispatches on, the middle is what their result page shows
+     that case as.
+
+     | Test                        | Their report shows    | Purpose                                    |
+     |-----------------------------|-----------------------|--------------------------------------------|
+     | check_kconfig               | check_Kconfig         | Ensures config validity                    |
+     | build_allyes_config         | allyesconfig          | Compile w/ all enabled options             |
+     | build_allno_config          | allnoconfig           | Minimal kernel build                       |
+     | build_anolis_defconfig      | anolis_defconfig      | Production default config                  |
+     | build_anolis_debug          | anolis-debug_defconfig| Enable debugging features                  |
+     | anck_rpm_build              | build_rpm             | RPMs for installation                      |
+     | build_perf                  | build_perf            | Ensures perf tool work properly            |
+     | boot_kernel_rpm             | boot_kernel_rpm       | Install, boot, and verify kernel on VM     |
+     | check_kapi                  | check_kapi            | ABI compatibility checks                   |
+     | check_dmesg                 | check_dmesg           | Boot log of the booted kernel is clean     |
+
+     The last three are one suite, not three: their `anck-ci-test` runs
+     after install and reboot and reports all three, so ours runs it
+     once on the VM and reads a row out of it per test.
 
      Enable: individual (e.g. 1,3,5), all, or none.
 

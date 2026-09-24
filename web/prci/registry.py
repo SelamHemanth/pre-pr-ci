@@ -134,44 +134,66 @@ def _build_tests():
     return tuple(out)
 
 TESTS = {
+    # Titled as their report titles them, and ordered as it orders
+    # them.  A row here is meant to be read against a row on their
+    # result page, and "Build, everything on" against "allyesconfig"
+    # made that a translation exercise.
+    #
+    # Two layers of naming, and they are not the same.  The name is
+    # the one their code dispatches on, from the caselist in
+    # tone-cli/tests/anck-pack-and-boot/run.sh:
+    #
+    #   check_Kconfig build_allyes_config build_allno_config
+    #   build_anolis_defconfig build_anolis_debug_defconfig
+    #   anck_rpm_build build_perf
+    #
+    # The title is what their result page shows, which is shorter and
+    # in places different -- anck_rpm_build appears there as
+    # build_rpm.  Keeping both means the switch a user sets and the
+    # row a user reads are each named by whoever owns them.
     'anolis': (
-        TestDef('check_dependency', 'Missing dependencies',
-                'Looks for upstream commits your patches need that are '
-                'not in the series',
-                'check_dependency.log', 'TEST_CHECK_DEPENDENCY'),
-        TestDef('check_kconfig', 'Kconfig',
+        TestDef('check_kconfig', 'check_Kconfig',
                 'Checks that new config symbols are declared and reachable',
                 'check_Kconfig.log', 'TEST_CHECK_KCONFIG'),
-        TestDef('build_allyes_config', 'Build, everything on',
+        TestDef('build_allyes_config', 'allyesconfig',
                 'Compiles with allyesconfig, which reaches code no normal '
                 'config builds',
                 'build_allyes_config.log', 'TEST_BUILD_ALLYES'),
-        TestDef('build_allno_config', 'Build, everything off',
+        TestDef('build_allno_config', 'allnoconfig',
                 'Compiles with allnoconfig, which catches code that only '
                 'builds because something else was enabled',
                 'build_allno_config.log', 'TEST_BUILD_ALLNO'),
-        TestDef('build_anolis_defconfig', 'Build, shipping config',
+        TestDef('build_anolis_defconfig', 'anolis_defconfig',
                 'Compiles with anolis_defconfig, the configuration '
                 'OpenAnolis actually ships',
                 'build_anolis_defconfig.log', 'TEST_BUILD_DEFCONFIG'),
-        TestDef('build_anolis_debug', 'Build, debug config',
+        TestDef('build_anolis_debug', 'anolis-debug_defconfig',
                 'Compiles with anolis-debug_defconfig, which turns on the '
                 'debugging checks',
                 'build_anolis_debug_defconfig.log', 'TEST_BUILD_DEBUG'),
-        TestDef('anck_rpm_build', 'Kernel packages',
+        TestDef('anck_rpm_build', 'build_rpm',
                 'Builds the ANCK RPMs, the form the kernel is delivered in',
                 'anck_rpm_build.log', 'TEST_RPM_BUILD'),
-        TestDef('check_kapi', 'Kernel ABI',
-                'Checks the series does not break the ABI that modules '
-                'built against this kernel rely on',
-                'kapi_test.log', 'TEST_CHECK_KAPI'),
-        TestDef('boot_kernel_rpm', 'Boot test',
-                'Installs the built kernel in a VM and checks it comes up',
-                'boot_kernel_rpm.log', 'TEST_BOOT_KERNEL'),
-        TestDef('build_perf', 'Build perf',
+        TestDef('build_perf', 'build_perf',
                 'Builds the perf tool, which breaks on kernel header '
                 'changes that the kernel build itself does not notice',
                 'build_perf.log', 'TEST_BUILD_PERF'),
+
+        # Their anck-ci-test suite, which runs on a machine already
+        # booted into the series.  Three rows on their page, so three
+        # here, even though one invocation of their run.sh reports all
+        # of them.
+        TestDef('boot_kernel_rpm', 'boot_kernel_rpm',
+                'Installs the built kernel in a VM and checks it comes up',
+                'boot_kernel_rpm.log', 'TEST_BOOT_KERNEL'),
+        TestDef('check_kapi', 'check_kapi',
+                'Compares the booted kernel\'s ABI against the baseline '
+                'their kabi-whitelist ships for this branch',
+                'kapi_test.log', 'TEST_CHECK_KAPI'),
+        TestDef('check_dmesg', 'check_dmesg',
+                'Reads the booted kernel\'s log for errors, minus the '
+                'harmless ones their own whitelist filters out',
+                'check_dmesg.log', 'TEST_CHECK_DMESG'),
     ),
     # The six oe_ tests are openEuler's own gate, run from their code in the
     # hulk_robot_test submodule rather than reimplemented.  Our own

@@ -141,6 +141,11 @@ class Workspace:
         Returns advisory notes about the saved configuration: things that are
         legal but probably not intended.
         """
+        if not distro:
+            # Nothing is selected by default, so this is the ordinary
+            # first-run state rather than a corrupted request, and it
+            # should read as an instruction and not as an error.
+            raise ConfigError({'distro': 'choose a distribution'})
         if not registry.is_distro(distro):
             raise ConfigError({'distro': 'unknown distribution'})
 

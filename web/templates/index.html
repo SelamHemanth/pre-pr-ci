@@ -1176,16 +1176,34 @@ footer a:hover { text-decoration: underline; }
     <div class="modal">
       <div class="modal-head">
         <svg class="icon" style="color:var(--accent);font-size:17px"><use href="#i-cog"/></svg>
-        <h2>Configure {{ distroLabel(form.distro) }}</h2>
+        <h2>Configure<span v-if="form.distro"> {{ distroLabel(form.distro) }}</span></h2>
         <button class="icon-btn" @click="configOpen = false"><svg class="icon"><use href="#i-x"/></svg></button>
       </div>
 
       <div class="modal-body">
         <div class="field">
           <label>Distribution</label>
-          <select v-model="form.distro" @change="loadFields(form.distro)">
+          <select v-model="form.distro" @change="loadFields(form.distro)"
+                  :class="{ bad: errors.distro }">
+            <option value="" disabled>Choose a distribution</option>
             <option v-for="d in status.distros" :key="d.id" :value="d.id">{{ d.label }}</option>
           </select>
+          <div class="hint" v-if="!form.distro">
+            Which gate this series is aimed at. The rest of the form is
+            that distribution's own settings, so it follows from this.
+          </div>
+        </div>
+
+        <div class="banner" v-if="!form.distro">
+          <svg class="icon"><use href="#i-warn"/></svg>
+          <div>
+            Nothing is selected yet.
+            <span v-if="status.detected_distro">
+              This host looks like {{ distroLabel(status.detected_distro) }},
+              which is a guess about the machine, not about where the patches
+              are going &mdash; pick the one you are sending to.
+            </span>
+          </div>
         </div>
 
         <div v-for="section in fieldSections" :key="section.key">
@@ -1239,7 +1257,9 @@ footer a:hover { text-decoration: underline; }
 
       <div class="modal-foot">
         <button class="btn" @click="configOpen = false">Cancel</button>
-        <button class="btn btn-primary" @click="saveConfig()" :disabled="saving">
+        <button class="btn btn-primary" @click="saveConfig()"
+                :disabled="saving || !form.distro"
+                :title="form.distro ? '' : 'Choose a distribution first'">
           <svg class="icon" :class="{ spin: saving }"><use :href="saving ? '#i-refresh' : '#i-check'"/></svg>
           {{ saving ? 'Saving' : 'Save configuration' }}
         </button>
@@ -1318,7 +1338,7 @@ createApp({
       fieldSections: [],
       fieldTests: [],
       errors: {},
-      form: { distro: 'euler', values: {}, tests: [] },
+      form: { distro: '', values: {}, tests: [] },
       // Names of the secret fields the server already has a value for.
       storedSecrets: [],
 
@@ -1865,17 +1885,25 @@ createApp({
 
     async openConfig() {
       this.errors = {};
-      // Configured distro first, then whatever this host looks like, and
-      // only then the fallback -- a first-time visitor should not have to
-      // correct a guess.
-      this.form.distro = this.status.distro
-        || this.status.detected_distro
-        || this.form.distro;
+      // Only a distro that was actually chosen and saved.  Nothing is
+      // guessed: the two gates differ in what they run and what they
+      // reject, so a wrong guess silently predicts the wrong CI, and
+      // this host's own identity says nothing about where the series
+      // is headed.  An empty box asks; a filled one assumes.
+      this.form.distro = this.status.distro || '';
       await this.loadFields(this.form.distro);
       this.configOpen = true;
     },
 
     async loadFields(distro) {
+      if (!distro) {
+        this.fieldSections = [];
+        this.fieldTests = [];
+        this.form.values = {};
+        this.form.tests = [];
+        this.storedSecrets = [];
+        return;
+      }
       try {
         const data = await this.api(`/api/config/fields?distro=${distro}`);
         this.fieldSections = data.sections;

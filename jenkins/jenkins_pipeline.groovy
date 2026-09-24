@@ -98,7 +98,7 @@ pipeline {
             multiSelectDelimiter: ',',
             visibleItemCount: 11,
             description: 'Select one or more Anolis test cases',
-            value: 'check_dependency,check_Kconfig,build_allyes_config,build_allno_config,build_anolis_defconfig,build_anolis_debug,anck_rpm_build,check_kapi,boot_kernel_rpm,test_build_perf,all'
+            value: 'check_Kconfig,build_allyes_config,build_allno_config,build_anolis_defconfig,build_anolis_debug,anck_rpm_build,build_perf,boot_kernel_rpm,check_kapi,check_dmesg,all'
         )
 
    extendedChoice(
@@ -765,16 +765,16 @@ def anolis_test_configuration() {
 
         def commandMap = [
             "all"                    : "make test",
-            "check_dependency"       : "make anolis-test=check_dependency",
             "check_Kconfig"          : "make anolis-test=check_kconfig",
             "build_allyes_config"    : "make anolis-test=build_allyes_config",
             "build_allno_config"     : "make anolis-test=build_allno_config",
             "build_anolis_defconfig" : "make anolis-test=build_anolis_defconfig",
             "build_anolis_debug"     : "make anolis-test=build_anolis_debug",
             "anck_rpm_build"         : "make anolis-test=anck_rpm_build",
-            "check_kapi"             : "make anolis-test=check_kapi",
+            "build_perf"             : "make anolis-test=build_perf",
             "boot_kernel_rpm"        : "make anolis-test=boot_kernel_rpm",
-	    "test_build_perf"	     : "make anolis-test=build_perf"
+            "check_kapi"             : "make anolis-test=check_kapi",
+            "check_dmesg"            : "make anolis-test=check_dmesg"
         ]
 
         def selectedTests = params.Anolis_Selected_tests

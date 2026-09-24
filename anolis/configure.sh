@@ -48,7 +48,7 @@ update_tests() {
 
 	# Default: disable all tests
 	RUN_TESTS="no"
-	TEST_CHECK_DEPENDENCY="no"
+	TEST_CHECK_DMESG="no"
 	TEST_CHECK_KCONFIG="no"
 	TEST_BUILD_ALLYES="no"
 	TEST_BUILD_ALLNO="no"
@@ -61,16 +61,16 @@ update_tests() {
 
 	echo ""
 	echo "Available tests:"
-	echo "  1)  check_dependency		- Check commit dependencies"
-	echo "  2)  check_Kconfig	 	  - Validate Kconfig settings"
-	echo "  3)  build_allyes_config	  - Build with allyesconfig"
-	echo "  4)  build_allno_config	  	  - Build with allnoconfig"
-	echo "  5)  build_anolis_defconfig  	  - Build with anolis_defconfig"
-	echo "  6)  build_anolis_debug_defconfig - Build with anolis-debug_defconfig"
-	echo "  7)  anck_rpm_build	  	  - Build ANCK RPM packages"
-	echo "  8)  check_kapi		  	  - Check KAPI compatibility"
-	echo "  9)  boot_kernel_rpm	  	  - Boot test (requires remote setup)"
-	echo "  10) build_perf	  	  - Build perf tool"
+	echo "  1)  check_Kconfig               - Validate Kconfig settings"
+	echo "  2)  build_allyes_config        - Build with allyesconfig"
+	echo "  3)  build_allno_config         - Build with allnoconfig"
+	echo "  4)  build_anolis_defconfig     - Build with anolis_defconfig"
+	echo "  5)  build_anolis_debug_defconfig - Build with anolis-debug_defconfig"
+	echo "  6)  anck_rpm_build             - Build ANCK RPM packages"
+	echo "  7)  build_perf                 - Build perf tool"
+	echo "  8)  boot_kernel_rpm            - Boot test (requires a VM)"
+	echo "  9)  check_kapi                 - Check KAPI compatibility"
+	echo "  10) check_dmesg                - Boot log of the booted kernel"
 	echo ""
 
 	read -r -p "Select tests to run (comma-separated, 'all', or 'none') [all]: " test_selection
@@ -81,7 +81,7 @@ update_tests() {
 
 	if [ "$TEST_SELECTION" == "all" ]; then
 		RUN_TESTS="yes"
-		TEST_CHECK_DEPENDENCY="yes"
+		TEST_CHECK_DMESG="yes"
 		TEST_CHECK_KCONFIG="yes"
 		TEST_BUILD_ALLYES="yes"
 		TEST_BUILD_ALLNO="yes"
@@ -98,16 +98,16 @@ update_tests() {
 		IFS=',' read -ra SELECTED <<< "$TEST_SELECTION"
 		for test_num in "${SELECTED[@]}"; do
 			case "${test_num// /}" in
-				1) TEST_CHECK_DEPENDENCY="yes" ;;
-				2) TEST_CHECK_KCONFIG="yes" ;;
-				3) TEST_BUILD_ALLYES="yes" ;;
-				4) TEST_BUILD_ALLNO="yes" ;;
-				5) TEST_BUILD_DEFCONFIG="yes" ;;
-				6) TEST_BUILD_DEBUG="yes" ;;
-				7) TEST_RPM_BUILD="yes" ; RPM_BUILD_SELECTED="yes" ;;
-				8) TEST_CHECK_KAPI="yes" ;;
-				9) TEST_BOOT_KERNEL="yes" ; BOOT_SELECTED="yes" ;;
-				10) TEST_BUILD_PERF="yes" ;;
+				1) TEST_CHECK_KCONFIG="yes" ;;
+				2) TEST_BUILD_ALLYES="yes" ;;
+				3) TEST_BUILD_ALLNO="yes" ;;
+				4) TEST_BUILD_DEFCONFIG="yes" ;;
+				5) TEST_BUILD_DEBUG="yes" ;;
+				6) TEST_RPM_BUILD="yes" ; RPM_BUILD_SELECTED="yes" ;;
+				7) TEST_BUILD_PERF="yes" ;;
+				8) TEST_BOOT_KERNEL="yes" ; BOOT_SELECTED="yes" ;;
+				9) TEST_CHECK_KAPI="yes" ;;
+				10) TEST_CHECK_DMESG="yes" ;;
 			esac
 		done
 	fi
@@ -200,7 +200,7 @@ update_tests() {
 
 	# Update only test-related lines in .configure
 	config_set "${CONFIG_FILE}" RUN_TESTS             "${RUN_TESTS}"
-	config_set "${CONFIG_FILE}" TEST_CHECK_DEPENDENCY "${TEST_CHECK_DEPENDENCY}"
+	config_set "${CONFIG_FILE}" TEST_CHECK_DMESG "${TEST_CHECK_DMESG}"
 	config_set "${CONFIG_FILE}" TEST_CHECK_KCONFIG    "${TEST_CHECK_KCONFIG}"
 	config_set "${CONFIG_FILE}" TEST_BUILD_ALLYES     "${TEST_BUILD_ALLYES}"
 	config_set "${CONFIG_FILE}" TEST_BUILD_ALLNO      "${TEST_BUILD_ALLNO}"
@@ -223,7 +223,8 @@ fi
 
 if ! torvalds_sync; then
 	echo -e "${YELLOW}Continuing without an up-to-date mainline mirror;${NC}"
-	echo -e "${YELLOW}check_dependency cannot resolve upstream commits until it is fixed.${NC}"
+	echo -e "${YELLOW}the 'commit <sha> upstream.' line cannot be resolved or${NC}"
+	echo -e "${YELLOW}checked until it is fixed.${NC}"
 fi
 
 # General Configuration
@@ -254,16 +255,16 @@ echo ""
 echo "=== Test Configuration ==="
 echo ""
 echo "Available tests:"
-echo "  1) check_dependency	      - Check commit dependencies"
-echo "  2) check_Kconfig              - Validate Kconfig settings"
-echo "  3) build_allyes_config        - Build with allyesconfig"
-echo "  4) build_allno_config         - Build with allnoconfig"
-echo "  5) build_anolis_defconfig     - Build with anolis_defconfig"
-echo "  6) build_anolis_debug_defconfig - Build with anolis-debug_defconfig"
-echo "  7) anck_rpm_build             - Build ANCK RPM packages"
-echo "  8) check_kapi                 - Check KAPI compatibility"
-echo "  9) boot_kernel_rpm            - Boot test (requires remote setup)"
-echo "  10) build_perf		- Build perf tool"
+echo "  1)  check_Kconfig               - Validate Kconfig settings"
+echo "  2)  build_allyes_config        - Build with allyesconfig"
+echo "  3)  build_allno_config         - Build with allnoconfig"
+echo "  4)  build_anolis_defconfig     - Build with anolis_defconfig"
+echo "  5)  build_anolis_debug_defconfig - Build with anolis-debug_defconfig"
+echo "  6)  anck_rpm_build             - Build ANCK RPM packages"
+echo "  7)  build_perf                 - Build perf tool"
+echo "  8)  boot_kernel_rpm            - Boot test (requires a VM)"
+echo "  9)  check_kapi                 - Check KAPI compatibility"
+echo "  10) check_dmesg                - Boot log of the booted kernel"
 echo ""
 
 read -r -p "Select tests to run (comma-separated, 'all', or 'none') [all]: " test_selection
@@ -272,7 +273,7 @@ TEST_SELECTION="${test_selection:-all}"
 # Parse test selection
 if [ "$TEST_SELECTION" == "all" ] || [ -z "$TEST_SELECTION" ]; then
   RUN_TESTS="yes"
-  TEST_CHECK_DEPENDENCY="yes"
+  TEST_CHECK_DMESG="yes"
   TEST_CHECK_KCONFIG="yes"
   TEST_BUILD_ALLYES="yes"
   TEST_BUILD_ALLNO="yes"
@@ -284,7 +285,7 @@ if [ "$TEST_SELECTION" == "all" ] || [ -z "$TEST_SELECTION" ]; then
   TEST_BUILD_PERF="yes"
 elif [ "$TEST_SELECTION" == "none" ]; then
   RUN_TESTS="no"
-  TEST_CHECK_DEPENDENCY="no"
+  TEST_CHECK_DMESG="no"
   TEST_CHECK_KCONFIG="no"
   TEST_BUILD_ALLYES="no"
   TEST_BUILD_ALLNO="no"
@@ -296,7 +297,7 @@ elif [ "$TEST_SELECTION" == "none" ]; then
   TEST_BUILD_PERF="no"
 else
   RUN_TESTS="yes"
-  TEST_CHECK_DEPENDENCY="no"
+  TEST_CHECK_DMESG="no"
   TEST_CHECK_KCONFIG="no"
   TEST_BUILD_ALLYES="no"
   TEST_BUILD_ALLNO="no"
@@ -311,16 +312,16 @@ else
   IFS=',' read -ra SELECTED <<< "$TEST_SELECTION"
   for test_num in "${SELECTED[@]}"; do
     case "${test_num// /}" in
-      1) TEST_CHECK_DEPENDENCY="yes" ;;
-      2) TEST_CHECK_KCONFIG="yes" ;;
-      3) TEST_BUILD_ALLYES="yes" ;;
-      4) TEST_BUILD_ALLNO="yes" ;;
-      5) TEST_BUILD_DEFCONFIG="yes" ;;
-      6) TEST_BUILD_DEBUG="yes" ;;
-      7) TEST_RPM_BUILD="yes" ;;
-      8) TEST_CHECK_KAPI="yes" ;;
-      9) TEST_BOOT_KERNEL="yes" ;;
-      10) TEST_BUILD_PERF="yes" ;;
+      1) TEST_CHECK_KCONFIG="yes" ;;
+      2) TEST_BUILD_ALLYES="yes" ;;
+      3) TEST_BUILD_ALLNO="yes" ;;
+      4) TEST_BUILD_DEFCONFIG="yes" ;;
+      5) TEST_BUILD_DEBUG="yes" ;;
+      6) TEST_RPM_BUILD="yes" ;;
+      7) TEST_BUILD_PERF="yes" ;;
+      8) TEST_BOOT_KERNEL="yes" ;;
+      9) TEST_CHECK_KAPI="yes" ;;
+      10) TEST_CHECK_DMESG="yes" ;;
     esac
   done
 fi
@@ -370,7 +371,7 @@ BUILD_THREADS="${BUILD_THREADS}"
 
 # Test Configuration
 RUN_TESTS="${RUN_TESTS}"
-TEST_CHECK_DEPENDENCY="${TEST_CHECK_DEPENDENCY}"
+TEST_CHECK_DMESG="${TEST_CHECK_DMESG}"
 TEST_CHECK_KCONFIG="${TEST_CHECK_KCONFIG}"
 TEST_BUILD_ALLYES="${TEST_BUILD_ALLYES}"
 TEST_BUILD_ALLNO="${TEST_BUILD_ALLNO}"

@@ -19,13 +19,38 @@
 # same two steps their platform does, and then their suite runs there
 # unmodified and its verdicts are read back.
 #
-# Their suite is one invocation reporting three cases, so this is one
-# file reporting three verdicts rather than three files each paying
-# for its own ssh round trip and its own kabi-dw build.
+# Their suite is one invocation reporting three cases.  Their report
+# shows three rows, so we want three rows, but running their run.sh
+# once per row would reboot nothing and rebuild kabi-dw three times
+# for three answers it already gave.  So: run it once, keep the
+# output for the rest of this test.sh, and let each row read its own
+# verdict out of it.
+#
+#   anck_ci_test.sh              every case, suite verdict
+#   anck_ci_test.sh check_dmesg  that one case only
 
 set -u
 
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+
+# The three their run() reports, and the only three.  Worth pinning:
+# their run.sh warns on stderr when EXPECT_KERNEL_VERSION is unset,
+# in the same ====WARN: form as a verdict, so anything reading the
+# markers loosely would invent a case called EXPECT_KERNEL_VERSION
+# and drag the suite down to a warning over it.
+THEIR_CASES='boot_kernel_rpm check_kapi check_dmesg'
+
+WANT_CASE="${1:-}"
+if [ -n "${WANT_CASE}" ]; then
+  case " ${THEIR_CASES} " in
+    *" ${WANT_CASE} "*) ;;
+    *)
+      echo "anck-ci-test: their suite has no case '${WANT_CASE}'" >&2
+      echo "  it reports: ${THEIR_CASES}" >&2
+      exit "${CASE_ERROR}"
+      ;;
+  esac
+fi
 
 # shellcheck source=/dev/null
 . "${WORKDIR:-$(dirname "${ANOLIS_DIR}")}/lib/vm.sh"
@@ -35,6 +60,15 @@ SUITE_SRC="${TONE_CLI_DIR}/tests/${SUITE_NAME}"
 REMOTE_DIR="/tmp/prci-${SUITE_NAME}"
 
 tone_cli_ready || tone_cli_missing || exit $?
+
+# Keyed on our parent, which is the test.sh that asked: the three
+# rows of one run share an answer, a later run gets a fresh one.
+CACHE="${TMPDIR:-/tmp}/prci-${SUITE_NAME}-$PPID.out"
+
+if [ -s "${CACHE}" ]; then
+  echo "  -> reading ${WANT_CASE:-the suite} out of their earlier run"
+  output="$(cat "${CACHE}")"
+else
 
 # The VM is the whole point of this suite, so an unset one is a skip
 # with a reason rather than a failure: nothing was rejected, there was
@@ -89,28 +123,39 @@ output=$(vm_ssh "
   . '${REMOTE_DIR}/run.sh'
   run
 " 2>&1)
-printf '%s\n' "${output}"
 
 vm_ssh "rm -rf ${REMOTE_DIR}" >/dev/null 2>&1 || true
+printf '%s\n' "${output}" > "${CACHE}"
+
+fi
+
+printf '%s\n' "${output}"
+
+# Only the lines whose second field is one of their case names, so
+# their stderr EXPECT_KERNEL_VERSION warning stays a warning in the
+# log instead of becoming a verdict.
+markers=$(printf '%s\n' "${output}" | awk -v want="${WANT_CASE}" '
+  /^====(PASS|FAIL|SKIP|WARN):/ &&
+  ($2 == "boot_kernel_rpm" || $2 == "check_kapi" || $2 == "check_dmesg") &&
+  (want == "" || $2 == want)')
 
 # Their parse.awk turns their four markers into the words their report
-# shows.  Each case they ran is a row here, so a reader comparing the
-# two sees the same three names with the same three verdicts.
+# shows, so a reader comparing the two sees the same names against the
+# same verdicts.
 echo
-printf '%s\n' "${output}" | awk -f "${SUITE_SRC}/parse.awk"
+printf '%s\n' "${markers}" | awk -f "${SUITE_SRC}/parse.awk"
 
-# The suite's own status is the worst of the three, by the same order
-# their report treats them: a failure outranks a warning, which
-# outranks a skip.
-if printf '%s' "${output}" | grep -q '====FAIL:'; then
+# Worst of what was asked for, in the order their report treats them:
+# a failure outranks a warning, which outranks a pass.
+if printf '%s' "${markers}" | grep -q '====FAIL:'; then
   exit "${CASE_FAIL}"
-elif printf '%s' "${output}" | grep -q '====WARN:'; then
+elif printf '%s' "${markers}" | grep -q '====WARN:'; then
   exit "${CASE_WARN}"
-elif printf '%s' "${output}" | grep -q '====PASS:'; then
+elif printf '%s' "${markers}" | grep -q '====PASS:'; then
   exit "${CASE_PASS}"
-elif printf '%s' "${output}" | grep -q '====SKIP:'; then
+elif printf '%s' "${markers}" | grep -q '====SKIP:'; then
   exit "${CASE_SKIP}"
 fi
 
-echo "${SUITE_NAME}: their suite reported no verdict at all" >&2
+echo "${SUITE_NAME}: their suite reported no verdict for ${WANT_CASE:-any case}" >&2
 exit "${CASE_ERROR}"

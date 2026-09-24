@@ -151,8 +151,10 @@ def api_status():
         'distro': distro,
         'distro_label': registry.DISTROS.get(distro),
         'distros': [{'id': k, 'label': v} for k, v in registry.DISTROS.items()],
-        # Lets a first-time visitor's distro picker default to this host
-        # instead of guessing, the way the make wizard already does.
+        # Shown next to an empty picker, never selected into it.  Which
+        # distro this host is says nothing about which gate the series
+        # is aimed at, and the two gates run different checks, so the
+        # choice is the user's to make.
         'detected_distro': registry.detect_distro(),
         'active_jobs': store.active(),
         'terminal_alive': terminal.alive,
@@ -204,6 +206,9 @@ def api_config_get():
 def api_config_post():
     payload = request.get_json(silent=True) or {}
     distro = payload.get('distro')
+    if not distro:
+        return jsonify({'success': False,
+                        'errors': {'distro': 'Choose a distribution'}}), 400
     if not registry.is_distro(distro):
         return jsonify({'success': False,
                         'errors': {'distro': 'Unknown distribution'}}), 400

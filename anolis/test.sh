@@ -121,6 +121,7 @@ TOTAL_TESTS=0
 PASSED_TESTS=0
 FAILED_TESTS=0
 SKIPPED_TESTS=0
+WARNED_TESTS=0
 
 if [ $(arch) == "x86_64" ]; then
   kernel_arch="x86"
@@ -159,6 +160,20 @@ skip() {
   ((TOTAL_TESTS++))
 }
 
+# Their suites have four verdicts, not three: parse.awk turns ====WARN:
+# into Warning, and their report shows it as its own state.  Folding it
+# into pass would hide something they flagged, and into fail would
+# reject a series they let through.
+warn() {
+  local test_name="$1"
+  local reason="${2:-}"
+  echo -e "${YELLOW}⚠ WARN${NC}: ${test_name}"
+  [ -n "$reason" ] && echo -e "  Reason: ${reason}"
+  TEST_RESULTS+=("WARN:${test_name}")
+  ((WARNED_TESTS++))
+  ((TOTAL_TESTS++))
+}
+
 # Common function to build kernel with given config target
 run_kernel_build() {
   local test_name="$1"
@@ -189,73 +204,8 @@ sync_torvalds_repo() {
 
 # ---- TEST DEFINITIONS ----
 
-test_check_dependency() {
-  echo -e "${BLUE}Test-1: check_dependency${NC}"
-
-  # Ensure Torvalds repo is present and up to date before running the check
-  sync_torvalds_repo
-
-  cd "${LINUX_SRC_PATH}"
-
-  # Get list of applied commits (those that are ahead of the reset point)
-  local applied_commits=()
-  mapfile -t applied_commits < <(git log --format=%H HEAD | head -n "${NUM_PATCHES:-10}")
-
-  if [ ${#applied_commits[@]} -eq 0 ]; then
-    skip "check_dependency" "No commits to check"
-    echo ""
-    return
-  fi
-
-  echo "  → Checking ${#applied_commits[@]} commits for dependencies..."
-
-  local commits_file="${SCRIPT_DIR}/.commits.txt"
-  local dep_log="${LOGS_DIR}/check_dependency.log"
-  local checkdepend_script="${WORKDIR}/lib/checkdepend.py"
-
-  # Check if checkdepend.py exists
-  if [ ! -f "${checkdepend_script}" ]; then
-    fail "check_dependency" "checkdepend.py not found at ${checkdepend_script}"
-    echo ""
-    return
-  fi
-
-  # Extract upstream commit IDs and save to .commits.txt
-  > "${commits_file}"
-  for commit in "${applied_commits[@]}"; do
-    local commit_body=$(git log -1 --format=%B "${commit}")
-    # Extract upstream commit ID (full 40-char hash) from commit message
-    local upstream_commit=$(echo "${commit_body}" | grep -oP '(?<=^commit )[a-f0-9]{40}' | head -1)
-    if [ -n "${upstream_commit}" ]; then
-      # Save the full 40-character hash
-      echo "${upstream_commit}" >> "${commits_file}"
-    fi
-  done
-
-  # Check if we have any commits to check
-  local commit_count=$(wc -l < "${commits_file}")
-  if [ ${commit_count} -eq 0 ]; then
-    skip "check_dependency" "No upstream commit IDs found in patches"
-    echo ""
-    return
-  fi
-
-  # checkdepend.py reports the result in its exit status: 0 clean, 1 missing
-  # dependencies, 2 could not run.  Grepping its output for "FAIL" used to
-  # match any commit subject that happened to contain the word.
-  python3 "${checkdepend_script}" "${LINUX_SRC_PATH}" "${TORVALDS_REPO}" \
-    "${commits_file}" --output-dir "${LOGS_DIR}" > "${dep_log}" 2>&1
-  case $? in
-    0) pass "check_dependency" ;;
-    1) fail "check_dependency" "Some commits have unfixed dependencies (see ${dep_log})" ;;
-    *) fail "check_dependency" "checkdepend.py could not run (see ${dep_log})" ;;
-  esac
-
-  echo ""
-}
-
 test_check_kconfig() {
-  echo -e "${BLUE}Test-2: check_Kconfig${NC}"
+  echo -e "${BLUE}Test-1: check_Kconfig${NC}"
   cd "${LINUX_SRC_PATH}/anolis" 2>/dev/null || {
     skip "check_kconfig" "anolis/ directory not found"
     return
@@ -311,28 +261,28 @@ test_check_kconfig() {
 }
 
 test_build_allyes_config() {
-  echo -e "${BLUE}Test-3: build_allyes_config${NC}"
+  echo -e "${BLUE}Test-2: build_allyes_config${NC}"
   run_kernel_build "build_allyes_config" "allyesconfig"
 }
 
 test_build_allno_config() {
-  echo -e "${BLUE}Test-4: build_allno_config${NC}"
+  echo -e "${BLUE}Test-3: build_allno_config${NC}"
   run_kernel_build "build_allno_config" "allnoconfig"
 }
 
 test_build_anolis_defconfig() {
-  echo -e "${BLUE}Test-5: build_anolis_defconfig${NC}"
+  echo -e "${BLUE}Test-4: build_anolis_defconfig${NC}"
   run_kernel_build "build_anolis_defconfig" "anolis_defconfig"
 }
 
 test_build_anolis_debug_defconfig() {
-  echo -e "${BLUE}Test-6: build_anolis_debug_defconfig${NC}"
+  echo -e "${BLUE}Test-5: build_anolis_debug_defconfig${NC}"
   run_kernel_build "build_anolis_debug" "anolis-debug_defconfig" \
                    "build_anolis_debug_defconfig"
 }
 
 test_anck_rpm_build() {
-  echo -e "${BLUE}Test-7: anck_rpm_build${NC}"
+  echo -e "${BLUE}Test-6: anck_rpm_build${NC}"
 
   # Check and install required build dependencies only if missing
   local packages="audit-libs-devel binutils-devel libbpf-devel libcap-ng-devel libnl3-devel newt-devel pciutils-devel xmlto yum-utils"
@@ -428,7 +378,7 @@ test_anck_rpm_build() {
 }
 
 test_boot_kernel_rpm() {
-  echo -e "${BLUE}Test-9: boot_kernel_rpm${NC}"
+  echo -e "${BLUE}Test-8: boot_kernel_rpm${NC}"
 
   run_boot_test "boot_kernel_rpm" \
     "${LINUX_SRC_PATH}/anolis/outputs/rpmbuild/RPMS/$(arch)" \
@@ -603,7 +553,7 @@ test_check_kapi() {
 }
 
 test_build_perf() {
-  echo -e "${BLUE}Test-10: build_perf${NC}"
+  echo -e "${BLUE}Test-7: build_perf${NC}"
 
   local perf_log="${LOGS_DIR}/build_perf.log"
   local perf_dir="${LINUX_SRC_PATH}/tools/perf"
@@ -648,6 +598,28 @@ test_build_perf() {
   echo ""
 }
 
+test_check_dmesg() {
+  echo -e "${BLUE}Test-10: check_dmesg${NC}"
+
+  # Theirs is one of the three cases their anck-ci-test suite reports,
+  # and it reads the log of the running kernel -- so it only means
+  # anything on the VM, after the series' RPM is installed and booted.
+  # The case script runs their suite there and hands back this row.
+  local dmesg_log="${LOGS_DIR}/check_dmesg.log"
+
+  bash "${SCRIPT_DIR}/cases/anck_ci_test.sh" check_dmesg \
+    > "${dmesg_log}" 2>&1
+  case $? in
+    0) pass "check_dmesg" ;;
+    3) skip "check_dmesg" "$(tail -n 4 "${dmesg_log}")" ;;
+    5) warn "check_dmesg" "Their check flagged the boot log (see ${dmesg_log})" ;;
+    1) fail "check_dmesg" "Errors in the boot log of the booted kernel (see ${dmesg_log})" ;;
+    *) fail "check_dmesg" "Their suite could not run (see ${dmesg_log})" ;;
+  esac
+
+  echo ""
+}
+
 # ---- TEST EXECUTION ----
 # Check if specific test is requested
 SPECIFIC_TEST="${1:-}"
@@ -658,9 +630,6 @@ if [ -n "$SPECIFIC_TEST" ]; then
   echo ""
 
   case "$SPECIFIC_TEST" in
-    check_dependency)
-      test_check_dependency
-      ;;
     check_kconfig)
       test_check_kconfig
       ;;
@@ -679,46 +648,51 @@ if [ -n "$SPECIFIC_TEST" ]; then
     anck_rpm_build)
       test_anck_rpm_build
       ;;
-    check_kapi)
-      test_check_kapi
+    build_perf)
+      test_build_perf
       ;;
     boot_kernel_rpm)
       test_boot_kernel_rpm
       ;;
-    build_perf)
-      test_build_perf
+    check_kapi)
+      test_check_kapi
+      ;;
+    check_dmesg)
+      test_check_dmesg
       ;;
     *)
       echo -e "${RED}Error: Unknown test '$SPECIFIC_TEST'${NC}"
       echo ""
       echo "Available tests:"
-      echo "  - check_dependency"
       echo "  - check_kconfig"
       echo "  - build_allyes_config"
       echo "  - build_allno_config"
       echo "  - build_anolis_defconfig"
       echo "  - build_anolis_debug"
       echo "  - anck_rpm_build"
-      echo "  - check_kapi"
-      echo "  - boot_kernel_rpm"
       echo "  - build_perf"
+      echo "  - boot_kernel_rpm"
+      echo "  - check_kapi"
+      echo "  - check_dmesg"
       echo ""
       echo "Run '$0 list' for detailed information"
       exit 1
       ;;
   esac
 else
-  # Run all enabled tests
-  [ "${TEST_CHECK_DEPENDENCY:-yes}" == "yes" ] && test_check_dependency
+  # In the order their report lists them: the build cases their
+  # abs_build job runs, then the acceptance cases their anck-ci-test
+  # job runs on a machine booted into the series.
   [ "${TEST_CHECK_KCONFIG:-yes}" == "yes" ] && test_check_kconfig
   [ "${TEST_BUILD_ALLYES:-yes}" == "yes" ] && test_build_allyes_config
   [ "${TEST_BUILD_ALLNO:-yes}" == "yes" ] && test_build_allno_config
   [ "${TEST_BUILD_DEFCONFIG:-yes}" == "yes" ] && test_build_anolis_defconfig
   [ "${TEST_BUILD_DEBUG:-yes}" == "yes" ] && test_build_anolis_debug_defconfig
   [ "${TEST_RPM_BUILD:-yes}" == "yes" ] && test_anck_rpm_build
-  [ "${TEST_CHECK_KAPI:-yes}" == "yes" ] && test_check_kapi
-  [ "${TEST_BOOT_KERNEL:-yes}" == "yes" ] && test_boot_kernel_rpm
   [ "${TEST_BUILD_PERF:-yes}" == "yes" ] && test_build_perf
+  [ "${TEST_BOOT_KERNEL:-yes}" == "yes" ] && test_boot_kernel_rpm
+  [ "${TEST_CHECK_KAPI:-yes}" == "yes" ] && test_check_kapi
+  [ "${TEST_CHECK_DMESG:-yes}" == "yes" ] && test_check_dmesg
 fi
 
 # ---- SUMMARY ----
@@ -739,6 +713,7 @@ fi
   echo "Total Tests: ${TOTAL_TESTS}"
   echo "Passed: ${PASSED_TESTS}"
   echo "Failed: ${FAILED_TESTS}"
+  echo "Warned: ${WARNED_TESTS}"
   echo "Skipped: ${SKIPPED_TESTS}"
 } > "${TEST_LOG}"
 
@@ -748,6 +723,7 @@ echo -e "${GREEN}============${NC}"
 echo "Total Tests: ${TOTAL_TESTS}"
 echo -e "Passed:  ${GREEN}${PASSED_TESTS}${NC}"
 echo -e "Failed:  ${RED}${FAILED_TESTS}${NC}"
+echo -e "Warned:  ${YELLOW}${WARNED_TESTS}${NC}"
 echo -e "Skipped: ${YELLOW}${SKIPPED_TESTS}${NC}"
 echo ""
 echo -e "${BLUE}Full report: ${TEST_LOG}${NC}"
@@ -756,6 +732,9 @@ echo ""
 if [ "${FAILED_TESTS}" -gt 0 ]; then
   echo -e "${RED}✗ Some tests failed${NC}"
   exit 1
+elif [ "${WARNED_TESTS}" -gt 0 ]; then
+  echo -e "${YELLOW}⚠ Nothing failed, but ${WARNED_TESTS} check(s) flagged something${NC}"
+  exit 0
 else
   echo -e "${GREEN}✓ All tests passed or skipped${NC}"
   exit 0
