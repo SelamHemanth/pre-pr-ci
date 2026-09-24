@@ -50,6 +50,17 @@ def read_script(distro):
         return f.read()
 
 
+def submodule_paths():
+    """Every submodule path, from .gitmodules.
+
+    Tests that copy or walk the tree have to leave these out: they are
+    somebody else's repository, they are large, and tone-cli in
+    particular has symlinks that shutil.copytree cannot reproduce.
+    """
+    text = read_file('.gitmodules')
+    return re.findall(r'(?m)^\s*path\s*=\s*(\S+)\s*$', text)
+
+
 def read_file(*parts):
     with open(os.path.join(PROJECT_ROOT, *parts), errors='replace') as f:
         return f.read()
@@ -2045,10 +2056,15 @@ class TestReadyScripts(unittest.TestCase):
         # written by the tests.
         import shutil
         target = os.path.join(self.root, distro)
+        # Every submodule, read from .gitmodules rather than listed
+        # here.  A list went stale the moment tone-cli was added, and
+        # the failure was a copytree error deep in someone else's
+        # symlinks rather than anything to do with readiness.
+        skip = ['__pycache__'] + [os.path.basename(path) for path in
+                                  submodule_paths()]
         shutil.copytree(os.path.join(PROJECT_ROOT, distro), target,
                         symlinks=True, dirs_exist_ok=True,
-                        ignore=shutil.ignore_patterns(
-                            'kernel', 'hulk_robot_test', '__pycache__'))
+                        ignore=shutil.ignore_patterns(*skip))
         with open(os.path.join(target, '.configure'), 'w') as f:
             f.write(config)
         done = subprocess.run(

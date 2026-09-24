@@ -10,3 +10,7 @@
 [submodule "euler/hulk_robot_test"]
 	path = euler/hulk_robot_test
 	url = https://gitcode.com/hulk-robot/hulk_robot_test.git
+[submodule "anolis/tone-cli"]
+	path = anolis/tone-cli
+	url = https://gitee.com/anolis/tone-cli.git
+	shallow = true
