@@ -1734,13 +1734,16 @@ createApp({
       this.refresh();
     },
 
+    // Deliberately does not open the log.  Starting one check is the
+    // cheap thing you do to get on with something else, and a panel
+    // covering half the page to show a queued job with nothing in it
+    // yet had to be dismissed every time.  The row's own log button is
+    // there when it is wanted, and running everything never did this.
     async runTest(test) {
       try {
-        const data = await this.post(`/api/test/${encodeURIComponent(test.name)}`);
+        await this.post(`/api/test/${encodeURIComponent(test.name)}`);
         this.toast('ok', `Queued ${test.name}`);
         await this.refresh();
-        const job = this.jobs.find(j => j.id === data.job.id);
-        if (job) this.openLog(job);
       } catch (error) {
         this.toast('bad', `Could not start ${test.name}`, error.message);
       }
