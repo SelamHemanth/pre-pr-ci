@@ -95,9 +95,9 @@ def architectures_they_build():
     page shows, which is its own kind of wrong answer.
 
     Branch-independent on purpose.  Which of them a given branch
-    actually compiles is decided per run, by oe_build.sh asking this
-    same file through their check_branch.py, and one that drops out
-    there reports as skipped -- which is what their job does too.
+    actually compiles is decided per run, by their own check_branch.py
+    reading this same file, and one that drops out there reports as
+    skipped -- which is what their job does too.
     """
     order = []
     try:

@@ -142,7 +142,8 @@ class TestRegistryMatchesScripts(unittest.TestCase):
         gate = theirs.index('check_branch.py')
         self.assertLess(gate, theirs.index('build_kernel\n'))
         self.assertRegex(theirs[gate:], r'IS_SKIP.*\n.*-ne 0.*\n\s*exit 0')
-        # oe_build.sh turns that sentence into 3, and test.sh passes on 3.
+        # oe_build.sh turns that sentence into 3 for oe_hulk.sh, and test.sh
+        # passes on 3.
         self.assertIn("*'is set to false'*) return 3 ;;",
                       read_file('euler', 'oe_build.sh'))
         self.assertRegex(read_script('euler'), r'(?m)^\s*3\)\s*pass ')
@@ -1363,432 +1364,536 @@ class TestPatchCategory(unittest.TestCase):
             'performance')
 
 
-class TestOpenEulerBuildVerdicts(unittest.TestCase):
-    """What oe_build.sh concludes, with the compiler stubbed out.
+class TestOpenEulerTheirScripts(unittest.TestCase):
+    """That their checkkabi.sh and checkbuild.sh run, and run unaltered.
 
-    The build itself takes an hour and is not what goes wrong.  What goes
-    wrong is the bookkeeping around it: openEuler forgives some warnings
-    on some branches, and an architecture their matrix does not build has
-    to report skipped rather than passed, or a run that compiled nothing
-    reads as a run that found nothing.
+    There is nothing of ours left in the verdict: the rows, their order,
+    the branch exemptions and the exit status all come out of the
+    submodule.  So what is worth testing is the seam -- that their code
+    loads without running, that the functions we stand in for are the
+    ones that reach for Jenkins and not the ones that decide anything,
+    and that the single guard we do add can only ever downgrade a
+    failure their check already reached.
     """
 
-    #: Replaces the real build.  $6 is the warnings file for the cross
-    #: path, and the function's exit status is make's.
-    HARNESS = r'''
-        . "%(root)s/euler/oe_build.sh"
-        _oe_cross_build() { %(stub)s; }
-        _oe_kabi_build()  { %(kabi)s; }
-        _oe_prepare_whitelists() { return 0; }
-        _oe_failed_before_the_series() { return %(prior)s; }
-        oe_build_arch "%(arch)s" %(quiet)s
-    '''
+    SUB = os.path.join(PROJECT_ROOT, 'euler', 'hulk_robot_test', 'openEuler')
 
-    def build(self, arch, branch, stub=':', kabi=':', broken_before=False):
-        return self._run(arch, branch, stub, kabi, broken_before,
-                         quiet='>/dev/null 2>&1')[0]
-
-    def build_output(self, arch, branch, stub=':', kabi=':',
-                     broken_before=False):
-        return self._run(arch, branch, stub, kabi, broken_before,
-                         quiet='2>&1')[1]
-
-    def _run(self, arch, branch, stub, kabi, broken_before, quiet):
-        script = self.HARNESS % {
-            'root': PROJECT_ROOT, 'stub': stub, 'kabi': kabi, 'arch': arch,
-            'prior': '0' if broken_before else '1', 'quiet': quiet,
-        }
-        env = dict(
-            os.environ,
-            SCRIPT_DIR=os.path.join(PROJECT_ROOT, 'euler'),
-            WORKDIR=PROJECT_ROOT,
-            LINUX_SRC_PATH=tempfile.gettempdir(),
-            OE_TARGET_BRANCH=branch,
-            BUILD_THREADS='1',
-            NUM_PATCHES='1',
-        )
-        done = subprocess.run(['bash', '-c', script], env=env,
-                              stdout=subprocess.PIPE,
-                              stderr=subprocess.STDOUT)
+    def shell(self, body, **env):
+        """Run body with oe_hulk.sh sourced, and hand back what it said."""
+        script = '. "%s/euler/oe_hulk.sh"\n%s' % (PROJECT_ROOT, body)
+        done = subprocess.run(
+            ['bash', '-c', script],
+            env=dict(os.environ,
+                     SCRIPT_DIR=os.path.join(PROJECT_ROOT, 'euler'),
+                     WORKDIR=PROJECT_ROOT, **env),
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         return done.returncode, done.stdout.decode('utf-8', 'replace')
 
-    #: A warning on stderr from the incremental build after the patches.
-    WARNED = r'echo "fs/foo.c:12: warning: unused variable" > $6; true'
-    #: make exited non-zero.
-    BROKE = r'echo "error: no rule to make target" > $6; false'
+    # ---- loading their code without running it ----
 
-    def test_clean_build_passes(self):
-        self.assertEqual(self.build('ppc', 'OLK-6.6'), 0)
+    def test_their_functions_load_without_their_main_running(self):
+        # Both scripts end in `main "$@"`, so sourcing one as it stands
+        # would run the whole gate before a single shim was in place.
+        # Dropping that one line leaves a file of definitions.
+        rc, out = self.shell(
+            'test_path="%s"\n'
+            '_hulk_load "%s/checkkabi.sh"\n'
+            'declare -f build_allmodconfig build_defconfig check_kabi '
+            'check_defconfig main >/dev/null && echo all-defined'
+            % (self.SUB, self.SUB))
+        self.assertEqual(rc, 0, out)
+        self.assertIn('all-defined', out)
+        # Their main's first act is to ask check_branch.py about the
+        # branch, which would have printed.  Nothing ran.
+        self.assertNotIn('will perform build check by default', out)
+        self.assertNotIn('Remove old directories', out)
 
-    def test_a_warning_the_patch_introduced_fails(self):
-        self.assertEqual(self.build('ppc', 'OLK-6.6', self.WARNED), 1)
+    def test_the_checks_that_decide_a_verdict_are_theirs_verbatim(self):
+        # The guard against the obvious regression: a shim that quietly
+        # shadowed one of these would leave the tool reporting its own
+        # opinion under openEuler's name.
+        rc, out = self.shell(
+            'test_path="%s"\n'
+            '_hulk_load "%s/checkkabi.sh"\n'
+            '_hulk_shim_jenkins; _hulk_shim_whitelists; _hulk_shim_kernel\n'
+            '_hulk_shim_layout; _hulk_shim_gcc; _hulk_shim_defconfig\n'
+            'for f in build_allmodconfig build_defconfig check_kabi \\\n'
+            '         print_kabi_check_script get_kabi_whitelist_branch; do\n'
+            '  declare -f "$f" | md5sum | cut -d" " -f1\n'
+            'done' % (self.SUB, self.SUB))
+        self.assertEqual(rc, 0, out)
+        theirs = subprocess.run(
+            ['bash', '-c',
+             'test_path="%s"\n'
+             '. <(grep -v \'^main "\\$@"[[:space:]]*$\' "%s/checkkabi.sh")\n'
+             'for f in build_allmodconfig build_defconfig check_kabi '
+             'print_kabi_check_script get_kabi_whitelist_branch; do '
+             '  declare -f "$f" | md5sum | cut -d" " -f1; done'
+             % (self.SUB, self.SUB)],
+            stdout=subprocess.PIPE)
+        self.assertEqual(out.split(), theirs.stdout.decode().split())
 
-    def test_their_olk_5_10_powerpc_exemption_is_honoured(self):
-        # openEuler tolerates powerpc warnings on OLK-5.10 and we cannot be
-        # stricter than the gate we are predicting.
-        self.assertEqual(self.build('ppc', 'OLK-5.10', self.WARNED), 0)
+    def test_log_error_is_fatal_the_way_theirs_is(self):
+        # Not stated anywhere we can read -- openeuler-jenkins is not on
+        # this machine -- but their powerpc job ends on the line after
+        # "[ERROR] build failed" with the build marked failed, having
+        # never reached git_am_pr or the second build that follows it.
+        rc, out = self.shell('log_error "build failed"; echo kept-going')
+        self.assertNotEqual(rc, 0)
+        self.assertNotIn('kept-going', out)
+        self.assertIn('[ERROR] build failed', out)
 
-    def test_the_exemption_is_only_that_branch_and_that_arch(self):
-        self.assertEqual(self.build('riscv64', 'OLK-5.10', self.WARNED), 1)
-        self.assertEqual(self.build('ppc', 'OLK-6.6', self.WARNED), 1)
+    # ---- the shims, and what they are allowed to stand in for ----
 
-    def test_the_exemption_does_not_rescue_a_build_that_failed(self):
-        self.assertEqual(self.build('ppc', 'OLK-5.10', self.BROKE), 1)
-
-    def test_a_tree_that_was_already_broken_is_not_the_series_fault(self):
-        # OLK-6.6 does not compile its own hinic drivers under gcc 12.3.
-        # Calling that a rejected patch teaches people to ignore the
-        # result, which costs more than the check is worth.
+    def test_the_overlay_stubs_the_comment_api_and_nothing_else(self):
+        # pr_comment_api.py posts the verdict to a pull request that does
+        # not exist yet, and wants a Jenkins token we do not have.
+        overlay = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, overlay, True)
+        rc, out = self.shell('_hulk_overlay "%s" "%s/t"'
+                             % (self.SUB, overlay))
+        self.assertEqual(rc, 0, out)
+        here = os.path.join(overlay, 't', 'lib')
         self.assertEqual(
-            self.build('ppc', 'OLK-6.6', self.BROKE, broken_before=True), 4)
-        self.assertEqual(
-            self.build('x86_64', 'OLK-6.6',
-                       kabi=r'printf "| x86_64 allmodconfig build '
-                            r'| broken already, not your series |\n" >> $8',
-                       broken_before=True),
-            4)
+            0, subprocess.call(['python3', os.path.join(here, 'pr_comment_api.py'),
+                                '-o', 'x']))
+        # Their own checks have to still be there to be called.
+        for f in ('check_branch.py', 'common.sh'):
+            self.assertTrue(os.path.exists(os.path.join(here, f)), f)
+        # check_branch.py resolves conf/ beside the lib/ it is run from,
+        # with abspath rather than realpath, so conf/ has to come too.
+        self.assertTrue(os.path.exists(
+            os.path.join(overlay, 't', 'conf', 'check_build.yaml')))
 
-    def test_checks_that_did_run_and_pass_are_not_reported_as_skipped(self):
-        # Their job passes every row, because they build a base that
-        # compiles. Ours can be pointed at a tree that does not, and
-        # calling the whole arch skipped on the strength of one row
-        # nobody can be blamed for buries five checks that genuinely
-        # ran. A verdict that cannot be reconciled with theirs is one
-        # people stop reading.
-        self.assertEqual(
-            self.build('x86_64', 'OLK-6.6',
-                       kabi=r'printf "| x86_64 allmodconfig build '
-                            r'| broken already, not your series |\n'
-                            r'| x86_64 openeuler_defconfig | pass |\n'
-                            r'| x86_64 checkkabi | pass |\n" >> $8',
-                       broken_before=True),
-            0)
+    def test_the_overlay_leaves_their_checkout_alone(self):
+        # The reason it is a copy.  A stub written over the original, or
+        # the object file their kabi_guard Makefile drops, would show up
+        # as a local modification of a submodule.
+        theirs = os.path.join(self.SUB, 'lib', 'pr_comment_api.py')
+        with open(theirs, 'rb') as f:
+            before = f.read()
+        overlay = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, overlay, True)
+        self.shell('_hulk_overlay "%s" "%s/t"' % (self.SUB, overlay))
+        with open(theirs, 'rb') as f:
+            self.assertEqual(before, f.read())
 
-    def test_the_pass_still_says_which_check_went_unjudged(self):
-        out = self.build_output(
-            'x86_64', 'OLK-6.6',
-            kabi=r'printf "| x86_64 allmodconfig build '
-                 r'| broken already, not your series |\n'
-                 r'| x86_64 checkkabi | pass |\n" >> $8',
-            broken_before=True)
-        self.assertIn('allmodconfig', out)
-        self.assertIn('not ones the series touches', out)
-
-    def test_the_same_failure_on_a_clean_tree_is_the_series_fault(self):
-        self.assertEqual(
-            self.build('ppc', 'OLK-6.6', self.BROKE, broken_before=False), 1)
-
-    def test_an_arch_they_do_not_build_is_skipped_not_passed(self):
-        # loongarch is false on every branch in their check_build.yaml,
-        # and 22.03 is aarch64 and x86_64 only.
-        self.assertEqual(self.build('loongarch', 'OLK-6.6'), 3)
-        self.assertEqual(self.build('riscv64', 'openEuler-22.03-LTS'), 3)
-        self.assertEqual(self.build('x86_64', 'openEuler-22.03-LTS',
-                                    kabi='true'), 0)
-
-    def test_a_failed_kabi_row_fails_the_test(self):
-        rows = (r'printf "| x86_64 allmodconfig build | pass |\n'
-                r'| x86_64 checkkabi | %s |\n" >> $8')
-        self.assertEqual(self.build('x86_64', 'OLK-6.6',
-                                    kabi=rows % 'pass'), 0)
-        self.assertEqual(self.build('x86_64', 'OLK-6.6',
-                                    kabi=rows % 'fail'), 1)
-
-    def shell(self, body):
-        script = '. "%s/euler/oe_build.sh"\n%s' % (PROJECT_ROOT, body)
-        done = subprocess.run(['bash', '-c', script],
-                              stdout=subprocess.PIPE,
-                              stderr=subprocess.STDOUT)
-        return done.stdout.decode()
-
-    def test_the_config_directory_is_not_the_arch_name(self):
-        # x86_64 is the one architecture here whose configs are not in
-        # arch/<ARCH>. Looking for arch/x86_64/configs found nothing, so
-        # openeuler_defconfig was reported "not in this tree" on the one
-        # architecture everybody builds, and the defconfig build, the
-        # kabi check and the defconfig consistency check went with it.
-        self.assertEqual(self.shell('_oe_srcarch x86_64').strip(), 'x86')
-        for same in ('arm64', 'arm', 'powerpc', 'riscv', 'loongarch'):
-            self.assertEqual(self.shell('_oe_srcarch %s' % same).strip(),
-                             same)
-
-    def test_every_arch_we_build_has_its_config_directory(self):
-        # The mapping is only right if it names a directory the kernel
-        # actually has, so check it against a real tree rather than
-        # against itself.
-        kernel = os.environ.get('PRCI_TEST_KERNEL')
-        if not kernel or not os.path.isdir(os.path.join(kernel, 'arch')):
-            self.skipTest('no kernel tree to check the mapping against')
-        for arch in ('x86_64', 'aarch64', 'arm', 'ppc', 'ppc64', 'riscv64'):
-            spec = self.shell('_oe_arch_spec %s' % arch).split()
-            src = self.shell('_oe_srcarch %s' % spec[0]).strip()
-            self.assertTrue(
-                os.path.isdir(os.path.join(kernel, 'arch', src)),
-                'arch/%s does not exist, for %s' % (src, arch))
-
-    def test_a_failed_build_says_which_file_broke(self):
-        # A row saying "broken already, not your series" with nothing
-        # behind it reads as the tool excusing itself. The file name is
-        # usually the whole explanation.
-        errors = tempfile.NamedTemporaryFile('w', suffix='.log',
-                                             delete=False)
-        errors.write(
-            'drivers/net/first/one.c:92:55: error: first complaint\n'
-            'drivers/net/first/one.c:93:1: error: same file again\n'
-            'drivers/net/second/deep/../two.c:443:10: error: another file\n')
-        errors.close()
-        self.addCleanup(os.unlink, errors.name)
-
-        out = self.shell('_oe_report_errors %s' % errors.name)
-        self.assertIn('drivers/net/first/one.c', out)
-        self.assertIn('two.c', out)
-        # One line per file: a single bad struct produces a dozen errors
-        # and would otherwise crowd out the other drivers.
-        self.assertEqual(out.count('drivers/net/first/one.c'), 1)
-
-    def reported(self, *errors):
-        log = tempfile.NamedTemporaryFile('w', suffix='.log', delete=False)
-        log.write(''.join(e + '\n' for e in errors))
-        log.close()
-        self.addCleanup(os.unlink, log.name)
-        return self.shell('_oe_report_errors %s' % log.name)
-
-    def test_the_error_survives_however_long_the_path_is(self):
-        # A driver that includes across directories carries enough ..
-        # to fill the line on its own, and the message -- the half
-        # worth reading -- was what got cut. Nobody can act on a line
-        # that stops at "error:".
-        deep = ('drivers/net/ethernet/vendor/product/src/library/host/'
-                'service/nic/linux/../../../sdk/knldk/lld/../cqm/'
-                'cqm_bitmap_table.c')
-        out = self.reported('%s:443:10: error: positional initialization '
-                            'of field in a struct declared with the '
-                            'designated_init attribute '
-                            '[-Werror=designated-init]' % deep)
-        self.assertIn('positional initialization', out)
-        # And the .. are resolved, or the path alone is unreadable.
-        self.assertNotIn('..', out)
-
-    def test_the_flag_that_classifies_the_error_is_never_cut_off(self):
-        # gcc puts it last, so a plain truncation drops exactly the
-        # word that says what kind of failure this is.
-        out = self.reported('drivers/x/y.c:1:1: error: %s '
-                            '[-Werror=incompatible-pointer-types]'
-                            % ('a very wordy diagnostic ' * 8))
-        self.assertIn('[-Werror=incompatible-pointer-types]', out)
-        self.assertIn('...', out)
-        self.assertEqual(out.count('-Werror'), 1)
-
-    def test_a_short_message_is_left_alone(self):
-        out = self.reported('drivers/x/y.c:1:1: error: short and sweet')
-        self.assertIn('error: short and sweet', out)
-        self.assertNotIn('...', out)
-
-    def a_repo_on_a_branch(self):
-        repo = tempfile.mkdtemp(prefix='prci-head-')
-        self.addCleanup(shutil.rmtree, repo, ignore_errors=True)
-        run = lambda *a: subprocess.check_call(
-            a, cwd=repo, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        run('git', 'init', '-q', '-b', 'mywork', '.')
-        run('git', 'config', 'user.email', 't@t')
-        run('git', 'config', 'user.name', 't')
-        for text in ('one', 'two'):
-            with open(os.path.join(repo, 'f'), 'w') as handle:
-                handle.write(text)
-            run('git', 'add', 'f')
-            run('git', 'commit', '-qm', text)
-        return repo
-
-    def branch_of(self, repo):
-        out = subprocess.run(['git', 'symbolic-ref', '--quiet', '--short',
-                              'HEAD'], cwd=repo, stdout=subprocess.PIPE)
-        return out.stdout.decode().strip() or '(detached)'
-
-    def test_a_baseline_build_leaves_you_on_your_branch(self):
-        # "git checkout <sha>" detaches, so coming back to what
-        # "git rev-parse HEAD" returned leaves the tree off its branch
-        # even when nothing went wrong. Every commit is still there and
-        # git says "HEAD detached at ...", so it reads as damage, and
-        # the next commit the user makes lands nowhere.
-        repo = self.a_repo_on_a_branch()
-        self.shell('''
-            cd %s
-            head=$(_oe_where_we_are)
-            git checkout -q HEAD~1
-            git checkout -q "${head}"
-        ''' % repo)
-        self.assertEqual(self.branch_of(repo), 'mywork')
-
-    def test_an_interrupted_baseline_build_puts_the_branch_back(self):
-        # The window is a build, so it is minutes long and Ctrl-C lands
-        # inside it far more often than not.
-        repo = self.a_repo_on_a_branch()
-        script = '''
-            . %(root)s/euler/oe_build.sh
-            cd %(repo)s
-            _oe_hold_head %(repo)s "$(_oe_where_we_are)"
-            git checkout -q HEAD~1
-            sleep 30
-        ''' % {'root': PROJECT_ROOT, 'repo': repo}
-        child = subprocess.Popen(['bash', '-c', script],
-                                 stdout=subprocess.DEVNULL,
-                                 stderr=subprocess.DEVNULL)
-        time.sleep(1.5)
-        child.send_signal(signal.SIGINT)
-        child.wait(timeout=30)
-        self.assertEqual(self.branch_of(repo), 'mywork')
-
-    def test_a_tree_with_no_branch_is_left_where_it_was(self):
-        repo = self.a_repo_on_a_branch()
-        subprocess.check_call(['git', 'checkout', '-q', '--detach', 'HEAD'],
-                              cwd=repo)
-        was = subprocess.check_output(['git', 'rev-parse', 'HEAD'],
-                                      cwd=repo).decode().strip()
-        self.shell('''
-            cd %s
-            head=$(_oe_where_we_are)
-            git checkout -q HEAD~1
-            git checkout -q "${head}"
-        ''' % repo)
-        now = subprocess.check_output(['git', 'rev-parse', 'HEAD'],
-                                      cwd=repo).decode().strip()
-        self.assertEqual(now, was)
-        self.assertEqual(self.branch_of(repo), '(detached)')
-
-    def attribution(self, errored, touched):
-        """_oe_broke_its_own_files, with git answering for the series."""
-        log = tempfile.NamedTemporaryFile('w', suffix='.log', delete=False)
-        log.write(''.join('%s:1:1: error: broke\n' % f for f in errored))
-        log.close()
-        self.addCleanup(os.unlink, log.name)
-
-        return self.shell('''
-            git() { printf '%%s\\n' %(touched)s; }
-            _oe_broke_its_own_files %(log)s 1
-        ''' % {'touched': ' '.join("'%s'" % t for t in touched) or "''",
-               'log': log.name})
-
-    def test_breaking_a_file_of_its_own_is_the_series_fault(self):
-        # The tree being broken already is decided by the baseline build
-        # failing too, and that cannot tell breaking it further from
-        # leaving it as found: both end with make exiting non-zero. A
-        # gate that passes because it never really looked is the worst
-        # kind, and this is where it would happen.
-        out = self.attribution(
-            errored=['drivers/other/theirs.c', 'drivers/mine/ours.c'],
-            touched=['drivers/mine/ours.c', 'include/linux/ours.h'])
-        self.assertEqual(out.split(), ['drivers/mine/ours.c'])
-
-    def test_breakage_in_files_the_series_never_touched_is_not_its_fault(self):
-        out = self.attribution(errored=['drivers/other/theirs.c'],
-                               touched=['drivers/mine/ours.c'])
-        self.assertEqual(out.strip(), '')
-
-    def test_a_path_with_dot_dot_in_it_still_matches(self):
-        # gcc prints paths as the build saw them, and a driver that
-        # includes across directories produces several .. in the middle.
-        # Compared unnormalised, those never match what git reports and
-        # every such breakage is filed as somebody else's.
-        out = self.attribution(
-            errored=['drivers/mine/deep/../ours.c'],
-            touched=['drivers/mine/ours.c'])
-        self.assertEqual(out.split(), ['drivers/mine/ours.c'])
-
-    def test_nothing_is_printed_when_there_are_no_errors(self):
-        quiet = tempfile.NamedTemporaryFile('w', suffix='.log', delete=False)
-        quiet.write('fs/foo.c:12: warning: unused variable\n')
-        quiet.close()
-        self.addCleanup(os.unlink, quiet.name)
-        self.assertEqual(self.shell('_oe_report_errors %s' % quiet.name), '')
-
-    def defconfig_check(self, mine, before, back='1'):
-        """_oe_check_defconfig with listnewconfig answering to order."""
+    def a_tree(self):
+        """A stand-in for the user's kernel, with something to lose."""
         kernel = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, kernel, True)
-        os.makedirs(os.path.join(kernel, 'arch', 'x86', 'configs'))
+        for name in ('Makefile', 'Module.symvers', 'do-not-delete-me'):
+            with open(os.path.join(kernel, name), 'w') as f:
+                f.write('x\n')
+        return kernel
 
-        def put(name, text):
-            path = os.path.join(kernel, name)
-            with open(path, 'w') as f:
-                f.write(text)
-            return path
+    def test_the_build_directory_is_a_link_to_the_tree_we_were_given(self):
+        # Their download_openeuler_kernel copies a reference clone and
+        # merges the pull request into it.  We are handed that tree.
+        kernel = self.a_tree()
+        scratch = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, scratch, True)
+        rc, out = self.shell(
+            'current_path="%s"; BUILD_ID=t; _hulk_shim_kernel\n'
+            'download_openeuler_kernel\n'
+            'readlink "%s/openeuler/kernel-t"' % (scratch, scratch),
+            LINUX_SRC_PATH=kernel)
+        self.assertEqual(rc, 0, out)
+        self.assertIn(kernel, out)
 
-        put(os.path.join('arch', 'x86', 'configs', 'openeuler_defconfig'),
-            'CONFIG_HAVE_GCC_PLUGINS=y\n')
-        put('mine', mine)
-        put('before', before)
-        warnings = put('warnings', '')
-        result = put('result', '')
+    def test_their_cleanup_takes_the_link_and_not_the_tree(self):
+        # Their main() finishes with `rm -rf .../kernel-$BUILD_ID`.  rm
+        # unlinks a symbolic link rather than following it, which is the
+        # whole reason a link is safe here -- but it is the user's kernel
+        # on the other end of it, so it is worth asserting rather than
+        # believing.
+        kernel = self.a_tree()
+        scratch = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, scratch, True)
+        self.shell(
+            'current_path="%s"; BUILD_ID=t; _hulk_shim_kernel\n'
+            'download_openeuler_kernel\n'
+            'rm -rf "%s/openeuler/kernel-t"' % (scratch, scratch),
+            LINUX_SRC_PATH=kernel)
+        self.assertTrue(os.path.exists(
+            os.path.join(kernel, 'do-not-delete-me')))
 
-        script = '''
-            . "%(root)s/euler/oe_build.sh"
-            # Stand in for the tree: the second call is the baseline.
-            _oe_new_symbols() {
-                if [ -f %(kernel)s/.asked ]; then cat %(kernel)s/before
-                else touch %(kernel)s/.asked; cat %(kernel)s/mine; fi
-            }
-            git() { case "$1" in rev-parse) echo deadbeef ;; *) return 0 ;; esac; }
-            _oe_check_defconfig %(kernel)s x86_64 x86_64 \\
-                %(warnings)s %(result)s %(back)s
-        ''' % {'root': PROJECT_ROOT, 'kernel': kernel,
-               'warnings': warnings, 'result': result, 'back': back}
-        done = subprocess.run(['bash', '-c', script],
-                              stdout=subprocess.PIPE,
-                              stderr=subprocess.STDOUT)
+    def test_a_stale_symbol_list_does_not_survive_into_their_kabi_check(self):
+        # Where their freshness comes from, and the reason the shim does
+        # more than put a link down.  Their tree is new every run, so
+        # check_kabi reading a Module.symvers means this build wrote it.
+        # Ours has been built in before, for another architecture, and
+        # the kernel keeps Module.symvers under mrproper rather than
+        # clean -- so `make clean` would leave one behind for check-kabi
+        # to compare against with no way of knowing what produced it.
+        kernel = self.a_tree()
+        scratch = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, scratch, True)
+        self.shell(
+            'current_path="%s"; BUILD_ID=t; _hulk_shim_kernel\n'
+            'download_openeuler_kernel' % scratch,
+            LINUX_SRC_PATH=kernel)
+        self.assertFalse(os.path.exists(os.path.join(kernel,
+                                                     'Module.symvers')))
 
-        def read(path):
-            with open(path) as f:
-                return f.read()
-        return done.stdout.decode(), read(result), read(warnings)
+    def test_the_layout_check_does_not_touch_the_tree_it_builds_in(self):
+        # Their build_defconfig_base gets its kABI layout baseline with
+        # `git checkout origin/$tbranch` in the build directory.  That is
+        # a scratch clone for them and the tree the series lives in for
+        # us.  Their newer code is also not in the gate that produced the
+        # logs we are read against: no checklayout row appears in any of
+        # them.
+        rc, out = self.shell(
+            'test_path="%s"\n'
+            '_hulk_load "%s/checkkabi.sh"\n'
+            '_hulk_shim_layout\n'
+            'declare -f build_defconfig_base check_layout_new report_layout'
+            % (self.SUB, self.SUB))
+        self.assertEqual(rc, 0, out)
+        self.assertNotIn('git checkout', out)
+        self.assertNotIn('check_layout.py', out)
 
-    #: Unanswered before the series and after it, so the host's doing.
-    #: What makes a symbol behave this way is that Kconfig only offers
-    #: it on some machines -- gcc plugin symbols appear wherever the
-    #: compiler's plugin headers are installed -- but nothing here
-    #: depends on which symbol it is, so neither does the test.
-    FROM_THE_HOST = 'CONFIG_ONE=y\nCONFIG_TWO=n\n'
-    #: Unanswered only after the series, so the series added it.
-    FROM_THE_SERIES = 'CONFIG_THREE=y\n'
+    # ---- the one verdict we add, which can only subtract ----
 
-    def test_symbols_the_host_offers_are_not_the_series_fault(self):
-        log, result, warnings = self.defconfig_check(
-            mine=self.FROM_THE_HOST, before=self.FROM_THE_HOST)
-        self.assertIn('checkdefconfig | pass', result)
-        # Said on the log, never in the warnings file, which is a gate.
+    def defconfig_check(self, new, touched='drivers/net/foo.c',
+                        shipped='arm64', label='aarch64'):
+        """Their real check_defconfig, with our guard around it.
+
+        Their four lines run: the shipped defconfig goes over .config,
+        `make listnewconfig` is asked what is left unanswered, and the
+        row is theirs to fail.  Only `make` and `git` are stubbed.
+        """
+        kernel = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, kernel, True)
+        scratch = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, scratch, True)
+        if shipped:
+            os.makedirs(os.path.join(kernel, 'arch', shipped, 'configs'))
+            with open(os.path.join(kernel, 'arch', shipped, 'configs',
+                                   'openeuler_defconfig'), 'w') as f:
+                f.write('CONFIG_HAVE_GCC_PLUGINS=y\n')
+        os.makedirs(os.path.join(scratch, 'openeuler'))
+        os.symlink(kernel, os.path.join(scratch, 'openeuler', 'kernel-t'))
+        with open(os.path.join(kernel, 'listnewconfig'), 'w') as f:
+            f.write(new)
+
+        rc, out = self.shell(
+            'test_path="%(sub)s"\n'
+            '_hulk_load "%(sub)s/checkkabi.sh"\n'
+            # After loading, because their script opens with
+            # current_path=$(pwd) and would clobber it.  oe_hulk_arch
+            # gets the same effect by cd-ing there first.
+            'current_path="%(scratch)s"; BUILD_ID=t; arch=%(label)s\n'
+            'tbranch=OLK-6.6\n'
+            '_hulk_shim_defconfig\n'
+            'make() { cat %(kernel)s/listnewconfig; }\n'
+            'git() { case "$*" in *rev-parse*) echo deadbeef ;;'
+            '                     *diff*) echo "%(touched)s" ;; esac; }\n'
+            'check_defconfig\n'
+            % {'sub': self.SUB, 'scratch': scratch, 'kernel': kernel,
+               'touched': touched, 'label': label},
+            NUM_PATCHES='1')
+
+        def read(name):
+            try:
+                with open(os.path.join(kernel, name)) as f:
+                    return f.read()
+            except FileNotFoundError:
+                return ''
+        return rc, out, read('result'), read('build_output.txt')
+
+    def test_a_defconfig_that_answers_everything_passes(self):
+        _, _, result, warnings = self.defconfig_check(new='')
+        self.assertIn('| aarch64 checkdefconfig | pass |', result)
         self.assertEqual(warnings, '')
-        # Counted, not listed: the only symbols worth naming are the
-        # ones a patch could do something about.
-        self.assertIn('2 symbol(s) are unanswered', log)
-        self.assertNotIn('CONFIG_ONE', log)
-        self.assertNotIn('CONFIG_TWO', log)
 
-    def test_a_symbol_the_series_really_added_still_fails(self):
-        log, result, warnings = self.defconfig_check(
-            mine=self.FROM_THE_HOST + self.FROM_THE_SERIES,
-            before=self.FROM_THE_HOST)
-        self.assertIn('checkdefconfig | fail', result)
+    def test_an_unanswered_symbol_fails_with_their_wording(self):
+        _, _, result, warnings = self.defconfig_check(
+            new='CONFIG_THREE=y\nnot a config line\n',
+            touched='drivers/net/Kconfig')
+        self.assertIn('| aarch64 checkdefconfig | fail |', result)
         self.assertIn('CONFIG_THREE=y', warnings)
-        # Only the ones the series is answerable for, nowhere else.
-        self.assertNotIn('CONFIG_ONE', warnings)
-        self.assertNotIn('CONFIG_TWO', warnings)
-        self.assertNotIn('CONFIG_ONE', log)
-        self.assertIn('update_oedefconfig', warnings)
+        # Their grep is "^CONFIG_.*", so anything else listnewconfig
+        # prints is not a symbol and does not decide the row.
+        self.assertNotIn('not a config line', warnings)
+        self.assertIn('openeuler_defconfig for aarch64 is not updated,',
+                      warnings)
+        self.assertIn("you can configure and run 'make update_oedefconfig'",
+                      warnings)
 
-    def test_a_defconfig_that_answers_everything_passes_quietly(self):
-        log, result, warnings = self.defconfig_check(mine='', before='')
-        self.assertIn('checkdefconfig | pass', result)
+    def test_a_series_with_no_kconfig_cannot_have_added_a_symbol(self):
+        # scripts/gcc-plugins/Kconfig gates GCC_PLUGINS on whether the
+        # compiler's plugin-version.h exists, and openEuler ships that
+        # header in a package their build node does not install.  So a
+        # developer machine that has it reports five symbols -- the
+        # plugin ones and the two RANDSTRUCT choices -- where their own
+        # aarch64 and x86_64 jobs report none on the same commit, and no
+        # patch has ever been near any of them.
+        #
+        # A symbol is offered because some Kconfig file says so, so a
+        # series that touches none cannot have added one.
+        _, log, result, warnings = self.defconfig_check(
+            new='CONFIG_GCC_PLUGINS=y\nCONFIG_RANDSTRUCT_FULL=n\n',
+            touched='tools/perf/pmu-events/arch/x86/amdzen6/floating-point.json')
+        self.assertIn('| aarch64 checkdefconfig | pass |', result)
+        # Rolled back out of the warnings file, which their main() reads
+        # for the "| build warning | fail |" row -- leaving the symbols
+        # there would fail the run by another name.
         self.assertEqual(warnings, '')
+        # Named on the log all the same: it is the first thing someone
+        # will wonder about after reading their CI comment.
+        self.assertIn('2 symbol(s) have no answer', log)
+        self.assertIn('CONFIG_GCC_PLUGINS=y', log)
+        self.assertIn('touches no Kconfig file', log)
+
+    def test_the_guard_is_asked_only_after_their_check_has_failed(self):
+        # It can subtract a failure and never add one.  A series that
+        # touches no Kconfig and that their check passed gets a pass,
+        # and gets it from them.
+        _, log, result, _ = self.defconfig_check(
+            new='', touched='drivers/net/foo.c')
+        self.assertIn('| aarch64 checkdefconfig | pass |', result)
+        self.assertNotIn('touches no Kconfig file', log)
+
+    def test_the_guard_says_yes_when_it_cannot_tell(self):
+        # It only ever excuses a patch, so an unanswerable question must
+        # not be the thing that does the excusing.
+        _, out = self.shell('_oe_series_touches_kconfig 0 && echo yes')
+        self.assertIn('yes', out)
+
+    def test_an_arch_with_no_shipped_defconfig_gets_no_row(self):
+        # Their else branch logs that the check is not mandatory here and
+        # records nothing, which is what an architecture openEuler does
+        # not ship a defconfig for deserves.
+        _, out, result, _ = self.defconfig_check(new='CONFIG_THREE=y\n',
+                                                 shipped=None)
+        self.assertEqual(result, '')
+        self.assertIn('NOT mandatory', out)
+
+    # ---- what Jenkins would have told their scripts ----
 
     def test_a_broken_matrix_check_is_an_error_not_a_skip(self):
         # check_branch.py exits 1 both for "this arch is off" and for a
         # failed import.  Telling them apart is the difference between a
         # build gate and a build gate that never runs.
-        script = (
-            '. "%s/euler/oe_build.sh"\n'
-            '_oe_arch_wanted x86_64 OLK-6.6 /nonexistent' % PROJECT_ROOT)
-        self.assertEqual(subprocess.call(['bash', '-c', script],
-                                         stdout=subprocess.DEVNULL,
-                                         stderr=subprocess.DEVNULL), 2)
+        rc, _ = self.shell('_oe_arch_wanted x86_64 OLK-6.6 /nonexistent '
+                           '>/dev/null 2>&1')
+        self.assertEqual(rc, 2)
+
+    def test_an_arch_their_branch_has_off_is_not_reported_as_checked(self):
+        # Their job for one of these runs, prints the line below and
+        # exits 0, so their PR comment shows it SUCCESS.  Both are a
+        # pass; only one of them checked anything.
+        rc, out = self.shell('oe_hulk_arch loongarch',
+                             LINUX_SRC_PATH=tempfile.gettempdir(),
+                             KABI_KERNEL_DIR=os.path.join(PROJECT_ROOT,
+                                                          'euler', 'kernel'))
+        self.assertEqual(rc, 3)
+        self.assertIn('loongarch is set to false, exit', out)
+
+    def test_a_named_werror_has_to_be_answered_by_name(self):
+        # -Wno-error on its own undoes a blanket -Werror and leaves every
+        # explicit -Werror=<name> standing.  OLK-6.6's hinic drivers trip
+        # over -Werror=designated-init, which has to be answered by name.
+        tree = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tree, True)
+        with open(os.path.join(tree, 'Makefile'), 'w') as f:
+            f.write('KBUILD_CFLAGS += -Werror=designated-init\n')
+        _, out = self.shell(
+            'cd "%s" && _oe_set_no_werror "" && printf "%%s\\n" '
+            '"${_OE_NO_WERROR[0]}"' % tree)
+        self.assertIn('-Wno-error=designated-init', out)
+        self.assertIn('-Wno-error ', out)
+
+    def a_tree_with_werror_configs(self):
+        """A tree whose Kconfig offers the usual crop of WERROR symbols."""
+        tree = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tree, True)
+        with open(os.path.join(tree, 'Kconfig'), 'w') as f:
+            f.write('config WERROR\n\tbool\n'
+                    'config DRM_I915_WERROR\n\tbool\n')
+        os.mkdir(os.path.join(tree, 'scripts'))
+        # Stands in for scripts/config, recording what it was asked to
+        # turn off.
+        cfg = os.path.join(tree, 'scripts', 'config')
+        with open(cfg, 'w') as f:
+            f.write('#!/bin/sh\necho "$@" >> disabled\n')
+        os.chmod(cfg, 0o755)
+        return tree
+
+    def config_hook(self, goal):
+        """What the make hook does when their script asks for `goal`."""
+        tree = self.a_tree_with_werror_configs()
+        _, out = self.shell(
+            'cd "%s"\n'
+            '_hulk_shim_make\n'
+            # The real make is not wanted; only what the hook does after
+            # it, and whether it runs at all.
+            'command() { shift; echo "real make: $*" >> ran; }\n'
+            'make %s\n' % (tree, goal))
+
+        def read(name):
+            try:
+                with open(os.path.join(tree, name)) as f:
+                    return f.read()
+            except FileNotFoundError:
+                return ''
+        return out, read('disabled'), read('ran')
+
+    def test_the_config_bit_goes_off_for_allmodconfig(self):
+        # allmodconfig turns CONFIG_WERROR on, and the command line
+        # cannot answer a kernel that was configured to treat warnings as
+        # errors.  Their build_allmodconfig configures and compiles in
+        # one function, so `make` is the only seam between the two.
+        _, disabled, _ = self.config_hook('allmodconfig')
+        self.assertIn('--disable WERROR', disabled)
+        # Read out of the tree, not listed: amdgpu, i915, kvm and powerpc
+        # each have one of their own.
+        self.assertIn('--disable DRM_I915_WERROR', disabled)
+        # Disabling by hand can leave a dependent symbol unanswered.
+        self.assertIn('olddefconfig', disabled + _)
+
+    def test_oldconfig_is_hooked_too_because_theirs_runs_it_last(self):
+        # Their build_allmodconfig is `make allmodconfig; make oldconfig;
+        # make -j`, so oldconfig is the last thing to touch .config
+        # before the compile reads it.
+        _, disabled, _ = self.config_hook('oldconfig')
+        self.assertIn('--disable WERROR', disabled)
+
+    def test_their_defconfig_build_keeps_its_config_exactly(self):
+        # openeuler_defconfig ships CONFIG_WERROR off, so there is
+        # nothing to turn off -- and this is the build whose
+        # Module.symvers the three kabi rows are read from, so the fewer
+        # things touching it the better.
+        _, disabled, ran = self.config_hook('openeuler_defconfig')
+        self.assertEqual(disabled, '')
+        self.assertIn('openeuler_defconfig', ran)
+
+    def test_the_flags_reach_both_builds_and_all_four_variables(self):
+        # Tidier to scope these to allmodconfig as well, and it does not
+        # work: scripts/Makefile.extrawarn adds -Werror=designated-init
+        # unconditionally, and openeuler_defconfig sets CONFIG_HINIC3=m
+        # and CONFIG_HINIC5=m -- so the shipped defconfig compiles the
+        # drivers that trip it, and without the flags their defconfig
+        # build fails here and takes the ABI comparison with it.
+        tree = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tree, True)
+        with open(os.path.join(tree, 'Makefile'), 'w') as f:
+            f.write('KBUILD_CFLAGS += -Werror=designated-init\n')
+        _, out = self.shell(
+            '_hulk_export_arch x86_64 "" "%s"\n'
+            'for v in KCFLAGS KAFLAGS CFLAGS_KERNEL CFLAGS_MODULE; do\n'
+            '  printf "%%s=%%s\\n" "$v" "${!v}"\n'
+            'done' % tree)
+        for var in ('KCFLAGS', 'KAFLAGS', 'CFLAGS_KERNEL', 'CFLAGS_MODULE'):
+            self.assertIn('%s=-Wno-error -Wno-error=designated-init' % var,
+                          out)
+
+    #: Two diagnostics their builder does not emit and one the series
+    #: owns, in the shape gcc actually prints them.
+    WARNINGS = (
+        "drivers/net/ethernet/huawei/hinic3/cqm/cqm_bitmap_table.c:415:10: "
+        "warning: positional initialization [-Wdesignated-init]\n"
+        "  415 |         {check_use_vram, cqm_buf_vram_kalloc},\n"
+        "      |          ^~~~~~~~~~~~~~\n"
+        "drivers/net/ethernet/huawei/hinic3/cqm/cqm_bitmap_table.c:415:10: "
+        "note: (near initialization for 'g_malloc_funcs[0]')\n"
+        "drivers/net/ethernet/huawei/hinic5/src/nic/linux/../../../sdk/"
+        "knldk/lld/hinic5_lld.c:88:62: warning: positional initialization "
+        "[-Wdesignated-init]\n"
+        "fs/foo/bar.c: In function 'thing':\n"
+        "fs/foo/bar.c:12:5: warning: unused variable 'x' "
+        "[-Wunused-variable]\n"
+    )
+
+    def filtered(self, text, touched):
+        """What survives _hulk_keep_only_ours of a build's own output."""
+        out = tempfile.NamedTemporaryFile('w', delete=False)
+        out.write(text)
+        out.close()
+        self.addCleanup(os.unlink, out.name)
+        self.shell(
+            'git() { case "$*" in *rev-parse*) echo deadbeef ;;'
+            '                     *diff*) printf "%%s\\n" %(touched)s ;;'
+            ' esac; }\n'
+            '_hulk_keep_only_ours %(out)s 0'
+            % {'touched': ' '.join("'%s'" % t for t in touched) or "''",
+               'out': out.name},
+            NUM_PATCHES='1')
+        with open(out.name) as f:
+            return f.read()
+
+    def test_a_warning_the_series_did_not_cause_is_not_its_warning(self):
+        # Their main() fails the run on any warning at all, which is a
+        # sharp check on a builder whose clean tree compiles silently --
+        # their aarch64 run of 2026-09-22 wrote nothing to
+        # build_output.txt and finished SUCCESS.  Here the same tree is
+        # never silent: OLK-6.6's hinic drivers warn under gcc 12.3 in
+        # files no series has been near, so the row would fail every run
+        # and say nothing about the patch.
+        kept = self.filtered(self.WARNINGS, ['fs/foo/bar.c'])
+        self.assertNotIn('cqm_bitmap_table.c', kept)
+        # The source echo and the note belong to the group they explain
+        # and go with it.
+        self.assertNotIn('cqm_buf_vram_kalloc', kept)
+        self.assertNotIn('near initialization', kept)
+
+    def test_a_warning_in_a_file_the_series_touched_still_fails_the_row(self):
+        # The row is kept, and kept for the thing it is for.  Dropping it
+        # outright would pass a series that warns in its own new file and
+        # fails their gate, which is the whole reason to run this first.
+        kept = self.filtered(self.WARNINGS, ['fs/foo/bar.c'])
+        self.assertIn("fs/foo/bar.c:12:5: warning: unused variable", kept)
+        # Including the "In function" line that introduces it.
+        self.assertIn("fs/foo/bar.c: In function 'thing'", kept)
+
+    def test_the_kernels_own_dot_dot_paths_still_match(self):
+        # hinic5 compiles through .../nic/linux/../../../sdk/knldk/lld/,
+        # which is the same file git names without the dot-dots.  Without
+        # normalising, every warning from it reads as somebody else's.
+        kept = self.filtered(
+            self.WARNINGS,
+            ['drivers/net/ethernet/huawei/hinic5/sdk/knldk/lld/hinic5_lld.c'])
+        self.assertIn('hinic5_lld.c:88:62', kept)
+
+    def test_a_build_that_stopped_still_says_what_stopped_it(self):
+        kept = self.filtered(
+            self.WARNINGS +
+            'make[4]: *** [scripts/Makefile.build:243: fs/nfsd.o] Error 1\n',
+            ['fs/foo/bar.c'])
+        self.assertIn('make[4]: *** [scripts/Makefile.build:243', kept)
+
+    def test_nothing_is_dropped_when_the_series_cannot_be_determined(self):
+        # It only ever excuses a patch, so an unanswerable question must
+        # not be the thing that does the excusing.
+        kept = self.filtered(self.WARNINGS, [])
+        self.assertEqual(kept, self.WARNINGS)
+
+    def test_what_their_check_kabi_writes_is_not_filtered(self):
+        # check-kabi appends its own output to the same file, and that is
+        # a verdict rather than a warning.  The filter is wrapped around
+        # each build and judges only what that build appended.
+        rc, out = self.shell(
+            'test_path="%s"\n'
+            '_hulk_load "%s/checkkabi.sh"\n'
+            '_hulk_shim_builds\n'
+            'declare -f check_kabi check_defconfig | grep -c '
+            '_hulk_keep_only_ours' % (self.SUB, self.SUB))
+        self.assertIn('0', out)
+        self.assertNotEqual(rc, 0)  # grep -c found none
+
+    def test_a_flag_this_compiler_does_not_know_is_never_passed(self):
+        # Several of the names in the tree are clang's, and handing gcc a
+        # -Wno-error= for a warning it does not have is a hard error --
+        # which would fail every file instead of the one it was aimed at.
+        tree = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tree, True)
+        with open(os.path.join(tree, 'Makefile'), 'w') as f:
+            f.write('KBUILD_CFLAGS += -Werror=no-such-warning-exists\n')
+        _, out = self.shell(
+            'cd "%s" && _oe_set_no_werror "" && printf "%%s\\n" '
+            '"${_OE_NO_WERROR[0]}"' % tree)
+        self.assertNotIn('no-such-warning-exists', out)
 
 
 class TestConflictSection(unittest.TestCase):

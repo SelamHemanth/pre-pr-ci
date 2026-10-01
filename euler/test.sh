@@ -52,8 +52,11 @@ KABI_KERNEL_DIR="${SCRIPT_DIR}/kernel"
 
 # shellcheck source=../lib/torvalds.sh
 . "${WORKDIR}/lib/torvalds.sh"
-# shellcheck source=oe_build.sh
-. "${SCRIPT_DIR}/oe_build.sh"
+# oe_hulk.sh sources oe_build.sh for the host-side knowledge their
+# scripts are handed by Jenkins; the checks themselves come out of the
+# submodule.
+# shellcheck source=oe_hulk.sh
+. "${SCRIPT_DIR}/oe_hulk.sh"
 # lib/vm.sh and lib/boot_test.sh are deliberately not sourced: openEuler's
 # CI never boots a kernel, so this distro has no boot test to need them.
 # anolis still does, and still sources them.
@@ -262,8 +265,9 @@ test_oe_checkconflict() { run_oe_check "oe_checkconflict" "checkconflict"; }
 test_oe_checkbinary()   { run_oe_check "oe_checkbinary"   "checkbinary"; }
 
 # openEuler's build gate, one architecture per test because that is one
-# job per architecture in their CI.  oe_build.sh does the work; this only
-# turns its exit status into a verdict.  An architecture their matrix does
+# job per architecture in their CI.  oe_hulk.sh runs their checkkabi.sh
+# or checkbuild.sh out of the submodule; this only turns the exit status
+# their main() chose into a verdict.  An architecture their matrix does
 # not build on this branch reports skipped rather than passed, so a run
 # that checked nothing cannot look like a run that checked everything.
 run_oe_build() {
@@ -279,7 +283,7 @@ run_oe_build() {
     return
   fi
 
-  oe_build_arch "${arch}" 2>&1 | tee "${log}"
+  oe_hulk_arch "${arch}" 2>&1 | tee "${log}"
 
   case "${PIPESTATUS[0]}" in
     0) pass "${test_name}" ;;
@@ -290,7 +294,11 @@ run_oe_build() {
     # theirs does not.
     3) pass "${test_name}" "openEuler has ${arch} off for ${OE_TARGET_BRANCH:-OLK-6.6}, so their job exits without compiling and reports SUCCESS" ;;
     2) skip "${test_name}" "The build could not be set up (see ${log})" ;;
-    4) warn "${test_name}" "The tree does not build ${arch} without your series either (see ${log})" ;;
+    # Their main() has two outcomes and no third: the table holds a
+    # "fail" or it does not.  There is deliberately no verdict here for
+    # "this tree does not build without your series either" -- that was
+    # ours, and their own aarch64 run on OLK-6.6 shows what they do with
+    # a pre-existing breakage, which is report it as a failure.
     *) fail "${test_name}" "openEuler's ${arch} build gate rejected the series (see ${log})" ;;
   esac
 

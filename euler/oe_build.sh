@@ -1,36 +1,47 @@
 #!/bin/bash
 #
-# openEuler's build gate, run the way openEuler runs it.
+# What openEuler's build scripts are told by Jenkins.
 #
-# Their CI has two build scripts and picks between them by architecture:
+# Their checkkabi.sh and checkbuild.sh run in euler/oe_hulk.sh, out of
+# the submodule, unmodified.  Neither of them says which compiler to
+# use, which architecture it is checking, or where the KABI whitelists
+# are: their Jenkins job sets all of that before the script starts, one
+# job per architecture, each on a node of the architecture it builds.
 #
-#   checkkabi.sh   x86_64 and aarch64.  Builds allmodconfig, builds
-#                  openeuler_defconfig, compares the result against the
-#                  three KABI whitelists, and checks that the shipped
-#                  openeuler_defconfig still covers every symbol the patch
-#                  introduced.  These are the architectures openEuler
-#                  ships, so these are the ones whose ABI is a promise.
+# There is no Jenkins here and one host for all seven architectures, so
+# somebody has to answer those questions.  That is the whole of this
+# file.  It decides nothing -- no row, no verdict, no exit status comes
+# from here.  Every one of those is read out of their scripts.
 #
-#   checkbuild.sh  arm, powerpc, powerpc64, riscv64, loongarch.  Builds
-#                  allmodconfig with a pinned cross toolchain, twice: once
-#                  before the patches and once after.  The first build is
-#                  not checked, it is there so the second one is
-#                  incremental and its stderr contains warnings from the
-#                  files the patch touched and nothing else.  A warning
-#                  that the patch did not introduce is not the submitter's
-#                  problem, and this is how their gate tells the
-#                  difference.
+# What it answers, and why their scripts cannot:
 #
-# This file follows both, with two deliberate departures.
+#   Which architectures exist, and which of them get checkkabi.sh rather
+#   than checkbuild.sh.  Their Jenkins has a job per architecture and
+#   each job names its own script; the matrix is read back out of their
+#   conf/check_build.yaml through their own check_branch.py, so a
+#   submodule update is all it takes to follow them.
 #
-# Their setup_gcc unpacks a toolchain into /usr/local/$ARCH with sudo.  A
-# pre-submission check has no business asking for root, so the same
-# tarballs are unpacked under the workspace instead.  Same compiler, same
-# version, different prefix.
+#   Which kernel ARCH and which cross prefix go with each of their
+#   architecture labels.  Their labels are not kernel ARCH values: ppc
+#   and ppc64 are both ARCH=powerpc and differ only in the compiler.
 #
-# Their scripts clone the kernel and apply the PR with git am.  We are
-# handed a tree that already has the commits on it, so where they say "the
-# state before the patch" we say HEAD~NUM_PATCHES.
+#   Where the toolchain is.  Their setup_gcc unpacks one of their pinned
+#   tarballs into /usr/local/$ARCH as root; a pre-submission check has
+#   no business asking for that, so the same tarball goes under the
+#   workspace.  Same compiler, same version, different prefix.
+#
+#   Which branch the whitelists are on.  Their get_check_kabi_script
+#   clones src-openeuler/kernel every run to get check-kabi and the
+#   three Module.kabi_* files.  We carry that repository as the
+#   euler/kernel submodule, so this only has to put it on the branch
+#   their get_kabi_whitelist_branch names.
+#
+#   Which -Wno-error= flags this compiler understands.  The one place we
+#   can pass something they would fail, and deliberate: see
+#   _OE_NO_WERROR.
+#
+#   Whether the series touches a Kconfig file.  Asked by one guard in
+#   oe_hulk.sh and nowhere else.
 
 # arch label -> kernel ARCH, cross prefix, toolchain tarball
 #
@@ -81,24 +92,6 @@ _oe_arches_they_build() {
 # checkkabi.sh rather than checkbuild.sh.
 _oe_arch_has_kabi() {
   [ "$1" = 'x86_64' ] || [ "$1" = 'aarch64' ]
-}
-
-# ARCH -> the directory under arch/ that holds it, which is what the
-# kernel build calls SRCARCH.
-#
-# For every architecture here but one the two are the same word, which
-# is why passing ARCH where a path was wanted went unnoticed: it only
-# breaks on x86_64, whose configs live in arch/x86.  The effect was that
-# openeuler_defconfig was reported as "not in this tree" on the one
-# architecture everybody builds, taking the defconfig build, the kabi
-# check and the defconfig consistency check silently with it.
-_oe_srcarch() {
-  case "$1" in
-    x86_64|i386) echo 'x86' ;;
-    sparc32|sparc64) echo 'sparc' ;;
-    parisc64) echo 'parisc' ;;
-    *) echo "$1" ;;
-  esac
 }
 
 # Their get_kabi_whitelist_branch: the whitelist for a kernel branch does
@@ -173,506 +166,112 @@ _oe_setup_gcc() {
   export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:+${LD_LIBRARY_PATH}:}${bin%/bin}/lib"
 }
 
-# The first few compiler errors, named, under the row that reports them.
+# Warnings stay warnings.
 #
-# A build that failed and said nothing about why is a result nobody can
-# act on.  It matters most in the case below, where the answer is "not
-# your series": without the file name that reads as the tool excusing
-# itself, and the file name is usually the whole explanation -- a driver
-# this tree has never compiled here, or one fixed on the branch since
-# the tree was taken.
-_oe_report_errors() {
-  local warnings="$1" limit="${2:-4}" lines
+# Their gate has a "build warning" row, so a warning already has a place
+# to be reported and does not need to stop the build to be noticed.  What
+# makes -Werror wrong here rather than there is the compiler: their
+# builder has the one their branch was written against, and we have
+# whichever one the user's distribution ships.  OLK-6.6 does not compile
+# its own hinic3 and hinic5 drivers under gcc 12.3 for that reason alone,
+# on a branch whose own CI builds both configs green.  A local gate that
+# rejects a series over that is predicting a verdict openEuler will not
+# reach.
+#
+# Four variables, because the kernel assembles a compile in more than one
+# place and a flag that reaches only some of them answers only some of
+# the -Werror.  KCFLAGS and KAFLAGS are appended after everything
+# scripts/Makefile.extrawarn set, so they land last; CFLAGS_KERNEL and
+# CFLAGS_MODULE cover the built-in and modular halves, which is the half
+# that matters under allmodconfig because almost everything is a module
+# there.  Together they answer a blanket -Werror from CONFIG_WERROR,
+# which allmodconfig turns on, and the explicit -Werror=<name> flags
+# Makefile.extrawarn adds with no config behind them.
+#
+# Exported around the build rather than put on a command line, because
+# the make lines they reach are openEuler's and are not ours to edit.
+#
+# Set per architecture by _oe_set_no_werror.  What is here is the part
+# that is always safe and never sufficient on its own.
+_OE_NO_WERROR_FLAGS='-Wno-error'
+_OE_NO_WERROR=(KCFLAGS=-Wno-error KAFLAGS=-Wno-error)
 
-  # One line per file, not per error: a single bad struct produces a
-  # dozen, and four of them from one driver hide the other drivers
-  # that are the point of the list.
-  lines=$(grep -aoE '[^ ]+\.[chS]:[0-9]+:[0-9]+: (fatal )?error: .*' \
-          "${warnings}" 2>/dev/null \
-          | awk -F: '!seen[$1]++' | head -n "${limit}")
-  [ -n "${lines}" ] || return 0
+# The -Werror=<name> flags this tree's makefiles set, as the
+# -Wno-error=<name> that answers each, keeping only those this compiler
+# understands.
+#
+# -Wno-error on its own is not enough, and that is the easy thing to get
+# wrong: it undoes a blanket -Werror and leaves every explicit
+# -Werror=<name> standing.  -Werror=designated-init is the one OLK-6.6's
+# hinic drivers trip over, and it has to be answered by name.
+#
+# The names come out of the tree rather than a list here, so a kernel
+# that adds one is covered.  Several of them are clang's, and handing gcc
+# a -Wno-error= for a warning it does not have is a hard error -- which
+# would fail every file in the tree instead of the one it was aimed at --
+# so each candidate is put to the compiler once before it is used.
+_oe_no_werror_names() {
+  local cc="$1" probe flag accepted=''
 
-  echo "  -> first error(s), one per file:"
-  # The path and the message compete for one line, and a driver that
-  # includes across directories brings enough .. along to win it --
-  # leaving the error cut off at "error:", which is the half worth
-  # reading.  Normalise the path away and give each its own line.
-  local line path rest where message flag
-  printf '%s\n' "${lines}" | while IFS= read -r line; do
-    path=${line%%:*}
-    rest=${line#*:}
-    where=${rest%%: *}
-    message=${rest#*: }
-    path=$(realpath -m --relative-to=. "${path}" 2>/dev/null \
-           || echo "${path}")
-    echo "       ${path}:${where}"
-    # gcc puts the flag that classifies the error last, in brackets, so
-    # truncating the tail drops the one word saying what kind of
-    # failure this is.  Set it aside, then elide the prose if need be.
-    flag=''
-    case "${message}" in
-      *\ \[-W*\]) flag=" [${message##*[}" ; message=${message% [*} ;;
-    esac
-    if [ ${#message} -le 110 ]; then
-      echo "         ${message}${flag}"
-    else
-      echo "         ${message:0:107}...${flag}"
-    fi
+  probe=$(mktemp --suffix=.c) || return 0
+  printf 'int main(void) { return 0; }\n' > "${probe}"
+  for flag in $(grep -rhoE '\-Werror=[A-Za-z0-9-]+' Makefile scripts/Makefile.* \
+                  2>/dev/null | sed 's/^-Werror=/-Wno-error=/' | sort -u); do
+    "${cc}" -fsyntax-only "${probe}" "${flag}" >/dev/null 2>&1 &&
+      accepted="${accepted} ${flag}"
   done
+  rm -f "${probe}"
+  printf '%s' "${accepted# }"
 }
 
-# The files the compiler reported an error in, as paths from the kernel
-# root.  gcc prints them as the build saw them, which for a driver that
-# includes across directories means a path with .. in the middle, so
-# they are normalised before anyone compares them with anything.
-_oe_error_files() {
-  local warnings="$1" path
-  grep -aoE '[^ ]+\.[chS]:[0-9]+:[0-9]+: (fatal )?error:' "${warnings}" \
-      2>/dev/null | cut -d: -f1 | sort -u | while read -r path; do
-    realpath -m --relative-to=. "${path}" 2>/dev/null || echo "${path}"
-  done | sort -u
+# Call from the kernel root, once per architecture: the flag list depends
+# on the tree's makefiles and on which compiler is about to read them.
+_oe_set_no_werror() {
+  local cc="${1}gcc" names
+
+  command -v "${cc}" >/dev/null 2>&1 || cc='gcc'
+  names=$(_oe_no_werror_names "${cc}")
+  _OE_NO_WERROR_FLAGS="-Wno-error${names:+ ${names}}"
+  _OE_NO_WERROR=("KCFLAGS=${_OE_NO_WERROR_FLAGS}"
+                 "KAFLAGS=${_OE_NO_WERROR_FLAGS}")
 }
 
-# Did the series break a file of its own?
+# The Kconfig symbols in this tree that turn warnings into errors.
 #
-# "The tree was already broken" is decided by the baseline build also
-# failing, and that on its own cannot tell breaking it further from
-# leaving it as found: both end with make exiting non-zero.  A gate
-# that passes because it never really looked is the worst kind, and
-# this is where it would happen.
+# The command line is only half of it.  CONFIG_WERROR is a config bit,
+# and allmodconfig turns it on -- along with COMPILE_TEST, which is what
+# drags in the drivers that do not survive a compiler their branch was
+# never built with.  openeuler_defconfig ships it off, which is why
+# their defconfig build does not need any of this.
 #
-# An error in a file the series touches is the series', whatever else
-# is broken elsewhere in the tree.
-_oe_broke_its_own_files() {
-  local warnings="$1" back="$2" errors series
-
-  [ "${back}" -gt 0 ] || return 1
-  errors=$(_oe_error_files "${warnings}")
-  [ -n "${errors}" ] || return 1
-  series=$(git diff --name-only "HEAD~${back}" HEAD 2>/dev/null | sort -u)
-  [ -n "${series}" ] || return 1
-
-  comm -12 <(printf '%s\n' "${errors}") <(printf '%s\n' "${series}")
+# Read out of the tree rather than listed here: WERROR is the one that
+# matters, but amdgpu, i915, kvm and powerpc each have their own, and a
+# kernel that gains another should be covered without anyone having to
+# notice.  Costs a quarter of a second against a build measured in tens
+# of minutes.
+_oe_werror_symbols() {
+  grep -rhoE '^[[:space:]]*(menu)?config[[:space:]]+[A-Za-z0-9_]*WERROR[A-Za-z0-9_]*' \
+    --include='Kconfig*' . 2>/dev/null | awk '{print $2}' | sort -u
 }
 
-# Three places below check out HEAD~n, do something that takes minutes,
-# and check the branch back out afterwards.  A Ctrl-C inside that window
-# leaves the tree detached at HEAD~n, which looks exactly like the whole
-# series having vanished and says nothing about why or how to undo it.
-# prepare.sh already learned this; the build never did.
-_OE_HELD_DIR=''
-_OE_HELD_HEAD=''
-
-# Where to come back to, as a name rather than a commit.  "git checkout
-# <sha>" detaches, so restoring what "git rev-parse HEAD" returned
-# leaves the tree off its branch even when everything went right: the
-# commits are all there, git says "HEAD detached at ...", and the next
-# thing the user does lands nowhere.  Ask for the branch and fall back
-# to the commit only when there genuinely is no branch.
-_oe_where_we_are() {
-  git symbolic-ref --quiet --short HEAD 2>/dev/null || git rev-parse HEAD
-}
-
-_oe_restore_head() {
-  local rc=$?
-  trap - EXIT INT TERM
-  if [ -n "${_OE_HELD_HEAD}" ]; then
-    echo "  -> putting the tree back to ${_OE_HELD_HEAD}" >&2
-    git -C "${_OE_HELD_DIR}" checkout -q "${_OE_HELD_HEAD}" \
-      >/dev/null 2>&1 || true
-    _OE_HELD_HEAD=''
-  fi
-  exit "${rc}"
-}
-
-_oe_hold_head() {
-  _OE_HELD_DIR="$1"
-  _OE_HELD_HEAD="$2"
-  trap _oe_restore_head EXIT INT TERM
-}
-
-_oe_release_head() {
-  _OE_HELD_HEAD=''
-  trap - EXIT INT TERM
-}
-
-# Was the tree already like this before the series?
+# Could this series have introduced a Kconfig symbol at all?
 #
-# openEuler's CI never asks, because it builds their branch on their
-# builder with their compiler, so a failure there really is the
-# submitter's.  We build whatever tree the user points us at with
-# whatever gcc they have, and those two disagree: OLK-6.6 does not
-# compile its own hinic3 and hinic5 drivers under gcc 12.3, which has
-# nothing to do with anybody's patch.  Reporting that as "your series
-# was rejected" is worse than not checking, because it trains people to
-# ignore the result.
+# A symbol is offered by Kconfig because some Kconfig file says so, so a
+# series that does not touch one cannot have added any.  One git diff,
+# no checkout, nothing built -- which matters because the tree we are
+# given is often dirty and a checkout there fails outright.
 #
-# Asked only after something has already failed, so a healthy tree pays
-# nothing for it.  Returns 0 when the failure is pre-existing.
-_oe_failed_before_the_series() {
-  local kernel="$1" kernel_arch="$2" cross="$3" jobs="$4" back="$5"
-  local baseline="$6"
-  local head rc
+# Returns 0 when the series touches a Kconfig file, or when there is no
+# series to ask about.  Says yes when it cannot tell: this only ever
+# guards against blaming a patch for something, and an unanswerable
+# question must not be the thing that excuses one.
+_oe_series_touches_kconfig() {
+  local back="$1"
 
-  [ "${back}" -gt 0 ] || return 1
-  cd "${kernel}" || return 1
-  head=$(_oe_where_we_are) || return 1
-  git rev-parse --verify -q "HEAD~${back}" >/dev/null || return 1
-
-  echo "  -> it failed; rebuilding at HEAD~${back} to see whose fault it is"
-  _oe_hold_head "${kernel}" "${head}"
-  git checkout -q "HEAD~${back}" || return 1
-  make ARCH="${kernel_arch}" CROSS_COMPILE="${cross}" allmodconfig \
-    >/dev/null 2>&1
-  # Kept, not discarded: when this build fails too, its errors are the
-  # evidence that the breakage predates the series, and they are what
-  # the row above is asserting.  -k for the same reason as above: the
-  # two error lists are only comparable if both builds got as far as
-  # each other.
-  make ARCH="${kernel_arch}" CROSS_COMPILE="${cross}" -k -j"${jobs}" \
-    >/dev/null 2>"${baseline}"
-  rc=$?
-  git checkout -q "${head}" || return 1
-  _oe_release_head
-
-  [ ${rc} -ne 0 ]
-}
-
-# checkbuild.sh.  Baseline build, then the patches, then an incremental
-# build whose stderr is the answer.
-_oe_cross_build() {
-  local kernel="$1" kernel_arch="$2" cross="$3" jobs="$4" back="$5"
-  local warnings="$6"
-
-  cd "${kernel}" || return 1
-
-  local head
-  head=$(_oe_where_we_are) || return 1
-
-  if [ "${back}" -gt 0 ] && git rev-parse --verify -q "HEAD~${back}" >/dev/null
-  then
-    echo "  -> baseline build at HEAD~${back}, warnings from it are not yours"
-    _oe_hold_head "${kernel}" "${head}"
-    git checkout -q "HEAD~${back}" || return 1
-    make ARCH="${kernel_arch}" CROSS_COMPILE="${cross}" allmodconfig \
-      >/dev/null 2>&1
-    make ARCH="${kernel_arch}" CROSS_COMPILE="${cross}" -k -j"${jobs}" \
-      >/dev/null 2>&1
-    git checkout -q "${head}" || return 1
-    _oe_release_head
-  else
-    echo "  -> no baseline available, every warning will be reported"
-  fi
-
-  echo "  -> building allmodconfig for ${kernel_arch}"
-  make ARCH="${kernel_arch}" CROSS_COMPILE="${cross}" allmodconfig \
-    >/dev/null 2>&1
-  make ARCH="${kernel_arch}" CROSS_COMPILE="${cross}" -k -j"${jobs}" \
-    >/dev/null 2>"${warnings}"
-}
-
-# checkkabi.sh.  Four checks, each a row in their result table.
-_oe_kabi_build() {
-  local kernel="$1" kernel_arch="$2" cross="$3" jobs="$4" arch="$5"
-  local whitelists="$6" warnings="$7" result="$8" back="$9"
-  local ours
-
-  cd "${kernel}" || return 1
-
-  echo "  -> building allmodconfig for ${kernel_arch}"
-  make clean >/dev/null 2>&1
-  make ARCH="${kernel_arch}" CROSS_COMPILE="${cross}" allmodconfig \
-    >/dev/null 2>&1
-  make ARCH="${kernel_arch}" CROSS_COMPILE="${cross}" oldconfig >/dev/null 2>&1
-  # -k, which their CI does not need and we do.  They build a branch
-  # that compiles, so the first error is the answer; we build whatever
-  # tree we are pointed at, and stopping at the first error in some
-  # unrelated driver means the files the series actually changed are
-  # never compiled at all.  Nothing can then be said about whose fault
-  # the failure is, which is the one question being asked.
-  if make ARCH="${kernel_arch}" CROSS_COMPILE="${cross}" -k -j"${jobs}" \
-      >/dev/null 2>"${warnings}"; then
-    echo "| ${arch} allmodconfig build | pass |" >> "${result}"
-  elif ours=$(_oe_broke_its_own_files "${warnings}" "${back}") \
-       && [ -n "${ours}" ]; then
-    echo "| ${arch} allmodconfig build | fail |" >> "${result}"
-    echo "  -> these are files the series touches, so the breakage is its own"
-    printf '%s\n' "${ours}" | sed 's/^/       /'
-    _oe_report_errors "${warnings}"
-  elif _oe_failed_before_the_series "${kernel}" "${kernel_arch}" \
-      "${cross}" "${jobs}" "${back}" "${warnings}.baseline"; then
-    echo "| ${arch} allmodconfig build | broken already, not your series |" \
-      >> "${result}"
-    _oe_report_errors "${warnings}.baseline"
-    # The warnings belong to the same pre-existing breakage, and
-    # keeping them would fail the series through the warning gate
-    # after the row above declined to.
-    : > "${warnings}"
-  else
-    echo "| ${arch} allmodconfig build | fail |" >> "${result}"
-    _oe_report_errors "${warnings}"
-  fi
-
-  # Everything below needs openeuler_defconfig, which only an openEuler
-  # tree has.  Their CI never sees anything else; we might, and a missing
-  # config is not a broken patch.
-  local config_arch
-  config_arch=$(_oe_srcarch "${kernel_arch}")
-  if [ ! -f "arch/${config_arch}/configs/openeuler_defconfig" ]; then
-    echo "| ${arch} openeuler_defconfig | skip, not in this tree |" \
-      >> "${result}"
-    return 0
-  fi
-
-  echo "  -> building openeuler_defconfig for ${kernel_arch}"
-  make ARCH="${kernel_arch}" CROSS_COMPILE="${cross}" openeuler_defconfig \
-    >/dev/null 2>&1
-  # Their aarch64 job raises the frame-size warning threshold; without it
-  # the build trips over frames that the shipped config accepts.
-  if [ "${arch}" = 'aarch64' ] && grep -q 'CONFIG_FRAME_WARN' .config; then
-    sed -i 's/CONFIG_FRAME_WARN=.*/CONFIG_FRAME_WARN=4096/' .config
-  fi
-  if make ARCH="${kernel_arch}" CROSS_COMPILE="${cross}" -j"${jobs}" \
-      >/dev/null 2>>"${warnings}"; then
-    echo "| ${arch} openeuler_defconfig build | pass |" >> "${result}"
-  else
-    echo "| ${arch} openeuler_defconfig build | fail |" >> "${result}"
-    _oe_report_errors "${warnings}"
-  fi
-
-  _oe_check_kabi "${kernel}" "${arch}" "${whitelists}" "${warnings}" \
-    "${result}"
-  _oe_check_defconfig "${kernel}" "${kernel_arch}" "${arch}" "${warnings}" \
-    "${result}" "${back}"
-}
-
-# Their check_kabi, using their check-kabi script against the three
-# whitelists that ship beside it.  Not every branch has all three, and a
-# whitelist that is absent is not a failure -- that is how they say the
-# ABI is not promised here.
-_oe_check_kabi() {
-  local kernel="$1" arch="$2" whitelists="$3" warnings="$4" result="$5"
-  local tool="${whitelists}/check-kabi"
-
-  if [ ! -x "${tool}" ] && ! chmod +x "${tool}" 2>/dev/null; then
-    echo "| ${arch} checkkabi | skip, no check-kabi script |" >> "${result}"
-    return 0
-  fi
-  if [ ! -f "${kernel}/Module.symvers" ]; then
-    echo "| ${arch} checkkabi | skip, no Module.symvers |" >> "${result}"
-    return 0
-  fi
-
-  local kind list label
-  for kind in '' 'ext1_' 'ext2_'; do
-    list="${whitelists}/Module.kabi_${kind}${arch}"
-    label="${arch} ${kind:+${kind%_} }checkkabi"
-    [ -f "${list}" ] || continue
-    if "${tool}" -k "${list}" -s "${kernel}/Module.symvers" \
-        2>>"${warnings}"; then
-      echo "| ${label} | pass |" >> "${result}"
-    else
-      echo "| ${label} | fail |" >> "${result}"
-    fi
-  done
-}
-
-# The symbols Kconfig would offer that the shipped defconfig does not
-# answer, which is their whole check_defconfig.
-_oe_new_symbols() {
-  local defconfig="$1"
-
-  [ -f "${defconfig}" ] || return 0
-  cp "${defconfig}" .config || return 1
-  make listnewconfig 2>/dev/null | grep -E '^CONFIG_' || true
-}
-
-# Their check_defconfig: a patch that adds a Kconfig symbol has to add it
-# to the shipped defconfig too, or the next build silently loses it.
-#
-# Whether a symbol is "new" depends on the host as much as on the tree.
-# Kconfig only offers GCC_PLUGINS and the RANDSTRUCT choices where the
-# compiler's plugin headers are installed, so a developer machine with
-# gcc-plugin-devel reports five symbols their builder never sees, none
-# of which any patch went near.  Their CI can read the raw list because
-# it builds a known branch in a known container; we cannot.
-#
-# So ask the same question of the tree before the series and keep the
-# difference.  That is the only part a patch can be answerable for.
-_oe_check_defconfig() {
-  local kernel="$1" kernel_arch="$2" arch="$3" warnings="$4" result="$5"
-  local back="${6:-0}"
-  local src defconfig
-  src=$(_oe_srcarch "${kernel_arch}")
-  defconfig="${kernel}/arch/${src}/configs/openeuler_defconfig"
-
-  [ -f "${defconfig}" ] || return 0
-  cd "${kernel}" || return 1
-
-  local mine
-  mine=$(_oe_new_symbols "${defconfig}")
-  if [ -z "${mine}" ]; then
-    echo "| ${arch} checkdefconfig | pass |" >> "${result}"
-    return 0
-  fi
-
-  local before='' head
-  if [ "${back}" -gt 0 ] && git rev-parse --verify -q "HEAD~${back}" >/dev/null
-  then
-    head=$(_oe_where_we_are) || return 1
-    _oe_hold_head "${kernel}" "${head}"
-    if git checkout -q "HEAD~${back}" 2>/dev/null; then
-      before=$(_oe_new_symbols "arch/${src}/configs/openeuler_defconfig")
-      git checkout -q "${head}" || return 1
-    fi
-    _oe_release_head
-  fi
-
-  local added
-  added=$(comm -23 <(printf '%s\n' "${mine}" | sort -u) \
-                   <(printf '%s\n' "${before}" | sort -u))
-
-  if [ -z "${added}" ]; then
-    echo "| ${arch} checkdefconfig | pass |" >> "${result}"
-    # Counted, not listed.  The only symbols worth a reader's attention
-    # are the ones a patch could do something about, and these are not
-    # those: they are unanswered on this machine whatever is checked
-    # out.  Said on the log rather than in the warnings file, which is
-    # a gate, because it is a fact about the host and must not fail the
-    # run.
-    echo "  -> $(printf '%s\n' "${mine}" | wc -l) symbol(s) are unanswered"
-    echo "     before the series as well, so they are this host's offering"
-    echo "     and not the series' doing; not listed."
-    return 0
-  fi
-
-  echo "| ${arch} checkdefconfig | fail |" >> "${result}"
-  {
-    printf '%s\n' "${added}"
-    echo "The configs listed above are introduced but the"
-    echo "openeuler_defconfig for ${arch} is not updated; configure and"
-    echo "run 'make update_oedefconfig' to update it."
-  } >> "${warnings}"
-}
-
-# Entry point.  Prints a report and answers:
-#   0 everything passed, 1 something failed, 2 could not run,
-#   3 this architecture is not built on this branch,
-#   4 the tree does not build without the series either
-oe_build_arch() {
-  local arch="$1"
-  local kernel="${LINUX_SRC_PATH}"
-  local sub="${SCRIPT_DIR}/hulk_robot_test/openEuler"
-  local branch="${OE_TARGET_BRANCH:-OLK-6.6}"
-  local jobs="${BUILD_THREADS:-$(nproc)}"
-  local back="${NUM_PATCHES:-0}"
-
-  local spec kernel_arch cross tarball
-  spec=$(_oe_arch_spec "${arch}") || { echo "unknown arch ${arch}" >&2; return 2; }
-  read -r kernel_arch cross tarball <<< "${spec}"
-  [ "${cross}" = '-' ] && cross=''
-
-  if [ ! -d "${sub}/lib" ]; then
-    echo "hulk_robot_test is not checked out" >&2
-    return 2
-  fi
-
-  _oe_arch_wanted "${arch}" "${branch}" "${sub}/lib" || return $?
-
-  local scratch
-  scratch=$(mktemp -d) || return 2
-  local warnings="${scratch}/build_output.txt"
-  local result="${scratch}/result"
-  : > "${warnings}"
-  echo "| check | result |" > "${result}"
-
-  if [ "${tarball}" != '-' ]; then
-    _oe_setup_gcc "${arch}" "${tarball}" "${sub}/tools" \
-      "${WORKDIR}/.toolchains" || { rm -rf "${scratch}"; return 2; }
-  elif [ -n "${cross}" ]; then
-    echo "no toolchain ships for ${arch}; openEuler does not build it" >&2
-    rm -rf "${scratch}"
-    return 2
-  fi
-
-  if _oe_arch_has_kabi "${arch}"; then
-    _oe_prepare_whitelists "${branch}" || {
-      echo "  -> KABI whitelists unavailable, the ABI will not be compared"
-    }
-    _oe_kabi_build "${kernel}" "${kernel_arch}" "${cross}" "${jobs}" \
-      "${arch}" "${KABI_KERNEL_DIR}" "${warnings}" "${result}" "${back}"
-  else
-    # The row records whether make succeeded.  Whether it complained on
-    # the way is a separate question, asked once below for both paths, so
-    # that their branch exemptions get a say -- counting a warning as a
-    # failed row here would decide the verdict before they are consulted.
-    local ours
-    if _oe_cross_build "${kernel}" "${kernel_arch}" "${cross}" "${jobs}" \
-        "${back}" "${warnings}"; then
-      echo "| ${arch} allmodconfig build | pass |" >> "${result}"
-    elif ours=$(_oe_broke_its_own_files "${warnings}" "${back}") \
-         && [ -n "${ours}" ]; then
-      echo "| ${arch} allmodconfig build | fail |" >> "${result}"
-      echo "  -> these are files the series touches, so the breakage is its own"
-      printf '%s\n' "${ours}" | sed 's/^/       /'
-      _oe_report_errors "${warnings}"
-    elif _oe_failed_before_the_series "${kernel}" "${kernel_arch}" \
-        "${cross}" "${jobs}" "${back}" "${warnings}.baseline"; then
-      echo "| ${arch} allmodconfig build | broken already, not your series |" \
-        >> "${result}"
-      _oe_report_errors "${warnings}.baseline"
-      : > "${warnings}"
-    else
-      echo "| ${arch} allmodconfig build | fail |" >> "${result}"
-      _oe_report_errors "${warnings}"
-    fi
-  fi
-
-  echo
-  cat "${result}"
-  echo
-
-  # "broken already" deliberately does not contain "fail", so a tree
-  # that does not compile without the series reports as unbuildable
-  # rather than as a rejected patch.  The distinction is the difference
-  # between a result somebody acts on and one they learn to ignore.
-  local rc=0
-  if grep -q '| fail |' "${result}"; then
-    rc=1
-  elif grep -q 'broken already' "${result}"; then
-    # Skipping the whole arch made sense when the pre-existing breakage
-    # was all we knew; with -k the other checks still run, and reporting
-    # five passes as "skipped" understates the result by more than the
-    # one unjudgeable row warrants.  Pass, and name what was not judged
-    # -- a verdict nobody can reconcile with their CI is one people stop
-    # reading.  Only when nothing at all got judged is skip still right.
-    if grep -q '| pass |' "${result}"; then
-      echo "note: every check that could be judged passed.  The"
-      echo "      allmodconfig row could not be: this tree does not build"
-      echo "      without the series either, and the files it fails on are"
-      echo "      not ones the series touches.  Their CI builds a base that"
-      echo "      compiles, so it has no such row."
-      echo
-    else
-      rc=4
-    fi
-  fi
-
-  if [ -s "${warnings}" ]; then
-    echo "build warnings:"
-    cat "${warnings}"
-    echo
-    # Their one exemption, kept: openEuler-1.0-LTS is old enough that its
-    # warnings are nobody's fault, and OLK-5.10 powerpc likewise.
-    if [ "${branch}" != 'openEuler-1.0-LTS' ] && \
-       ! { [ "${branch}" = 'OLK-5.10' ] && [ "${kernel_arch}" = 'powerpc' ]; }
-    then
-      rc=1
-    fi
-  fi
-
-  rm -rf "${scratch}"
-  return ${rc}
+  [ "${back}" -gt 0 ] || return 0
+  git rev-parse --verify -q "HEAD~${back}" >/dev/null || return 0
+  git diff --name-only "HEAD~${back}" HEAD 2>/dev/null \
+    | grep -q 'Kconfig'
 }
 
 # Their get_check_kabi_script clones src-openeuler/kernel every run to get
