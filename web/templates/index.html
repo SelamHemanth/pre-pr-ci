@@ -25,65 +25,131 @@
 <script src="/static/vendor/addon-fit.js"></script>
 <script src="/static/vendor/addon-web-links.js"></script>
 <style>
+/* ── liquid glass ───────────────────────────────────────────────────
+   Surfaces are translucent and blurred rather than filled, in the
+   manner of Apple's Control Center.  Three things have to be true at
+   once or it reads as flat grey instead of glass:
+
+     1. There has to be something behind it.  A blurred white panel over
+        a flat background is just a lighter flat background, so .ambient
+        below paints slow-moving colour for the panels to pick up.
+     2. The edge carries the light.  Real glass is brightest along the
+        top rim and darkest just inside the bottom, which is the inset
+        pair in --glass-hi / --glass-lo.  Without them the panels look
+        like frosted plastic.
+     3. Saturation has to be pushed back up.  Blurring averages colour
+        towards grey, and saturate() in the backdrop filter is what
+        stops the whole page going drab.
+
+   backdrop-filter is not free, and it is worse than not free when it
+   nests: a blurred panel inside a blurred panel makes the browser
+   composite the same region twice.  So it is applied only to the top
+   layer -- header, cards, modals, the log sheet, toasts -- and every
+   surface inside one of those uses a plain translucent fill. */
 :root {
-    --bg:          #f4f6fa;
+    --bg:          #eef1f7;
     --surface:     #ffffff;
     --surface-2:   #eef1f6;
     --border:      #dde2ea;
-    --text:        #1b2333;
-    --text-dim:    #667085;
-    --text-faint:  #98a2b3;
-    --accent:      #2f6fed;
-    --accent-soft: #e7efff;
-    --pass:        #14865b;
-    --pass-soft:   #e2f6ec;
+    --text:        #17202f;
+    --text-dim:    #5c6a80;
+    --text-faint:  #8e9ab0;
+    --accent:      #0a66ff;
+    --accent-soft: #e4edff;
+    --pass:        #0f7a52;
+    --pass-soft:   #dff5ea;
     --fail:        #c9372c;
     --fail-soft:   #fdeceb;
-    --warn:        #b25e02;
-    --warn-soft:   #fdf3e2;
+    --warn:        #a65a02;
+    --warn-soft:   #fdf2e0;
     --skip:        #667085;
-    --skip-soft:   #eef1f6;
-    --code-bg:     #12161f;
+    --skip-soft:   #eaeef5;
+    --code-bg:     #0d1118;
     --code-text:   #dfe5ef;
-    --shadow:      0 1px 2px rgba(16,24,40,.06), 0 4px 12px rgba(16,24,40,.06);
-    --shadow-lift: 0 2px 4px rgba(16,24,40,.07), 0 10px 24px rgba(16,24,40,.10);
-    --radius:      10px;
+
+    /* The glass itself.  --glass-2 is for the recessed areas inside a
+       panel (modal footers, inputs, meter tracks) which must read as
+       further back without adding a second blur.
+
+       --glass-edge is the hairline, and it is a *dark* one here.  A
+       white edge on a white panel over a pale backdrop is invisible,
+       which is how the first pass ended up as a page of panels with no
+       discernible boundaries; the white belongs on --glass-hi, inset
+       just below the rim, where it reads as the light catching it. */
+    --glass:       rgba(255,255,255,.74);
+    --glass-2:     rgba(255,255,255,.52);
+    --glass-edge:  rgba(16,24,40,.10);
+    --glass-hi:    rgba(255,255,255,.90);
+    --glass-lo:    rgba(16,24,40,.05);
+    --glass-tint:  rgba(255,255,255,.34);
+    --blur:        26px;
+    --sat:         185%;
+
+    --shadow:      0 1px 2px rgba(16,24,40,.05), 0 8px 24px -8px rgba(16,24,40,.18);
+    --shadow-lift: 0 2px 6px rgba(16,24,40,.07), 0 18px 42px -12px rgba(16,24,40,.26);
+
+    /* Apple's corners are large and consistent by role rather than by
+       element, so a pill stays a pill whatever it contains. */
+    --radius:      18px;
+    --r-sm:        10px;
+    --r-md:        14px;
+    --r-lg:        22px;
+    --r-xl:        28px;
     --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
 
     /* Motion. Durations stay short: this is a build console, and waiting on
        an animation to find out whether a test failed would be worse than no
        animation at all.  Every value here collapses to 0 further down when
        the reader has asked for reduced motion. */
-    --t-fast:  .12s;
-    --t-base:  .2s;
-    --t-slow:  .32s;
+    --t-fast:  .14s;
+    --t-base:  .24s;
+    --t-slow:  .38s;
     /* Decelerating, for things entering the screen. */
     --ease-out:    cubic-bezier(.16, .84, .44, 1);
     /* Slight overshoot, for controls that should feel physical. */
     --ease-spring: cubic-bezier(.34, 1.56, .64, 1);
+    /* Apple's own curve: leaves fast, arrives almost without stopping.
+       Used where something changes size or position rather than just
+       fading, because those are the moves a linear-ish ease makes look
+       mechanical. */
+    --ease-fluid:  cubic-bezier(.32, .72, 0, 1);
 }
 [data-theme="dark"] {
-    --bg:          #0e1117;
+    --bg:          #070a10;
     --surface:     #161b25;
     --surface-2:   #1d2432;
     --border:      #2a3242;
-    --text:        #e4e8f1;
-    --text-dim:    #98a2b3;
+    --text:        #e8ecf5;
+    --text-dim:    #9aa5ba;
     --text-faint:  #6b7688;
     --accent:      #5b8dff;
-    --accent-soft: #1a2542;
+    --accent-soft: #17233f;
     --pass:        #3ddc97;
-    --pass-soft:   #12291f;
+    --pass-soft:   #10261d;
     --fail:        #ff6b5e;
     --fail-soft:   #2c1917;
     --warn:        #ffb454;
     --warn-soft:   #2b2114;
     --skip:        #8792a5;
-    --skip-soft:   #1d2432;
-    --code-bg:     #0a0d13;
+    --skip-soft:   #1b2230;
+    --code-bg:     #05070b;
     --code-text:   #dfe5ef;
-    --shadow:      0 1px 2px rgba(0,0,0,.3), 0 8px 24px rgba(0,0,0,.25);
-    --shadow-lift: 0 2px 6px rgba(0,0,0,.4), 0 14px 32px rgba(0,0,0,.35);
+
+    /* Dark glass is a white film over darkness, not a dark film: tinting
+       it dark would make it disappear into the background and lose the
+       edge that says a panel is there at all.  The hairline inverts with
+       it -- light on dark, dark on light -- which is why every border in
+       the sheet reads from this one variable. */
+    --glass:       rgba(126,144,178,.15);
+    --glass-2:     rgba(126,144,178,.09);
+    --glass-edge:  rgba(255,255,255,.13);
+    --glass-hi:    rgba(255,255,255,.17);
+    --glass-lo:    rgba(0,0,0,.25);
+    --glass-tint:  rgba(255,255,255,.05);
+    --sat:         165%;
+
+    --shadow:      0 1px 2px rgba(0,0,0,.4), 0 12px 32px -10px rgba(0,0,0,.6);
+    --shadow-lift: 0 2px 8px rgba(0,0,0,.5), 0 22px 48px -14px rgba(0,0,0,.7);
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -95,6 +161,7 @@ body {
     font-size: 14px;
     line-height: 1.5;
     -webkit-font-smoothing: antialiased;
+    min-height: 100vh;
 }
 
 /* Colour changes should not animate the whole document on load. */
@@ -107,24 +174,153 @@ body { transition: background-color var(--t-base), color var(--t-base); }
                 transform var(--t-fast) var(--ease-out), filter var(--t-fast);
 }
 
+/* ── ambient backdrop ───────────────────────────────────────────────
+   What the glass is glass *over*.  Four wide, heavily blurred colour
+   fields that drift on a minute-long cycle, so a panel's tint shifts
+   as they pass underneath it and the surface reads as transparent
+   rather than as a grey fill.
+
+   Only transform is animated.  The blur is the expensive part and it is
+   applied once to a static shape, which lets the compositor keep the
+   blurred result and just move it; animating the gradient positions
+   instead would re-run a 90px blur every frame.
+
+   Fixed and behind everything, with no pointer events and no content,
+   so nothing here can intercept a click or be read out by a screen
+   reader. */
+.ambient {
+    position: fixed; inset: -20vmax; z-index: -1;
+    pointer-events: none; overflow: hidden;
+    contain: strict;
+}
+/* Turned well down in the light theme.  At full strength the tint came
+   through the panels and the whole page read as pastel, which buried
+   the one thing the page exists to show: whether a row says PASS or
+   FAIL.  The backdrop only has to be non-uniform enough for the glass
+   to have something to pick up. */
+.ambient i {
+    position: absolute; display: block;
+    border-radius: 50%;
+    filter: blur(90px);
+    opacity: .36;
+    will-change: transform;
+}
+[data-theme="dark"] .ambient i { opacity: .40; filter: blur(110px); }
+
+.ambient .a1 {
+    width: 46vmax; height: 46vmax; top: -6vmax; left: -4vmax;
+    background: radial-gradient(circle, #4f8bff 0%, rgba(79,139,255,0) 70%);
+    animation: drift-a 44s ease-in-out infinite;
+}
+.ambient .a2 {
+    width: 40vmax; height: 40vmax; top: 4vmax; right: -6vmax;
+    background: radial-gradient(circle, #a855f7 0%, rgba(168,85,247,0) 70%);
+    animation: drift-b 56s ease-in-out infinite;
+}
+/* One of the four is deliberately mid-page rather than at an edge: with
+   all of them on the rim the centre stayed flat white, and a panel over
+   flat white is not glass, it is a white box with a blur it never
+   uses. */
+.ambient .a3 {
+    width: 48vmax; height: 48vmax; bottom: -4vmax; left: 26vmax;
+    background: radial-gradient(circle, #14b8a6 0%, rgba(20,184,166,0) 70%);
+    animation: drift-c 64s ease-in-out infinite;
+}
+.ambient .a4 {
+    width: 34vmax; height: 34vmax; bottom: 2vmax; right: 8vmax;
+    background: radial-gradient(circle, #f59e0b 0%, rgba(245,158,11,0) 70%);
+    animation: drift-d 50s ease-in-out infinite;
+}
+@keyframes drift-a {
+    50% { transform: translate3d(14vmax, 9vmax, 0) scale(1.15); }
+}
+@keyframes drift-b {
+    50% { transform: translate3d(-12vmax, 14vmax, 0) scale(.88); }
+}
+@keyframes drift-c {
+    50% { transform: translate3d(10vmax, -12vmax, 0) scale(1.12); }
+}
+@keyframes drift-d {
+    50% { transform: translate3d(-14vmax, -8vmax, 0) scale(.92); }
+}
+
+/* The one recipe every top-level surface uses.  Kept as a single place
+   rather than repeated per component, because the four values below
+   have to stay in step: change the blur without the saturation and the
+   page goes gently grey over a week of small edits. */
+.glass {
+    background: var(--glass);
+    -webkit-backdrop-filter: blur(var(--blur)) saturate(var(--sat));
+    backdrop-filter: blur(var(--blur)) saturate(var(--sat));
+    border: 1px solid var(--glass-edge);
+    box-shadow:
+        inset 0 1px 0 0 var(--glass-hi),
+        inset 0 -1px 0 0 var(--glass-lo),
+        var(--shadow);
+}
+
+/* Where there is no backdrop-filter -- older WebKit, and Firefox with
+   the pref off -- a translucent panel is just unreadable text over
+   moving colour.  Fall back to opaque surfaces and hide the ambient
+   layer rather than shipping something nobody can read. */
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+    .ambient { display: none; }
+    .glass, header, .card, .modal, .log-panel, .toast, .tabs {
+        background: var(--surface) !important;
+        border-color: var(--border) !important;
+    }
+}
+
 .icon { width: 1em; height: 1em; fill: currentColor; flex: none; vertical-align: -.125em; }
 
 /* ── header ─────────────────────────────────────────────────────────── */
 
+/* The header is the one surface that is always over content, so it gets
+   a heavier blur than the panels and no bottom rounding -- it reads as
+   the sheet the page slides under. */
 header {
     position: sticky; top: 0; z-index: 30;
     display: flex; align-items: center; gap: 20px;
-    padding: 0 20px; height: 56px;
-    background: var(--surface);
-    border-bottom: 1px solid var(--border);
+    padding: 0 20px; height: var(--header-h);
+    background: var(--glass);
+    -webkit-backdrop-filter: blur(32px) saturate(var(--sat));
+    backdrop-filter: blur(32px) saturate(var(--sat));
+    border-bottom: 1px solid var(--glass-edge);
+    box-shadow: inset 0 1px 0 0 var(--glass-hi), 0 1px 24px -6px rgba(16,24,40,.18);
 }
+[data-theme="dark"] header { box-shadow: inset 0 1px 0 0 var(--glass-hi), 0 1px 28px -6px rgba(0,0,0,.7); }
+/* Declared once: the log column sticks to just below the header and
+   sizes itself against it, and the two drifting apart leaves either a
+   gap above the log or a strip of it under the header. */
+:root { --header-h: 60px; }
 .brand { display: flex; align-items: center; gap: 9px; font-weight: 650; font-size: 15px; letter-spacing: -.01em; }
-.brand img { height: 24px; width: 24px; }
-.brand-sub {
-    padding: 2px 8px; border-radius: 999px;
-    background: var(--surface-2); color: var(--text-dim);
-    font-weight: 550; font-size: 11.5px; letter-spacing: 0;
+
+/* The mark from the README banner, inline rather than an <img> so it
+   inherits this sheet -- notably the reduced-motion block, which an
+   <img>-loaded SVG would answer with its own media query against the
+   same preference but could not be reached from here.
+
+   It is the one piece of idle motion on the page: the ring turns, the
+   shield breathes and the tick redraws itself, which says the surface
+   is live without competing with a running build for attention. */
+.mark { width: 26px; height: 26px; display: block; flex: none; }
+.mark .m-ring   { animation: m-spin 14s linear infinite; }
+.mark .m-shield { animation: m-breathe 4s ease-in-out infinite; }
+.mark .m-tick   { stroke-dasharray: 74; animation: m-draw 4s ease-in-out infinite; }
+/* transform-box keeps the origin in the viewBox's own units, so these
+   stay centred on the mark whatever the rendered size is. */
+.mark .m-ring, .mark .m-shield {
+    transform-box: view-box; transform-origin: 92px 130px;
 }
+@keyframes m-spin    { to { transform: rotate(360deg); } }
+@keyframes m-breathe { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.05); } }
+@keyframes m-draw {
+    0%        { stroke-dashoffset: 74; }
+    22%, 78%  { stroke-dashoffset: 0; }
+    100%      { stroke-dashoffset: 74; }
+}
+.mark { transition: transform var(--t-slow) var(--ease-spring); }
+.brand:hover .mark { transform: rotate(-8deg) scale(1.1); }
 
 .host-facts { display: flex; align-items: center; gap: 18px; margin-left: auto; color: var(--text-dim); font-size: 12px; }
 .host-facts div { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
@@ -133,22 +329,26 @@ header {
 /* The machine name is the one header fact that identifies the window, so it
    is set apart from the numbers rather than sitting in the same row of them. */
 .host-name {
-    padding: 4px 10px 4px 8px; border-radius: 999px;
-    background: var(--surface-2); border: 1px solid var(--border);
+    padding: 4px 11px 4px 9px; border-radius: 999px;
+    background: var(--glass-2); border: 1px solid var(--glass-edge);
+    box-shadow: inset 0 1px 0 0 var(--glass-hi);
 }
 .host-name b { font-family: var(--mono); font-size: 11.5px; letter-spacing: -.01em; }
 .host-name .icon { color: var(--accent); }
 @media (max-width: 1100px) { .host-facts > div:not(.host-name) { display: none; } }
 
+/* Round, not rounded-square: Control Center's small controls are
+   circles, and at 34px a circle is also the easier target to hit. */
 .icon-btn {
     display: grid; place-items: center;
-    width: 32px; height: 32px;
-    border: 1px solid var(--border); border-radius: 8px;
-    background: var(--surface); color: var(--text-dim);
+    width: 34px; height: 34px;
+    border: 1px solid var(--glass-edge); border-radius: 50%;
+    background: var(--glass-2); color: var(--text-dim);
+    box-shadow: inset 0 1px 0 0 var(--glass-hi);
     cursor: pointer; font-size: 15px;
 }
-.icon-btn:hover { background: var(--surface-2); color: var(--text); }
-.icon-btn:active { transform: scale(.92); transition-duration: .05s; }
+.icon-btn:hover { background: var(--glass); color: var(--text); transform: scale(1.06); }
+.icon-btn:active { transform: scale(.9); transition-duration: .06s; }
 /* The sun/moon glyph swaps on click; spinning it makes the swap read as one
    action rather than a flicker. */
 .theme-btn .icon { transition: transform var(--t-slow) var(--ease-spring); }
@@ -157,66 +357,115 @@ header {
 /* ── layout ─────────────────────────────────────────────────────────── */
 
 .wrap { display: grid; grid-template-columns: 330px minmax(0, 1fr); gap: 18px; padding: 18px; align-items: start; }
-@media (max-width: 1100px) { .wrap { grid-template-columns: 1fr; } }
+/* Opening a log adds a track rather than covering the page, so the list
+   in the middle compresses instead of disappearing.  The width is the
+   one the drag handle writes, which is why it comes from a variable
+   rather than a fraction. */
+.wrap.with-log { grid-template-columns: 330px minmax(0, 1fr) var(--log-w, 40vw); }
+@media (max-width: 1100px) {
+    .wrap, .wrap.with-log { grid-template-columns: minmax(0, 1fr); }
+}
 
 .card {
-    background: var(--surface);
-    border: 1px solid var(--border);
+    position: relative;
+    background: var(--glass);
+    -webkit-backdrop-filter: blur(var(--blur)) saturate(var(--sat));
+    backdrop-filter: blur(var(--blur)) saturate(var(--sat));
+    border: 1px solid var(--glass-edge);
     border-radius: var(--radius);
-    box-shadow: var(--shadow);
+    box-shadow:
+        inset 0 1px 0 0 var(--glass-hi),
+        inset 0 -1px 0 0 var(--glass-lo),
+        var(--shadow);
     margin-bottom: 16px;
     overflow: hidden;
     /* Cards arrive on first paint, staggered by --i (set inline) so the page
-       assembles top-down instead of appearing all at once. */
-    animation: card-in var(--t-slow) var(--ease-out) backwards;
-    animation-delay: calc(var(--i, 0) * 45ms);
+       assembles top-down instead of appearing all at once.  They scale up
+       very slightly as well as rising, which is what makes them look like
+       they are coming forward through the glass rather than sliding on a
+       plane behind it. */
+    animation: card-in var(--t-slow) var(--ease-fluid) backwards;
+    animation-delay: calc(var(--i, 0) * 55ms);
 }
 @keyframes card-in {
-    from { opacity: 0; transform: translateY(10px); }
+    from { opacity: 0; transform: translateY(14px) scale(.985); }
 }
-.card:hover { box-shadow: var(--shadow-lift); }
+/* A single wide highlight across the top third, which is the reflection
+   that stops a translucent rectangle looking like a hole in the page.
+   Pinned to the card rather than the viewport so it stays put while the
+   ambient colour moves underneath it. */
+.card::before {
+    content: ""; position: absolute; inset: 0 0 auto; height: 45%;
+    pointer-events: none;
+    background: linear-gradient(180deg, var(--glass-tint), transparent);
+    opacity: .9;
+}
+.card:hover { box-shadow: inset 0 1px 0 0 var(--glass-hi), inset 0 -1px 0 0 var(--glass-lo), var(--shadow-lift); }
 .card-head {
+    position: relative;
     display: flex; align-items: center; gap: 8px;
-    padding: 12px 16px;
-    border-bottom: 1px solid var(--border);
+    padding: 13px 17px;
+    border-bottom: 1px solid var(--glass-edge);
     font-weight: 600; font-size: 13px;
     text-transform: uppercase; letter-spacing: .04em;
     color: var(--text-dim);
 }
 .card-head .icon { color: var(--accent); font-size: 15px; }
+.card-body { position: relative; }
 .card-body { padding: 16px; }
 .card-body > * + * { margin-top: 12px; }
 
 /* ── controls ───────────────────────────────────────────────────────── */
 
 .btn {
+    position: relative; overflow: hidden;
     display: inline-flex; align-items: center; justify-content: center; gap: 8px;
-    padding: 9px 14px;
-    border: 1px solid var(--border); border-radius: 8px;
-    background: var(--surface); color: var(--text);
+    padding: 10px 16px;
+    border: 1px solid var(--glass-edge); border-radius: 999px;
+    background: var(--glass-2); color: var(--text);
+    box-shadow: inset 0 1px 0 0 var(--glass-hi), inset 0 -1px 0 0 var(--glass-lo);
     font: inherit; font-weight: 550; font-size: 13px;
     cursor: pointer; white-space: nowrap;
 }
-.btn:hover:not(:disabled) { background: var(--surface-2); transform: translateY(-1px); }
+/* A highlight sweeps across on hover, the way light crosses a lens when
+   it tips.  Transform-only so it composites, and it starts off-screen
+   left rather than at opacity 0, or the first frame flashes the whole
+   button white. */
+.btn::after {
+    content: ""; position: absolute; inset: 0;
+    pointer-events: none;
+    background: linear-gradient(105deg, transparent 35%,
+                rgba(255,255,255,.34) 50%, transparent 65%);
+    transform: translateX(-120%);
+    transition: transform .55s var(--ease-fluid);
+}
+.btn:hover:not(:disabled)::after { transform: translateX(120%); }
+.btn:hover:not(:disabled) { background: var(--glass); transform: translateY(-1px); }
 /* Press has to read as instant, so it overrides the hover lift and uses the
    shortest duration we have. */
-.btn:active:not(:disabled) { transform: translateY(0) scale(.97); transition-duration: .05s; }
-.btn:disabled { opacity: .5; cursor: not-allowed; transform: none; }
+.btn:active:not(:disabled) { transform: translateY(0) scale(.96); transition-duration: .06s; }
+.btn:disabled { opacity: .45; cursor: not-allowed; transform: none; }
+.btn:disabled::after { display: none; }
 .btn-block { width: 100%; }
-/* How many tests the button would run, so the label can stay short
-   without hiding what "Run tests" means today. */
-.btn-count {
-  margin-left: 6px; padding: 1px 7px; border-radius: 999px;
-  font-size: 11px; font-weight: 600;
-  background: rgba(127, 127, 127, .22);
+.btn-sm { border-radius: 999px; }
+/* The one opaque control on the page.  A translucent primary button
+   over moving colour cannot hold a stable contrast ratio against white
+   text, and this is the button that starts a three-hour build. */
+.btn-primary {
+    background: linear-gradient(180deg,
+        color-mix(in srgb, var(--accent) 88%, #fff) 0%, var(--accent) 100%);
+    border-color: color-mix(in srgb, var(--accent) 70%, #000);
+    color: #fff;
+    box-shadow: inset 0 1px 0 0 rgba(255,255,255,.4),
+                0 4px 14px -4px color-mix(in srgb, var(--accent) 60%, transparent);
 }
-.btn-primary { background: var(--accent); border-color: var(--accent); color: #fff; }
 .btn-primary:hover:not(:disabled) {
-    filter: brightness(1.08); background: var(--accent);
-    box-shadow: 0 4px 14px -2px color-mix(in srgb, var(--accent) 55%, transparent);
+    filter: brightness(1.06);
+    box-shadow: inset 0 1px 0 0 rgba(255,255,255,.4),
+                0 8px 22px -4px color-mix(in srgb, var(--accent) 65%, transparent);
 }
-.btn-danger { color: var(--fail); border-color: var(--fail); background: transparent; }
-.btn-danger:hover:not(:disabled) { background: var(--fail-soft); }
+.btn-danger { color: var(--fail); border-color: color-mix(in srgb, var(--fail) 45%, transparent); background: var(--glass-2); }
+.btn-danger:hover:not(:disabled) { background: var(--fail-soft); border-color: var(--fail); }
 
 /* Keyboard focus gets the same ring the inputs use.  :focus-visible rather
    than :focus so a mouse click does not leave a ring behind. */
@@ -230,9 +479,10 @@ header {
 
 .badge {
     display: inline-flex; align-items: center; gap: 5px;
-    padding: 2px 8px; border-radius: 999px;
+    padding: 3px 9px; border-radius: 999px;
     font-size: 11px; font-weight: 650;
     text-transform: uppercase; letter-spacing: .03em;
+    box-shadow: inset 0 1px 0 0 var(--glass-hi);
     transition: background var(--t-base), color var(--t-base);
 }
 /* A verdict appearing is the thing you are waiting for, so it pops rather
@@ -248,7 +498,7 @@ header {
 .badge-skip    { background: var(--skip-soft); color: var(--skip); }
 .badge-run     { background: var(--accent-soft); color: var(--accent); }
 .badge-warn    { background: var(--warn-soft); color: var(--warn); }
-.badge-neutral { background: var(--surface-2); color: var(--text-dim); }
+.badge-neutral { background: var(--glass-2); color: var(--text-dim); }
 
 .dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; flex: none; }
 .pulse { animation: pulse 1.4s ease-in-out infinite; }
@@ -261,6 +511,16 @@ header {
     font-size: 10.5px; font-weight: 700; letter-spacing: .02em;
     font-variant-numeric: tabular-nums;
 }
+.distro-tag { text-transform: none; letter-spacing: 0; font-weight: 600; }
+/* A button that reads as prose, for the one place a sentence has to
+   take you somewhere rather than do something. */
+.link-btn {
+    padding: 0; border: none; background: none; cursor: pointer;
+    font: inherit; color: var(--accent);
+    text-decoration: underline; text-underline-offset: 2px;
+    text-decoration-color: color-mix(in srgb, var(--accent) 40%, transparent);
+}
+.link-btn:hover { text-decoration-color: var(--accent); }
 .head-btn { margin-left: auto; width: 24px; height: 24px; border: none; background: none; }
 .chev { transition: transform var(--t-base) var(--ease-out); }
 .chev.up { transform: rotate(180deg); }
@@ -280,11 +540,12 @@ header {
 /* ── setup checklist ────────────────────────────────────────────────── */
 
 .step { display: flex; align-items: center; gap: 11px; }
-.step + .step { margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--border); }
+.step + .step { margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--glass-edge); }
 .step-mark {
     display: grid; place-items: center; flex: none;
-    width: 22px; height: 22px; border-radius: 50%;
+    width: 24px; height: 24px; border-radius: 50%;
     background: var(--warn-soft); color: var(--warn);
+    box-shadow: inset 0 1px 0 0 var(--glass-hi);
     transition: background var(--t-base), color var(--t-base);
 }
 .step-mark .dot { background: currentColor; }
@@ -327,7 +588,11 @@ header {
 .status-label { color: var(--text-dim); font-size: 12px; }
 .status-value { font-weight: 550; font-size: 13px; }
 
-.progress { height: 5px; border-radius: 999px; background: var(--surface-2); overflow: hidden; }
+.progress {
+    height: 7px; border-radius: 999px; overflow: hidden;
+    background: var(--glass-2);
+    box-shadow: inset 0 1px 2px var(--glass-lo);
+}
 .progress > span {
     display: block; height: 100%; border-radius: 999px;
     /* Moving stripes over the fill: the bar only advances when a test
@@ -345,7 +610,11 @@ header {
 
 .meter > span { transition: width var(--t-slow) var(--ease-out), background var(--t-base); }
 
-.meter { height: 5px; border-radius: 999px; background: var(--surface-2); overflow: hidden; }
+.meter {
+    height: 7px; border-radius: 999px; overflow: hidden;
+    background: var(--glass-2);
+    box-shadow: inset 0 1px 2px var(--glass-lo);
+}
 .meter > span { display: block; height: 100%; border-radius: 999px; background: var(--accent); }
 .meter.tight > span { background: var(--warn); }
 .meter.critical > span { background: var(--fail); }
@@ -359,33 +628,58 @@ header {
     font-variant-numeric: tabular-nums;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
+/* Now that the card lists every field rather than eight of them, the
+   section headings are what keep it scannable. */
+.kv-group {
+    margin: 14px 0 7px; font-size: 10.5px; font-weight: 650;
+    letter-spacing: .07em; text-transform: uppercase; color: var(--text-dim);
+}
+.kv-group:first-child { margin-top: 0; }
+.kv-secret { color: var(--text-dim); font-weight: 500; font-style: italic; }
 
 /* ── tabs ───────────────────────────────────────────────────────────── */
 
-.tabs { display: flex; gap: 2px; padding: 0 8px; border-bottom: 1px solid var(--border); background: var(--surface); }
-.tab {
-    position: relative;
-    display: flex; align-items: center; gap: 7px;
-    padding: 12px 14px; border: none; background: none;
-    color: var(--text-dim); font: inherit; font-weight: 550; font-size: 13px;
-    cursor: pointer; margin-bottom: -1px;
-    transition: color var(--t-fast);
+/* A segmented control rather than an underlined row: the selected tab
+   is a raised glass lozenge, which is how Control Center shows the
+   active one of a set and reads at a glance from across a desk. */
+.tabs {
+    display: flex; gap: 4px; padding: 7px 8px;
+    border-bottom: 1px solid var(--glass-edge);
+    background: var(--glass-2);
 }
-/* The underline is a pseudo-element that grows out of the centre, rather
-   than a border colour that blinks between tabs. */
+.tab {
+    position: relative; z-index: 0;
+    display: flex; align-items: center; gap: 7px;
+    padding: 8px 14px; border: none; background: none; border-radius: 999px;
+    color: var(--text-dim); font: inherit; font-weight: 550; font-size: 13px;
+    cursor: pointer;
+    transition: color var(--t-base);
+}
+/* The lozenge is a pseudo-element that scales up from the middle, so
+   selecting a tab reads as the pill growing into place rather than a
+   background colour blinking between two of them. */
 .tab::after {
-    content: ""; position: absolute; left: 8px; right: 8px; bottom: 0; height: 2px;
-    background: var(--accent); border-radius: 2px 2px 0 0;
-    transform: scaleX(0); transform-origin: center;
-    transition: transform var(--t-base) var(--ease-out);
+    content: ""; position: absolute; inset: 0; z-index: -1;
+    border-radius: 999px;
+    background: var(--glass);
+    border: 1px solid transparent;
+    box-shadow: none;
+    opacity: 0; transform: scale(.82);
+    transition: opacity var(--t-base), transform var(--t-base) var(--ease-fluid),
+                border-color var(--t-base), box-shadow var(--t-base);
 }
 .tab:hover { color: var(--text); }
-.tab:hover::after { transform: scaleX(.4); opacity: .4; }
+.tab:hover::after { opacity: .5; transform: scale(1); }
 .tab.active { color: var(--accent); }
-.tab.active::after { transform: scaleX(1); opacity: 1; }
+.tab.active::after {
+    opacity: 1; transform: scale(1);
+    border-color: var(--glass-edge);
+    box-shadow: inset 0 1px 0 0 var(--glass-hi), 0 2px 8px -2px rgba(16,24,40,.18);
+}
+.tab:active { transform: scale(.97); transition-duration: .06s; }
 .tab .count {
-    padding: 1px 6px; border-radius: 999px;
-    background: var(--surface-2); color: var(--text-dim);
+    padding: 1px 7px; border-radius: 999px;
+    background: var(--glass-2); color: var(--text-dim);
     font-size: 11px; font-weight: 650;
     transition: background var(--t-fast), color var(--t-fast);
 }
@@ -395,24 +689,24 @@ header {
 
 .test-row, .job-row {
     display: flex; align-items: center; gap: 12px;
-    padding: 11px 16px;
-    border-bottom: 1px solid var(--border);
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--glass-edge);
     /* A row's own left edge lights up on hover, which makes it clear which
        row a Run button belongs to in a long list. */
-    box-shadow: inset 2px 0 0 transparent;
+    box-shadow: inset 3px 0 0 transparent;
     transition: background var(--t-fast), box-shadow var(--t-fast);
 }
 .test-row:last-child, .job-row:last-child { border-bottom: none; }
 .test-row:hover, .job-row:hover {
-    background: var(--surface-2);
-    box-shadow: inset 2px 0 0 var(--accent);
+    background: var(--glass-tint);
+    box-shadow: inset 3px 0 0 var(--accent);
 }
 .test-row.off { opacity: .45; }
 .test-row.off:hover { opacity: .7; }
 /* The row that is running, findable without reading down the list. */
 .test-row.now {
-  background: color-mix(in srgb, var(--accent) 8%, transparent);
-  box-shadow: inset 2px 0 0 var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  box-shadow: inset 3px 0 0 var(--accent);
 }
 
 /* Rows fade in staggered when a list first appears. */
@@ -423,9 +717,9 @@ header {
    left edge.  Deliberately not a pulsing background: a kernel build holds
    this state for twenty minutes, and anything that flashes the whole row
    for that long stops being information and becomes an irritation. */
-.job-row.live { background: var(--accent-soft); position: relative; }
+.job-row.live { background: color-mix(in srgb, var(--accent) 12%, transparent); position: relative; }
 .job-row.live::before {
-    content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 2px;
+    content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px;
     background: linear-gradient(to bottom,
         transparent, var(--accent) 45%, var(--accent) 55%, transparent);
     background-size: 100% 220%;
@@ -454,36 +748,50 @@ header {
 
 /* ── switch ─────────────────────────────────────────────────────────── */
 
-.switch { position: relative; display: inline-block; width: 36px; height: 20px; flex: none; }
+.switch { position: relative; display: inline-block; width: 40px; height: 23px; flex: none; }
 .switch input { opacity: 0; width: 0; height: 0; }
 .switch span {
     position: absolute; inset: 0; cursor: pointer;
-    background: var(--border); border-radius: 999px;
-    transition: background var(--t-base), box-shadow var(--t-fast);
+    background: var(--glass-2); border: 1px solid var(--glass-edge);
+    border-radius: 999px;
+    box-shadow: inset 0 1px 3px var(--glass-lo);
+    transition: background var(--t-base), border-color var(--t-base), box-shadow var(--t-fast);
 }
 .switch span::before {
-    content: ""; position: absolute; height: 14px; width: 14px; left: 3px; top: 3px;
+    content: ""; position: absolute; height: 17px; width: 17px; left: 2px; top: 2px;
     background: #fff; border-radius: 50%;
+    box-shadow: 0 1px 3px rgba(16,24,40,.35);
     /* Overshoots slightly, so the knob feels thrown rather than dragged. */
-    transition: transform var(--t-base) var(--ease-spring);
+    transition: transform var(--t-base) var(--ease-spring), width var(--t-fast);
 }
-.switch:active span::before { width: 16px; }
-.switch input:checked + span { background: var(--accent); }
-.switch input:checked + span::before { transform: translateX(16px); }
+/* The knob stretches while held, then snaps back to a circle: the same
+   trick iOS uses to make a toggle feel like a physical object rather
+   than two states of a picture. */
+.switch:active span::before { width: 21px; }
+.switch input:checked + span {
+    background: var(--accent); border-color: color-mix(in srgb, var(--accent) 70%, #000);
+    box-shadow: inset 0 1px 0 0 rgba(255,255,255,.3);
+}
+.switch input:checked + span::before { transform: translateX(17px); }
+.switch input:checked:active + span::before { transform: translateX(13px); }
 
 /* ── forms ──────────────────────────────────────────────────────────── */
 
 .field { margin-bottom: 14px; }
 .field label { display: block; margin-bottom: 5px; font-size: 12px; font-weight: 550; color: var(--text-dim); }
 .field input, .field select {
-    width: 100%; padding: 9px 11px;
-    border: 1px solid var(--border); border-radius: 8px;
-    background: var(--bg); color: var(--text);
+    width: 100%; padding: 10px 13px;
+    border: 1px solid var(--glass-edge); border-radius: var(--r-md);
+    background: var(--glass-2); color: var(--text);
+    box-shadow: inset 0 1px 2px var(--glass-lo);
     font: inherit; font-size: 13px;
+    transition: border-color var(--t-fast), box-shadow var(--t-base),
+                background var(--t-fast);
 }
 .field input:focus, .field select:focus {
     outline: none; border-color: var(--accent);
-    box-shadow: 0 0 0 3px var(--accent-soft);
+    background: var(--glass);
+    box-shadow: 0 0 0 3.5px var(--accent-soft);
 }
 .field input.bad, .field select.bad { border-color: var(--fail); }
 .field .hint { margin-top: 4px; font-size: 11.5px; color: var(--text-faint); }
@@ -493,7 +801,7 @@ header {
 
 .section-title {
     margin: 22px 0 12px; padding-bottom: 6px;
-    border-bottom: 1px solid var(--border);
+    border-bottom: 1px solid var(--glass-edge);
     font-size: 11px; font-weight: 700;
     text-transform: uppercase; letter-spacing: .06em; color: var(--text-faint);
 }
@@ -501,63 +809,115 @@ header {
 
 /* ── modal ──────────────────────────────────────────────────────────── */
 
+/* The backdrop blurs the page rather than dimming it, so the dialog
+   sits in front of something recognisable instead of a black wash --
+   and the blur is what makes the dialog's own glass read as the nearer
+   of two layers. */
 .overlay {
     position: fixed; inset: 0; z-index: 50;
     display: grid; place-items: center; padding: 20px;
-    background: rgba(8,11,17,.6);
-    backdrop-filter: blur(2px);
+    background: rgba(10,14,22,.36);
+    -webkit-backdrop-filter: blur(18px) saturate(120%);
+    backdrop-filter: blur(18px) saturate(120%);
 }
 .modal {
+    position: relative;
     display: flex; flex-direction: column;
     width: 100%; max-width: 760px; max-height: 90vh;
-    background: var(--surface);
-    border: 1px solid var(--border); border-radius: 14px;
-    box-shadow: 0 20px 50px rgba(0,0,0,.35);
+    background: var(--glass);
+    -webkit-backdrop-filter: blur(var(--blur)) saturate(var(--sat));
+    backdrop-filter: blur(var(--blur)) saturate(var(--sat));
+    border: 1px solid var(--glass-edge); border-radius: var(--r-xl);
+    box-shadow:
+        inset 0 1px 0 0 var(--glass-hi),
+        inset 0 -1px 0 0 var(--glass-lo),
+        0 32px 70px -18px rgba(0,0,0,.5);
+    overflow: hidden;
+}
+.modal::before {
+    content: ""; position: absolute; inset: 0 0 auto; height: 120px;
+    pointer-events: none;
+    background: linear-gradient(180deg, var(--glass-tint), transparent);
 }
 .modal.narrow { max-width: 440px; }
 .modal-head {
+    position: relative;
     display: flex; align-items: center; gap: 10px;
-    padding: 16px 20px; border-bottom: 1px solid var(--border);
+    padding: 18px 22px; border-bottom: 1px solid var(--glass-edge);
 }
-.modal-head h2 { font-size: 15px; font-weight: 650; }
+.modal-head h2 { font-size: 16px; font-weight: 650; letter-spacing: -.01em; }
 .modal-head .icon-btn { margin-left: auto; }
-.modal-body { padding: 20px; overflow-y: auto; }
+.modal-body { position: relative; padding: 22px; overflow-y: auto; }
 .modal-foot {
+    position: relative;
     display: flex; justify-content: flex-end; gap: 10px;
-    padding: 14px 20px; border-top: 1px solid var(--border);
-    background: var(--surface-2);
+    padding: 16px 22px; border-top: 1px solid var(--glass-edge);
+    background: var(--glass-2);
 }
 
 /* ── log viewer ─────────────────────────────────────────────────────── */
 
+/* A third column of the page, not a sheet laid over it.  An overlay
+   hid the very rows it was opened from -- you could not see which test
+   produced the output you were reading, or watch the next one turn
+   green -- so the grid grows a track instead and the list beside it
+   narrows to make room.  Nothing is covered; the page is shared.
+
+   It sticks below the header and takes the remaining viewport height,
+   so scrolling the list does not scroll the log away from it. */
 .log-panel {
-    position: fixed; left: 0; right: 0; bottom: 0; z-index: 40;
+    position: sticky; top: calc(var(--header-h) + 18px);
+    height: calc(100vh - var(--header-h) - 36px);
     display: flex; flex-direction: column;
-    /* Driven by a variable so the edge can be dragged; it used to be a fixed
-       62vh that covered most of the page whether you wanted it or not. */
-    height: var(--log-h, 55vh);
-    min-height: 120px; max-height: 92vh;
-    background: var(--surface);
-    border-top: 1px solid var(--border);
-    box-shadow: 0 -8px 30px rgba(0,0,0,.2);
+    min-width: 0;
+    background: var(--glass);
+    -webkit-backdrop-filter: blur(var(--blur)) saturate(var(--sat));
+    backdrop-filter: blur(var(--blur)) saturate(var(--sat));
+    border: 1px solid var(--glass-edge);
+    border-radius: var(--radius);
+    box-shadow:
+        inset 0 1px 0 0 var(--glass-hi),
+        inset 0 -1px 0 0 var(--glass-lo),
+        var(--shadow);
+    /* Not `overflow: hidden`: the drag handle sits in the gutter to the
+       left of the panel, and clipping the box clipped the handle out of
+       existence -- invisible and, more to the point, not hit-testable.
+       The two children round their own outer corners instead. */
 }
+.log-head { border-radius: var(--radius) var(--radius) 0 0; }
+.log-body { border-radius: 0 0 var(--radius) var(--radius); }
+/* The handle lives in the grid gap, so dragging it reads as moving the
+   boundary between the two columns rather than resizing one of them. */
 .log-grip {
-    position: absolute; top: -3px; left: 0; right: 0; height: 9px;
-    cursor: ns-resize; z-index: 1;
+    position: absolute; left: -13px; top: 0; bottom: 0; width: 13px;
+    cursor: ew-resize; z-index: 1;
     display: grid; place-items: center;
 }
 .log-grip::after {
-    content: ""; width: 42px; height: 3px; border-radius: 999px;
-    background: var(--border);
-    transition: background var(--t-fast), width var(--t-base) var(--ease-out);
+    content: ""; height: 42px; width: 3px; border-radius: 999px;
+    background: var(--glass-edge);
+    transition: background var(--t-fast), height var(--t-base) var(--ease-out);
 }
-.log-grip:hover::after { background: var(--accent); width: 64px; }
-body.dragging { cursor: ns-resize; user-select: none; }
-/* While dragging, the height must track the pointer exactly. */
+.log-grip:hover::after { background: var(--accent); height: 90px; }
+/* Once the page is a single column there is no boundary left to drag
+   and no list to sit beside, so the log becomes a panel of its own at
+   the top of the stack -- first, because you just asked to see it.
+
+   This block has to sit *after* the rules it cancels: same specificity,
+   so source order decides, and above them the `display: none` lost. */
+@media (max-width: 1100px) {
+    .log-panel {
+        position: static; order: -1;
+        height: min(70vh, 640px);
+    }
+    .log-grip { display: none; }
+}
+body.dragging { cursor: ew-resize; user-select: none; }
+/* While dragging, the width must track the pointer exactly. */
 body.dragging .log-panel { transition: none; }
 .log-head {
     display: flex; align-items: center; gap: 10px;
-    padding: 10px 16px; border-bottom: 1px solid var(--border);
+    padding: 11px 16px; border-bottom: 1px solid var(--glass-edge);
     flex-wrap: wrap;
 }
 .log-sub {
@@ -565,10 +925,16 @@ body.dragging .log-panel { transition: none; }
 }
 .log-title { font-family: var(--mono); font-size: 12.5px; font-weight: 550; }
 .log-actions { display: flex; align-items: center; gap: 8px; margin-left: auto; }
+/* Content areas stay near-opaque.  Glass is for chrome; putting it
+   behind twelve thousand lines of build output would make the text
+   swim over the drifting colour and cost a full-screen blur on every
+   scroll frame.  The 4% of transparency is only so the panel does not
+   read as a black slab cut out of the page. */
 .log-body {
     flex: 1; min-height: 0; overflow: auto;
-    padding: 12px 16px;
-    background: var(--code-bg); color: var(--code-text);
+    padding: 14px 16px;
+    background: color-mix(in srgb, var(--code-bg) 96%, transparent);
+    color: var(--code-text);
     font-family: var(--mono); font-size: 12px; line-height: 1.55;
     white-space: pre-wrap; word-break: break-word;
 }
@@ -583,11 +949,11 @@ body.dragging .log-panel { transition: none; }
 
 /* ── terminal ───────────────────────────────────────────────────────── */
 
-.term-shell { padding: 12px; background: var(--code-bg); }
+.term-shell { padding: 12px; background: color-mix(in srgb, var(--code-bg) 96%, transparent); }
 .term-host { height: 60vh; min-height: 320px; }
 .term-bar {
     display: flex; align-items: center; gap: 10px;
-    padding: 10px 16px; border-bottom: 1px solid var(--border);
+    padding: 11px 16px; border-bottom: 1px solid var(--glass-edge);
     font-size: 12px; color: var(--text-dim); flex-wrap: wrap;
 }
 .term-bar code { font-family: var(--mono); font-size: 11.5px; color: var(--text-faint); }
@@ -601,14 +967,18 @@ body.dragging .log-panel { transition: none; }
 }
 .toast {
     display: flex; align-items: flex-start; gap: 10px;
-    padding: 12px 14px;
-    background: var(--surface);
-    border: 1px solid var(--border); border-left: 3px solid var(--text-dim);
-    border-radius: 10px; box-shadow: var(--shadow);
+    padding: 13px 15px;
+    background: var(--glass);
+    -webkit-backdrop-filter: blur(var(--blur)) saturate(var(--sat));
+    backdrop-filter: blur(var(--blur)) saturate(var(--sat));
+    border: 1px solid var(--glass-edge); border-left: 3px solid var(--text-dim);
+    border-radius: var(--r-md);
+    box-shadow: inset 0 1px 0 0 var(--glass-hi), var(--shadow);
     /* Entrance is handled by the toast-* transition classes, not a bare
        animation, so that dismissal can collapse the stack as well. */
+    transition: box-shadow var(--t-base), transform var(--t-fast) var(--ease-out);
 }
-.toast:hover { box-shadow: var(--shadow-lift); }
+.toast:hover { box-shadow: inset 0 1px 0 0 var(--glass-hi), var(--shadow-lift); transform: translateX(-3px); }
 .toast.ok   { border-left-color: var(--pass); }
 .toast.bad  { border-left-color: var(--fail); }
 .toast.warn { border-left-color: var(--warn); }
@@ -625,9 +995,11 @@ body.dragging .log-panel { transition: none; }
 
 .banner {
     display: flex; align-items: flex-start; gap: 10px;
-    padding: 12px 14px; border-radius: 10px;
+    padding: 13px 15px; border-radius: var(--r-md);
     background: var(--warn-soft); color: var(--warn);
-    font-size: 12.5px; border: 1px solid transparent;
+    font-size: 12.5px;
+    border: 1px solid color-mix(in srgb, var(--warn) 25%, transparent);
+    box-shadow: inset 0 1px 0 0 var(--glass-hi);
 }
 .banner .icon { font-size: 16px; margin-top: 1px; }
 .banner a { color: inherit; font-weight: 650; }
@@ -644,24 +1016,40 @@ footer a:hover { text-decoration: underline; }
 
 /* Modals: the backdrop fades while the dialog rises and scales, so it reads
    as coming forward rather than being pasted on. */
-.modal-enter-active, .modal-leave-active { transition: opacity var(--t-base) var(--ease-out); }
-.modal-enter-from, .modal-leave-to { opacity: 0; }
-.modal-enter-active .modal, .modal-leave-active .modal {
-    transition: transform var(--t-base) var(--ease-out), opacity var(--t-base);
+.modal-enter-active, .modal-leave-active {
+    transition: opacity var(--t-base) var(--ease-out),
+                backdrop-filter var(--t-slow) var(--ease-out),
+                -webkit-backdrop-filter var(--t-slow) var(--ease-out);
 }
-.modal-enter-from .modal, .modal-leave-to .modal { opacity: 0; transform: translateY(12px) scale(.97); }
+/* The backdrop's blur builds up rather than appearing at full strength,
+   so the page behind recedes over the same beat as the dialog arriving.
+   Snapping it on makes the dialog look like it was already there. */
+.modal-enter-from, .modal-leave-to {
+    opacity: 0;
+    -webkit-backdrop-filter: blur(0) saturate(100%);
+    backdrop-filter: blur(0) saturate(100%);
+}
+.modal-enter-active .modal, .modal-leave-active .modal {
+    transition: transform var(--t-slow) var(--ease-fluid), opacity var(--t-base);
+}
+/* Rises and grows from slightly small: the dialog comes towards you
+   through the blur rather than sliding up behind it. */
+.modal-enter-from .modal, .modal-leave-to .modal { opacity: 0; transform: translateY(16px) scale(.94); }
 
-/* The log panel is a bottom sheet, so it slides from the edge it lives on. */
-.sheet-enter-active, .sheet-leave-active { transition: transform var(--t-slow) var(--ease-out), opacity var(--t-base); }
-.sheet-enter-from, .sheet-leave-to { transform: translateY(100%); opacity: .4; }
+/* The log column arrives from the right edge of the space that just
+   opened for it.  Kept short of a full width's travel: the grid track
+   appears at once and a panel sliding the whole way across it reads as
+   two separate movements rather than one. */
+.sheet-enter-active, .sheet-leave-active { transition: transform var(--t-slow) var(--ease-fluid), opacity var(--t-base); }
+.sheet-enter-from, .sheet-leave-to { transform: translateX(34px); opacity: 0; }
 
 /* Toasts come in from the right edge; on leave they also collapse their own
    height so the stack closes up instead of jumping. */
-.toast-enter-active { transition: opacity var(--t-base), transform var(--t-base) var(--ease-spring); }
+.toast-enter-active { transition: opacity var(--t-base), transform var(--t-slow) var(--ease-spring); }
 .toast-leave-active { transition: opacity var(--t-fast), transform var(--t-fast), margin-bottom var(--t-base) var(--ease-out); position: absolute; right: 0; bottom: 0; }
-.toast-enter-from { opacity: 0; transform: translateX(24px) scale(.96); }
-.toast-leave-to   { opacity: 0; transform: translateX(24px); }
-.toast-move { transition: transform var(--t-base) var(--ease-out); }
+.toast-enter-from { opacity: 0; transform: translateX(40px) scale(.9); }
+.toast-leave-to   { opacity: 0; transform: translateX(40px) scale(.95); }
+.toast-move { transition: transform var(--t-slow) var(--ease-fluid); }
 
 /* List rows: a new job slides in at the top, a cleared one fades out, and
    the survivors glide to their new position rather than snapping. */
@@ -675,8 +1063,8 @@ footer a:hover { text-decoration: underline; }
 
 /* Tab panels animate in only.  Leaving is instant: with three panels in
    normal flow, an outgoing one would push the incoming one around. */
-.panel-enter-active { animation: panel-in var(--t-base) var(--ease-out); }
-@keyframes panel-in { from { opacity: 0; transform: translateY(6px); } }
+.panel-enter-active { animation: panel-in var(--t-slow) var(--ease-fluid); }
+@keyframes panel-in { from { opacity: 0; transform: translateY(8px) scale(.99); } }
 
 /* Generic fade for small conditional bits. */
 .fade-enter-active, .fade-leave-active { transition: opacity var(--t-base); }
@@ -698,14 +1086,33 @@ footer a:hover { text-decoration: underline; }
     }
     .spin { animation: spin 2.4s linear infinite !important; animation-duration: 2.4s !important; }
     .btn:hover:not(:disabled), .btn:active:not(:disabled),
-    .icon-btn:active, .theme-btn:hover .icon { transform: none; }
+    .icon-btn:hover, .icon-btn:active, .toast:hover,
+    .brand:hover .mark, .theme-btn:hover .icon { transform: none; }
+    /* The mark's three loops stop on their finished frame -- ring in
+       place, shield at rest, tick fully drawn -- rather than on frame
+       zero, which for the tick is a check mark that is not there. */
+    .mark .m-ring, .mark .m-shield, .mark .m-tick { animation: none !important; }
+    .mark .m-tick { stroke-dashoffset: 0; }
     .progress > span { background-image: none; background: var(--accent); }
-    .tab::after { transform: scaleX(1); }
-    .tab:not(.active)::after { transform: scaleX(0); }
+    /* The lozenge still marks the selected tab; only its growing is
+       dropped. */
+    .tab::after { opacity: 1; transform: none; }
+    .tab:not(.active):not(:hover)::after { opacity: 0; }
+    /* The backdrop stays where it is.  Kept rather than removed: the
+       colour is what the panels are transparent *to*, and freezing it
+       loses only the drift, which is the part that moves. */
+    .ambient i { animation: none !important; }
+    /* A highlight crossing a button is motion with nothing to say. */
+    .btn::after { display: none; }
 }
 </style>
 </head>
 <body>
+
+<!-- The colour the glass refracts.  Purely decorative and outside #app,
+     so Vue never re-renders it and a repaint of the interface cannot
+     restart the drift. -->
+<div class="ambient" aria-hidden="true"><i class="a1"></i><i class="a2"></i><i class="a3"></i><i class="a4"></i></div>
 
 <!-- Inline sprite: Font Awesome was pulled from a CDN, so on a machine
      without internet access every button rendered as an empty box. -->
@@ -737,13 +1144,39 @@ footer a:hover { text-decoration: underline; }
 <div id="app" v-cloak>
 
   <header>
-    <!-- The square mark carries its own background so it reads on either
-         theme; logo-horizontal.svg bakes the wordmark in dark slate, which
-         disappeared against the dark palette. -->
     <div class="brand">
-      <img src="/static/logo.svg" alt="">
+      <!-- Same mark as the README banner, at header size.  The gradients
+           need ids of their own: the sprite below already owns #brand-ish
+           names and a duplicate id would have one of them win for both. -->
+      <!-- The box is the ring plus its stroke plus the shield's point,
+           so nothing is shaved off at the edges; the banner has room
+           around the mark and this has to borrow the same margin. -->
+      <svg class="mark" viewBox="28 66 128 130" aria-hidden="true">
+        <defs>
+          <linearGradient id="mk-brand" x1="0" y1="0" x2="1" y2="0">
+            <stop offset="0%"   stop-color="#8fa4ff"/>
+            <stop offset="55%"  stop-color="#667eea"/>
+            <stop offset="100%" stop-color="#a78bfa"/>
+          </linearGradient>
+          <linearGradient id="mk-go" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0%"   stop-color="#48bb78"/>
+            <stop offset="100%" stop-color="#38ef7d"/>
+          </linearGradient>
+        </defs>
+        <circle class="m-ring" cx="92" cy="130" r="58" fill="none"
+                stroke="url(#mk-brand)" stroke-width="4"
+                stroke-dasharray="6 14" stroke-linecap="round" opacity=".55"/>
+        <g class="m-shield">
+          <path d="M92 76 L136 92 L136 143 Q136 172 92 190 Q48 172 48 143 L48 92 Z"
+                fill="#667eea" fill-opacity=".16"
+                stroke="url(#mk-brand)" stroke-width="5"/>
+          <circle cx="92" cy="130" r="26" fill="url(#mk-go)"/>
+          <path class="m-tick" d="M79 130 L89 141 L106 119" fill="none"
+                stroke="#04140a" stroke-width="7"
+                stroke-linecap="round" stroke-linejoin="round"/>
+        </g>
+      </svg>
       <span>Pre-PR CI</span>
-      <span class="brand-sub" v-if="status.distro_label">{{ status.distro_label }}</span>
     </div>
 
     <div class="host-facts" v-if="host.hostname">
@@ -775,7 +1208,8 @@ footer a:hover { text-decoration: underline; }
     </button>
   </header>
 
-  <div class="wrap">
+  <div class="wrap" :class="{ 'with-log': logPane }"
+       :style="{ '--log-w': logWidth + 'px' }">
 
     <!-- ── left rail ───────────────────────────────────────────────── -->
     <div>
@@ -784,7 +1218,7 @@ footer a:hover { text-decoration: underline; }
            status card, a maintenance button and a paragraph in the README,
            so the usual first experience was a test failing on an empty
            kabi-dw directory. -->
-      <div class="card" style="--i:0">
+      <div class="card" style="--i:0" ref="setupCard">
         <div class="card-head">
           <svg class="icon"><use :href="setupReady ? '#i-check' : '#i-info'"/></svg>
           Setup
@@ -880,23 +1314,30 @@ footer a:hover { text-decoration: underline; }
                primary buttons stacked say nothing about which comes
                first, and prepare is the one you press once. -->
           <button class="btn btn-block" :class="{ 'btn-primary': !prepared }"
-                  @click="start('/api/prepare', 'prepare')"
+                  @click="startAfterSetup('/api/prepare', 'prepare')"
                   :disabled="busy || !status.configured"
-                  :title="prepared
+                  :title="(prepared
                     ? 'Already prepared; running this again does nothing'
-                    : 'Add the metadata header, sign-off and any Conflicts: section the CI requires'">
+                    : 'Add the metadata header, sign-off and any Conflicts: section the CI requires')
+                    + '. Setup is refreshed first'">
             <svg class="icon"><use href="#i-hammer"/></svg>
             {{ prepared ? 'Patches prepared' : 'Prepare patches' }}
           </button>
           <button class="btn btn-block" :class="{ 'btn-primary': prepared }"
-                  @click="start('/api/test', 'all tests')"
+                  @click="startAfterSetup('/api/test', 'all tests')"
                   :disabled="busy || !status.configured || !prepared"
                   :title="prepared
-                    ? 'Run every test with its checkbox ticked below'
+                    ? 'Refresh setup, then run every test with its checkbox ticked below'
                     : 'Prepare the patches first'">
             <svg class="icon"><use href="#i-flask"/></svg> Run tests
-            <span class="btn-count" v-if="enabledCount">{{ enabledCount }}</span>
           </button>
+          <!-- Said once, under both buttons, because it is the same fact
+               about both and it explains why pressing either queues four
+               things rather than one. -->
+          <div class="hint" v-if="status.configured">
+            Both refresh the mirror, sub-repositories and openEuler checks
+            first. Your configuration is left alone.
+          </div>
           <button class="btn btn-danger btn-block" v-if="runningJob"
                   @click="askKill(runningJob)"
                   title="Stop the job that is running now">
@@ -912,9 +1353,20 @@ footer a:hover { text-decoration: underline; }
         </div>
       </div>
 
-      <div class="card" style="--i:3" v-if="configRows.length">
+      <!-- What the run will use, in full and read-only.  Changing any of
+           it is Setup's first step, so the value you are looking at and
+           the place you change it are never two different forms. -->
+      <div class="card" style="--i:3" v-if="configGroups.length">
         <div class="card-head">
           <svg class="icon"><use href="#i-list"/></svg> Configuration
+          <!-- The distribution moved here from the header.  It belongs
+               with the rest of the configuration rather than beside the
+               product name, which does not change when it does. -->
+          <!-- Opts out of the head's uppercasing: these names are
+               capitalised the way the projects capitalise them, and
+               "OPENEULER" is not one of them. -->
+          <span class="head-tag badge-neutral distro-tag"
+                v-if="status.distro_label">{{ status.distro_label }}</span>
           <button class="icon-btn head-btn" @click="configSummaryOpen = !configSummaryOpen"
                   :title="configSummaryOpen ? 'Collapse' : 'Expand'">
             <svg class="icon chev" :class="{ up: configSummaryOpen }"><use href="#i-chev"/></svg>
@@ -922,16 +1374,26 @@ footer a:hover { text-decoration: underline; }
         </div>
         <transition name="collapse">
         <div class="card-body" v-show="configSummaryOpen">
-          <dl class="kv">
-            <template v-for="row in configRows" :key="row.key">
-              <dt>{{ row.label }}</dt>
-              <dd :title="row.value">{{ row.value }}</dd>
-            </template>
-          </dl>
-          <button class="btn btn-sm btn-block" @click="openConfig()"
-                  title="Change the kernel path, signer, patch count and the rest">
-            <svg class="icon"><use href="#i-cog"/></svg> Edit configuration
-          </button>
+          <template v-for="section in configGroups" :key="section.key">
+            <div class="kv-group">{{ section.label }}</div>
+            <dl class="kv">
+              <template v-for="row in section.rows" :key="row.key">
+                <dt :title="row.key">{{ row.label }}</dt>
+                <dd v-if="row.secret" class="kv-secret">stored</dd>
+                <dd v-else :title="row.value">{{ row.value }}</dd>
+              </template>
+            </dl>
+          </template>
+          <!-- Not an edit control: Setup owns the form.  But Setup folds
+               itself once every step is green, so without a way back
+               the only route to the form would be behind a collapsed
+               card you had no reason to reopen. -->
+          <div class="hint">
+            Changed from
+            <button class="link-btn" @click="revealSetup()"
+                    title="Open the Setup card and its Configuration step">Setup
+              &rarr; Configuration</button>.
+          </div>
         </div>
         </transition>
       </div>
@@ -1125,14 +1587,17 @@ footer a:hover { text-decoration: underline; }
         <a href="https://github.com/SelamHemanth" target="_blank" rel="noopener">SelamHemanth</a>
       </footer>
     </div>
-  </div>
 
-  <!-- ── log panel ─────────────────────────────────────────────────── -->
-  <transition name="sheet">
-  <div class="log-panel" v-if="logOpen" :style="{ '--log-h': logHeight + 'px' }">
+    <!-- ── log column ──────────────────────────────────────────────── -->
+    <!-- A sibling of the two columns above, inside the same grid, which
+         is what makes it share the width with them instead of covering
+         them.  Only on the tabs that have something to sit beside: see
+         logPane. -->
+    <transition name="sheet">
+    <div class="log-panel" v-if="logPane">
     <div class="log-grip" @pointerdown="startResize"
          title="Drag to resize. Double-click to reset."
-         @dblclick="resetLogHeight"></div>
+         @dblclick="resetLogWidth"></div>
     <div class="log-head">
       <span class="badge" :class="statusBadge(logStatus)">
         <i class="dot" :class="{ pulse: logLive }"></i>{{ logStatus }}
@@ -1167,8 +1632,10 @@ footer a:hover { text-decoration: underline; }
       </template>
       <span v-else class="ln-dim">Waiting for output...</span>
     </div>
+    </div>
+    </transition>
+
   </div>
-  </transition>
 
   <!-- ── configuration modal ───────────────────────────────────────── -->
   <transition name="modal">
@@ -1176,7 +1643,10 @@ footer a:hover { text-decoration: underline; }
     <div class="modal">
       <div class="modal-head">
         <svg class="icon" style="color:var(--accent);font-size:17px"><use href="#i-cog"/></svg>
-        <h2>Configure<span v-if="form.distro"> {{ distroLabel(form.distro) }}</span></h2>
+        <!-- Non-breaking space, because Vue condenses template whitespace
+             and a plain leading space inside the span was dropped: the
+             heading read "ConfigureopenEuler". -->
+        <h2>Configure<span v-if="form.distro">&nbsp;{{ distroLabel(form.distro) }}</span></h2>
         <button class="icon-btn" @click="configOpen = false"><svg class="icon"><use href="#i-x"/></svg></button>
       </div>
 
@@ -1318,8 +1788,10 @@ createApp({
       setupOpen: true,
       configSummaryOpen: true,
       sawStatus: false,
-      // Log panel height in pixels, remembered between visits.
-      logHeight: Math.round(window.innerHeight * 0.55),
+      // Width of the log column in pixels, remembered between visits.
+      // Clamped on load rather than trusted: a width saved on a wide
+      // monitor would leave no list beside it on a laptop.
+      logWidth: Math.round(window.innerWidth * 0.36),
       resizing: null,
 
       status: { configured: false, distro: null, distros: [], active_jobs: [] },
@@ -1354,19 +1826,12 @@ createApp({
       ask: null,
       toasts: [],
 
-      // The summary is a fixed, ordered subset. Iterating the config object
-      // instead listed the nine TEST_* flags the Tests tab already shows,
-      // in whatever order the JSON arrived in.
-      summaryKeys: [
-        ['LINUX_SRC_PATH', 'Source tree'],
-        ['NUM_PATCHES', 'Patches'],
-        ['BUILD_THREADS', 'Build threads'],
-        ['SIGNER_NAME', 'Signed-off-by'],
-        ['SIGNER_EMAIL', 'Email'],
-        ['ANBZ_ID', 'Bugzilla'],
-        ['BUGZILLA_ID', 'Bugzilla'],
-        ['VM_IP', 'Boot test VM'],
-      ],
+      // The sections and labels the server builds the form from, reused
+      // to render the read-only summary.  It used to be a hand-written
+      // list of eight keys here, which meant a field added to a
+      // distribution's registry appeared in the form and nowhere else.
+      configSchema: [],
+
       _toastSeq: 0,
       _xterm: null,
       _fit: null,
@@ -1375,19 +1840,49 @@ createApp({
   },
 
   computed: {
-    configRows() {
+    // Every configured value, under the section headings the form uses,
+    // in the order the registry declares them.  Read-only: this card
+    // reports the configuration, it does not offer to change it, which
+    // is what Setup's first step is for.
+    //
+    // The TEST_* flags are left out on purpose.  They are not settings
+    // so much as the tick-boxes in the Tests tab, which shows them
+    // already and in a form you can act on.
+    configGroups() {
       if (!this.config) return [];
-      return this.summaryKeys
-        .filter(([key]) => this.config[key])
-        .map(([key, label]) => ({ key, label, value: this.config[key] }));
+      const shown = value =>
+        value !== null && value !== undefined && String(value) !== '';
+      return this.configSchema
+        .map(section => ({
+          key: section.key,
+          label: section.label,
+          rows: section.fields
+            .filter(f => !f.name.startsWith('TEST_') && shown(this.config[f.name]))
+            .map(f => ({
+              key: f.name,
+              label: f.label,
+              value: String(this.config[f.name]),
+              // A stored password comes back as the server's mask.  Saying
+              // so beats showing a row of asterisks and leaving you to
+              // guess whether that is the value or a placeholder.
+              secret: !!f.secret,
+            })),
+        }))
+        .filter(section => section.rows.length);
     },
-
-    enabledCount() { return this.tests.filter(t => t.enabled).length; },
 
     // The panel shows either a job's output or one test's own log, and
     // everything below reads from these rather than reaching for
     // logJob, which is null in the second case.
     logOpen() { return !!(this.logJob || this.logTest); },
+
+    // Whether the log actually gets a column.  Only beside the two tabs
+    // that are lists: the terminal is a full-width shell with its own
+    // scrollback, and halving the page to put a log next to it leaves
+    // neither wide enough to read.  Switching away from the terminal
+    // brings the log back rather than having closed it behind your
+    // back.
+    logPane() { return this.logOpen && this.tab !== 'terminal'; },
     logUrl() {
       if (this.logTest) return `/api/tests/${this.logTest.name}/log`;
       return this.logJob ? `/api/jobs/${this.logJob.id}/log` : null;
@@ -1578,8 +2073,18 @@ createApp({
 
     if (localStorage.getItem('prci-setup-open') === '0') this.setupOpen = false;
     if (localStorage.getItem('prci-config-open') === '0') this.configSummaryOpen = false;
-    const storedHeight = parseInt(localStorage.getItem('prci-log-height'), 10);
-    if (storedHeight > 0) this.logHeight = this.clampLogHeight(storedHeight);
+    // A new key rather than reusing prci-log-height: the panel moved from
+    // the bottom edge to the right one, and a stored height restored as a
+    // width would open it at some arbitrary size on the first visit after
+    // the change.
+    const storedWidth = parseInt(localStorage.getItem('prci-log-width'), 10);
+    this.logWidth = this.clampLogWidth(
+      storedWidth > 0 ? storedWidth : this.defaultLogWidth());
+    // The ceiling depends on the window, so a window that gets narrower
+    // has to give the list its room back.
+    addEventListener('resize', () => {
+      this.logWidth = this.clampLogWidth(this.logWidth);
+    });
 
     this.refresh();
     this.loadHost();
@@ -1713,6 +2218,12 @@ createApp({
       try {
         const data = await this.api('/api/config');
         this.config = data.config;
+        // Fetched alongside the values rather than with the form, which
+        // only loads when the modal opens: the summary has to be able to
+        // label a field before anyone has been near the modal.
+        this.configSchema = data.distro
+          ? (await this.api(`/api/config/fields?distro=${data.distro}`)).sections
+          : [];
       } catch (_) {}
     },
 
@@ -1731,7 +2242,8 @@ createApp({
     // The three fetchable setup steps, queued together. Configuration
     // is left out: it is a form, not a fetch, and nothing here can
     // fill it in.
-    async syncEverything() {
+    async syncEverything(options) {
+      const quiet = !!(options && options.quiet);
       const steps = [
         ['/api/mirror/sync', 'mainline mirror'],
         ['/api/submodules/sync', 'sub-repositories'],
@@ -1745,13 +2257,31 @@ createApp({
           failed.push(`${label}: ${error.message}`);
         }
       }
+      // A failure is always worth saying, even when the caller asked for
+      // quiet: quiet means "do not announce the ordinary case", and this
+      // is the case where the run is about to use a stale checkout.
       if (failed.length) {
         this.toast('bad', 'Some of setup could not be started',
                    failed.join('; '));
-      } else {
+      } else if (!quiet) {
         this.toast('ok', `Queued ${steps.length} setup step(s)`);
       }
       this.refresh();
+      return !failed.length;
+    },
+
+    // Prepare and the full run both go through here.  Their gate is only
+    // meaningful against current inputs -- the mainline mirror that
+    // check_dependency reads, the sub-repositories the checks live in,
+    // and openEuler's own scripts -- so all three are refreshed first
+    // rather than left to whenever setup was last pressed by hand.
+    //
+    // Ordering is the server's: jobs are serialised, one kernel tree, so
+    // queueing the updates before the work is enough to have them finish
+    // before it starts.  The configuration is untouched.
+    async startAfterSetup(path, label) {
+      await this.syncEverything({ quiet: true });
+      await this.start(path, label);
     },
 
     // Deliberately does not open the log.  Starting one check is the
@@ -1827,6 +2357,12 @@ createApp({
     },
 
     resetLogBuffer() {
+      // The log has no column on the terminal tab, so opening one from
+      // the left rail while the shell is up has to move off it first,
+      // or the press would do nothing you can see.  History is where a
+      // job log belongs; a test's own log is only ever opened from the
+      // Tests tab, which is already somewhere it shows.
+      if (this.tab === 'terminal') this.tab = 'jobs';
       this.logText = '';
       this.logOffset = 0;
       this.logFollow = true;
@@ -2072,17 +2608,27 @@ createApp({
       }[status] || 'badge-neutral';
     },
 
-    clampLogHeight(px) {
-      return Math.min(Math.max(px, 120), Math.round(window.innerHeight * 0.92));
+    // The floor is what a kernel build's output needs before it starts
+    // wrapping every line.  The ceiling is whatever is left after the
+    // left rail and a usable test list: the column shares the page, so
+    // it cannot be dragged over the thing it is meant to sit beside.
+    clampLogWidth(px) {
+      const rail = 330, gaps = 3 * 18, list = 340;
+      const room = Math.max(320, window.innerWidth - rail - gaps - list);
+      return Math.min(Math.max(px, 320), room);
     },
+
+    // Enough for a build log's longest ordinary line without taking so
+    // much that the test list next to it starts eliding its own text.
+    defaultLogWidth() { return this.clampLogWidth(Math.round(window.innerWidth * 0.36)); },
 
     // Pointer events rather than mouse events, so a trackpad or a touch
     // screen drags the same way.
     startResize(event) {
-      this.resizing = { y: event.clientY, start: this.logHeight };
+      this.resizing = { x: event.clientX, start: this.logWidth };
       document.body.classList.add('dragging');
       // Capture on the element that received the pointerdown, so the drag
-      // keeps working when the pointer leaves the 9px grip.
+      // keeps working when the pointer leaves the narrow grip.
       event.target.setPointerCapture(event.pointerId);
       event.target.addEventListener('pointermove', this.onResize);
       event.target.addEventListener('pointerup', this.endResize, { once: true });
@@ -2091,21 +2637,35 @@ createApp({
 
     onResize(event) {
       if (!this.resizing) return;
-      // Dragging up grows the panel, because it is anchored to the bottom.
-      this.logHeight = this.clampLogHeight(
-        this.resizing.start + (this.resizing.y - event.clientY));
+      // Dragging left grows the log column and shrinks the list beside
+      // it, because the boundary between them is what is being moved.
+      this.logWidth = this.clampLogWidth(
+        this.resizing.start + (this.resizing.x - event.clientX));
     },
 
     endResize(event) {
       this.resizing = null;
       document.body.classList.remove('dragging');
       event.target.removeEventListener('pointermove', this.onResize);
-      localStorage.setItem('prci-log-height', String(this.logHeight));
+      localStorage.setItem('prci-log-width', String(this.logWidth));
     },
 
-    resetLogHeight() {
-      this.logHeight = Math.round(window.innerHeight * 0.55);
-      localStorage.setItem('prci-log-height', String(this.logHeight));
+    // Opens the fold and brings the card into view.  Deliberately stops
+    // short of opening the form: which step you wanted is Setup's to
+    // show, and jumping straight into a modal from a summary card is
+    // the editing path this card is not supposed to have.
+    revealSetup() {
+      this.setupOpen = true;
+      this.$nextTick(() => {
+        if (this.$refs.setupCard) {
+          this.$refs.setupCard.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+      });
+    },
+
+    resetLogWidth() {
+      this.logWidth = this.defaultLogWidth();
+      localStorage.setItem('prci-log-width', String(this.logWidth));
     },
 
     distroLabel(id) {
