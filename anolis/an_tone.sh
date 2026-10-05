@@ -212,9 +212,10 @@ if [ -n "\${SUDO_ASKPASS:-}" ] && [ -x "\${SUDO_ASKPASS}" ]; then
   sudo -A "/usr/bin/${tool}" "\$@"
   exit \$?
 fi
-echo "[prci] no sudo password is configured, so nothing was installed." >&2
-echo "[prci] set it with 'make configure' if a case fails on a missing" >&2
-echo "[prci] header; a dependency already present needs nothing." >&2
+echo "[prci] root is not reachable from here, so nothing was installed." >&2
+echo "[prci] if a case fails on a missing header, set a sudo password" >&2
+echo "[prci] with 'make configure'; a dependency already present needs" >&2
+echo "[prci] nothing." >&2
 exit 0
 EOF
     chmod +x "${dir}/${tool}" || return 1
@@ -262,8 +263,18 @@ _an_tone_mountpoint() {
 
   echo "[prci] their scripts build in /anck_build, which does not exist yet."
   echo "[prci] creating it once, as an empty mount point owned by $(id -un)."
-  sudo -A mkdir -p /anck_build || return 1
-  sudo -A chown "$(id -u):$(id -g)" /anck_build || return 1
+
+  if sudo -A mkdir -p /anck_build && \
+     sudo -A chown "$(id -u):$(id -g)" /anck_build; then
+    return 0
+  fi
+
+  # Nothing is ever written to it -- it is only something to mount over
+  # -- so an empty directory made once by hand is enough, and is the
+  # only way through when root is out of reach.
+  echo "[prci] could not create it.  Run this once:" >&2
+  echo "[prci]   sudo mkdir -p /anck_build" >&2
+  return 1
 }
 
 # Run their anck_build.sh with the /anck_build it hardcodes.
@@ -280,6 +291,19 @@ _an_tone_mountpoint() {
 # starts from there.  Their yum lines still reach root, through sudo
 # and the askpass helper above; that is also why this is not bwrap,
 # which sets the "no new privileges" flag and so leaves sudo unusable.
+# Whether sudo can actually become root from here.
+#
+# It cannot under NoNewPrivileges, which is what the web service's
+# systemd unit sets: the flag forbids a setuid binary from gaining
+# privilege, so sudo refuses before it ever asks for a password.  Asked
+# rather than assumed, because the answer differs between a shell and
+# the service, and the difference is otherwise invisible until seven
+# rows fail at once.
+_an_tone_can_sudo() {
+  [ -n "${SUDO_ASKPASS:-}" ] || return 1
+  sudo -A true >/dev/null 2>&1
+}
+
 # sudo keeps the rest of the environment with -E, but not these two:
 # secure_path overrides PATH, which is where the yum shims are, and
 # always_set_home makes HOME /root, which their rpmbuild would then try
@@ -291,17 +315,38 @@ _an_tone_sandbox() {
   mine="${AN_TONE_SCRATCH}/${case_name}"
   mkdir -p "${mine}" || return 1
 
-  # Real supplementary groups, not none: dropping them silently would
-  # be one more way this differs from a plain shell.
-  groups=$(id -G | tr ' ' ',')
+  if _an_tone_can_sudo; then
+    # Real supplementary groups, not none: dropping them silently would
+    # be one more way this differs from a plain shell.
+    groups=$(id -G | tr ' ' ',')
 
-  exec sudo -A -E unshare --mount -- \
+    exec sudo -A -E unshare --mount -- \
+      bash -c '
+        mount --bind "$1" /anck_build || exit 1
+        exec setpriv --reuid="$2" --regid="$3" --groups="$4" -- \
+             env PATH="$5" HOME="$6" "${@:7}"
+      ' _ "${mine}" "$(id -u)" "$(id -g)" "${groups}" "${PATH}" "${HOME}" \
+      bash "${TONE_SUITE}/anck_build.sh" "$@"
+  fi
+
+  # Without sudo, the namespace is made without privilege instead: an
+  # unprivileged user namespace, where this user is mapped to root and
+  # so may mount, and where everything written comes back out owned by
+  # this user.  Their build runs the same; what is lost is their yum,
+  # which needs a root this user cannot reach either way, so the shims
+  # are told not to try.
+  echo "[prci] sudo cannot become root here" \
+       "(NoNewPrivileges, most likely), so their dependency installs" >&2
+  echo "[prci] will be reported and skipped rather than run." >&2
+
+  unset SUDO_ASKPASS
+
+  exec unshare --user --map-root-user --mount -- \
     bash -c '
       mount --bind "$1" /anck_build || exit 1
-      exec setpriv --reuid="$2" --regid="$3" --groups="$4" -- \
-           env PATH="$5" HOME="$6" "${@:7}"
-    ' _ "${mine}" "$(id -u)" "$(id -g)" "${groups}" "${PATH}" "${HOME}" \
-    bash "${TONE_SUITE}/anck_build.sh" "$@"
+      shift
+      exec "$@"
+    ' _ "${mine}" bash "${TONE_SUITE}/anck_build.sh" "$@"
 }
 
 # Their run.sh's functions, and shims for the parts of their harness

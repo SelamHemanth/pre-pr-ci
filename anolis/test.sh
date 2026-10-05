@@ -263,11 +263,33 @@ run_their_vm_case() {
   case $? in
     0) pass "${case_name}" ;;
     1) fail "${case_name}" "Their ${case_name} failed (see ${log})" ;;
-    3) skip "${case_name}" "$(tail -n 4 "${log}")" ;;
+    3) skip "${case_name}" "$(vm_skip_reason "${log}")" ;;
     5) warn "${case_name}" "Their ${case_name} flagged something (see ${log})" ;;
     *) fail "${case_name}" "Their suite could not run (see ${log})" ;;
   esac
   echo ""
+}
+
+# Why their acceptance suite skipped.
+#
+# Their run.sh checks boot_kernel_rpm first and skips the rest when it
+# fails, because check_kapi and check_dmesg both examine the running
+# kernel and there is nothing to say about the series if the machine is
+# not booted into it.  Their marker alone does not say that, so the
+# line of theirs that explains it is carried up instead.
+vm_skip_reason() {
+  local log="$1" why
+
+  why=$(grep -m1 -E '^(Error|Warning): ' "${log}" 2>/dev/null)
+  if [ -n "${why}" ]; then
+    echo "${why}"
+    echo "Their suite skips the acceptance cases until the VM is booted"
+    echo "into the series' kernel.  Set TEST_BOOT_KERNEL=yes to have"
+    echo "boot_kernel_rpm install it and reboot first."
+    return
+  fi
+
+  tail -n 4 "${log}"
 }
 
 test_boot_kernel_rpm() {

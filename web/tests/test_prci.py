@@ -2364,7 +2364,7 @@ class TestAnolisTheirScripts(unittest.TestCase):
             '"%s/yum" install -y anything\n'
             'echo "rc=$?"' % (at, at))
         self.assertIn('rc=0', out)
-        self.assertIn('no sudo password', out)
+        self.assertIn('nothing was installed', out)
 
     # ---- the sandbox ----
 
@@ -2392,6 +2392,68 @@ class TestAnolisTheirScripts(unittest.TestCase):
         sandbox = sandbox[:sandbox.index('\n}\n')]
         self.assertIn('PATH=', sandbox)
         self.assertIn('HOME=', sandbox)
+
+    def sandbox_fallback(self):
+        """The half of the sandbox that runs when sudo cannot."""
+        source = read_file('anolis', 'an_tone.sh')
+        sandbox = source[source.index('_an_tone_sandbox() {'):]
+        sandbox = sandbox[:sandbox.index('\n}\n')]
+        return sandbox[sandbox.index('\n  fi\n'):]
+
+    def test_the_build_runs_where_sudo_cannot_become_root(self):
+        # The web service's systemd unit sets NoNewPrivileges, which
+        # forbids a setuid binary from gaining privilege -- so sudo
+        # refuses outright there, before it even asks for a password.
+        # A sandbox that could only be made with sudo therefore failed
+        # all seven build cases under the service while passing from a
+        # shell, which is as confusing a failure as this tool has had.
+        fallback = self.sandbox_fallback()
+        self.assertIn('unshare --user --map-root-user --mount', fallback)
+        self.assertNotIn('sudo -A', fallback)
+        self.assertNotIn('exec sudo', fallback)
+
+    def test_an_unprivileged_namespace_can_mount_their_build_directory(self):
+        # What that fallback rests on, asserted rather than assumed: a
+        # host can switch unprivileged user namespaces off entirely
+        # (user.max_user_namespaces=0), and if this one has, every
+        # build case fails under the service with no hint as to why.
+        if not os.path.isdir('/anck_build'):
+            self.skipTest('/anck_build has not been created yet')
+        at = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, at, True)
+        open(os.path.join(at, 'proof'), 'w').close()
+        rc, out = self.shell(
+            'setpriv --no-new-privs unshare --user --map-root-user '
+            '--mount -- bash -c \'mount --bind "$1" /anck_build && '
+            'ls /anck_build\' _ "%s"' % at)
+        self.assertEqual(rc, 0, out)
+        self.assertIn('proof', out)
+
+    def test_what_the_namespace_writes_comes_back_out_as_ours(self):
+        # In that namespace the build is root, and root's files would
+        # be unreadable and unremovable afterwards if the mapping did
+        # not undo itself on the way out.  A build tree nobody can
+        # delete would wedge every later run.
+        if not os.path.isdir('/anck_build'):
+            self.skipTest('/anck_build has not been created yet')
+        at = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, at, True)
+        rc, out = self.shell(
+            'setpriv --no-new-privs unshare --user --map-root-user '
+            '--mount -- bash -c \'mount --bind "$1" /anck_build && '
+            'touch /anck_build/written\' _ "%s"' % at)
+        self.assertEqual(rc, 0, out)
+        written = os.path.join(at, 'written')
+        self.assertTrue(os.path.exists(written))
+        self.assertEqual(os.stat(written).st_uid, os.getuid())
+
+    def test_their_installs_are_not_attempted_when_root_is_unreachable(self):
+        # Their yum lines go through sudo, so with root out of reach
+        # each one would fail -- and build_perf is the one of theirs
+        # that checks, reporting "Failed to install perf dependencies"
+        # and stopping.  Telling the shims up front turns seven hard
+        # failures into seven builds with a line in the log.
+        self.assertIn('unset SUDO_ASKPASS', self.sandbox_fallback())
 
     def test_each_case_gets_its_own_anck_build(self):
         # Their three groups run in parallel on three separate hosts and
@@ -2537,6 +2599,108 @@ class TestAnolisTheirScripts(unittest.TestCase):
             self.assertNotIn(verdict, boot, verdict)
         self.assertIn('boot_install_and_reboot', boot)
         self.assertIn('boot_install_and_reboot', read_file('anolis', 'test.sh'))
+
+    # ---- the VM cases, and the password they need ----
+
+    def configured(self, name):
+        """The value .configure gives name, or None."""
+        path = os.path.join(PROJECT_ROOT, 'anolis', '.configure')
+        if not os.path.exists(path):
+            return None
+        with open(path, errors='replace') as f:
+            for line in f:
+                if line.startswith(name + '='):
+                    return line.split('=', 1)[1].strip().strip('\'"')
+        return None
+
+    def in_a_case(self, body, **env):
+        """Run body with cases/lib.sh sourced, as a case is run."""
+        clean = {k: v for k, v in os.environ.items()
+                 if k not in ('VM_ROOT_PWD', 'HOST_USER_PWD')}
+        clean.update(env)
+        done = subprocess.run(
+            ['bash', '-c', '. "%s/anolis/cases/lib.sh"\n%s'
+             % (PROJECT_ROOT, body)],
+            env=clean, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        return done.returncode, done.stdout.decode('utf-8', 'replace')
+
+    def test_a_case_is_given_the_vm_password_it_asks_for(self):
+        # test.sh exports VM_IP but deliberately not VM_ROOT_PWD, and a
+        # case is a process of its own -- so it inherited an address
+        # with no password, which their anck_ci_test.sh cannot tell
+        # apart from no VM at all.  Both VM rows skipped with "no VM
+        # configured" on a machine that had one configured.
+        if not self.configured('VM_ROOT_PWD'):
+            self.skipTest('no VM password in anolis/.configure')
+        rc, out = self.in_a_case('echo "pwd=${VM_ROOT_PWD:+set}"')
+        self.assertEqual(rc, 0, out)
+        self.assertIn('pwd=set', out)
+
+    def test_the_vm_password_still_goes_no_further_than_the_case(self):
+        # Reading it must not amount to exporting it.  anolis/.configure
+        # keeps both passwords unexported on purpose, so that neither
+        # shows up in /proc/<pid>/environ of the commands a case runs --
+        # and a case runs ssh, scp and a kernel build.
+        if not self.configured('VM_ROOT_PWD'):
+            self.skipTest('no VM password in anolis/.configure')
+        rc, out = self.in_a_case(
+            'bash -c \'echo "child=${VM_ROOT_PWD:-none}"\'')
+        self.assertEqual(rc, 0, out)
+        self.assertIn('child=none', out)
+
+    def test_reading_the_config_does_not_overrule_the_caller(self):
+        # Only the passwords may come across.  Sourcing the whole file
+        # would overwrite everything the caller had set deliberately,
+        # which is how a case is aimed at a downloaded debuginfo rpm or
+        # at a kernel other than the configured one -- lib.sh says in
+        # as many words that anything already exported wins.  Caught
+        # the hard way: a test aiming at a 6.12 tree to check their
+        # branch gate was handed the real tree and built it.
+        rc, out = self.in_a_case('echo "src=${LINUX_SRC_PATH:-unset}"',
+                                 LINUX_SRC_PATH='/nowhere/in/particular')
+        self.assertEqual(rc, 0, out)
+        self.assertIn('src=/nowhere/in/particular', out)
+
+    def test_a_vm_case_that_skips_says_what_their_suite_said(self):
+        # Their run.sh checks boot_kernel_rpm first and skips the other
+        # two when it fails, because both read the running kernel and
+        # there is nothing to say about the series if the machine is not
+        # booted into it.  Their marker alone does not say that, and
+        # "Reason: ====SKIP: check_kapi" tells a reader nothing.
+        source = read_file('anolis', 'test.sh')
+        fn = source[source.index('vm_skip_reason() {'):]
+        fn = fn[:fn.index('\n}\n') + 3]
+        log = tempfile.NamedTemporaryFile('w', suffix='.log', delete=False)
+        self.addCleanup(os.unlink, log.name)
+        log.write('expect kernel version: 5.10.134-1.an23.x86_64\n'
+                  'Error: running kernel [6.6.0-1.an23.x86_64] != '
+                  'expected [5.10.134-1.an23.x86_64]\n'
+                  '====FAIL: boot_kernel_rpm\n'
+                  '====SKIP: check_kapi\n'
+                  '====SKIP: check_dmesg\n')
+        log.close()
+        done = subprocess.run(
+            ['bash', '-c', fn + '\nvm_skip_reason "%s"' % log.name],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        out = done.stdout.decode()
+        self.assertIn('running kernel', out)
+        self.assertIn('TEST_BOOT_KERNEL', out)
+
+    def test_a_skip_with_nothing_to_explain_it_still_says_something(self):
+        # Their suite skips for reasons of its own too -- no debuginfo
+        # for check_kapi, say -- and falling back to their markers is
+        # better than reporting an empty reason.
+        source = read_file('anolis', 'test.sh')
+        fn = source[source.index('vm_skip_reason() {'):]
+        fn = fn[:fn.index('\n}\n') + 3]
+        log = tempfile.NamedTemporaryFile('w', suffix='.log', delete=False)
+        self.addCleanup(os.unlink, log.name)
+        log.write('no kernel-debuginfo installed\n====SKIP: check_kapi\n')
+        log.close()
+        done = subprocess.run(
+            ['bash', '-c', fn + '\nvm_skip_reason "%s"' % log.name],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        self.assertIn('check_kapi', done.stdout.decode())
 
     # ---- nothing of ours left in the build ----
 

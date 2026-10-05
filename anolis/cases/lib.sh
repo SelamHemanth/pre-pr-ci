@@ -32,6 +32,30 @@ CASES_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ANOLIS_DIR="$(dirname "${CASES_DIR}")"
 TONE_CLI_DIR="${ANOLIS_DIR}/tone-cli"
 
+# The two passwords in .configure are deliberately never exported, so
+# that they stay out of /proc/<pid>/environ of every command a case
+# runs -- and a kernel build runs a great many.  But a case is its own
+# process and so inherits neither, which made a VM with a password in
+# the config indistinguishable from no VM at all: the VM cases read
+# VM_ROOT_PWD, found nothing, and skipped with "no VM configured".
+# So the config is read here, the way every top-level script reads its
+# own, and the passwords stay ordinary shell variables that no child
+# inherits.
+#
+# The two of them and nothing else: sourcing the whole file here would
+# overwrite anything the caller had deliberately set in the
+# environment, which is how a case is pointed at a downloaded
+# debuginfo rpm or a kernel other than the configured one.
+if [ -z "${VM_ROOT_PWD:-}" ] && [ -f "${ANOLIS_DIR}/.configure" ]; then
+  eval "$(
+    # shellcheck disable=SC1090
+    . "${ANOLIS_DIR}/.configure" >/dev/null 2>&1
+    for _secret in VM_ROOT_PWD HOST_USER_PWD; do
+      printf '%s=%q\n' "${_secret}" "${!_secret:-}"
+    done
+  )"
+fi
+
 #: Exit statuses, read by anolis/test.sh.  Warning has one of its own
 #: for the same reason openEuler's does: a warning that exits 0 is a
 #: pass nobody reads, and one that exits 1 is a rejection they never
