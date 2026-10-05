@@ -371,6 +371,54 @@ _an_tone_shim_build() {
   }
 }
 
+# Where their anck_build.sh clones the harness from, as it spells it.
+_AN_TONE_CK_REPO='https://gitee.com/src-anolis-sig/ck-build.git'
+
+# Their ck-build branch, when their default is for a different Anolis
+# release than this host.
+#
+# Their anck_build.sh:44 honours CK_BUILDER_BRANCH if it is set and
+# otherwise picks one from the kernel series: an8-5.10 for a 5.10
+# kernel, an23-6.6 for 6.6.  That is right for their builders -- a 5.10
+# kernel is built on an Anolis 8 machine there -- and wrong for a host
+# that is something else.  The an8 branches carry an Anolis 8 spec
+# template, and rpm 4.18 on Anolis 23 rejects it outright: "Macro
+# %rpmversion is a built-in" and extra tokens after %endif are errors
+# there, where on the an23 branches they are warnings and the build
+# goes on to compile.
+#
+# So their repository is asked whether it publishes a builder for this
+# host's release and this kernel's series, and if it does, that is the
+# one used -- through the override their own script offers, not by
+# editing it.  Nothing here is a fixed branch name: the release comes
+# from /etc/os-release, the series from the branch their code was given,
+# and if they do not publish that combination their own default stands.
+_an_tone_ck_branch() {
+  local branch="$1" release series candidate
+
+  # Theirs, or the user's, wins outright.
+  [ -n "${CK_BUILDER_BRANCH:-}" ] && return 0
+
+  [ -r /etc/os-release ] || return 0
+  release=$( . /etc/os-release 2>/dev/null
+             [ "${ID:-}" = 'anolis' ] && echo "${VERSION_ID%%.*}" )
+  [ -n "${release}" ] || return 0
+
+  series=${branch#devel-}
+  candidate="an${release}-${series}"
+
+  if ! git ls-remote --heads "${_AN_TONE_CK_REPO}" \
+         "refs/heads/${candidate}" 2>/dev/null | grep -q .; then
+    # They do not build this series on this release.  Their own choice
+    # stands, which is the honest outcome: it is the only one they test.
+    return 0
+  fi
+
+  export CK_BUILDER_BRANCH="${candidate}"
+  echo "[prci] their ck-build default is for a different Anolis release;" \
+       "using their ${candidate}"
+}
+
 # Everything their scripts read out of their CI's environment.
 #
 # Their code does not default most of it, because in their CI it is
@@ -438,6 +486,7 @@ _an_tone_prepare() {
   _an_tone_askpass "${AN_TONE_BIN}" || return 1
   _an_tone_mountpoint || return 1
 
+  _an_tone_ck_branch "${branch}"
   _an_tone_env "${kernel}" "${branch}" "${repo}"
   _an_tone_load || return 1
   _an_tone_shim_boot

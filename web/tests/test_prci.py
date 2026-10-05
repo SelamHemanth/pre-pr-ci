@@ -2519,6 +2519,92 @@ class TestAnolisTheirScripts(unittest.TestCase):
                      'make dist-genspec'):
             self.assertIn(line, theirs, line)
 
+    # ---- their ck-build branch ----
+
+    def anolis_release(self):
+        try:
+            with open('/etc/os-release') as f:
+                fields = dict(
+                    line.strip().split('=', 1) for line in f
+                    if '=' in line)
+        except OSError:
+            return None
+        if fields.get('ID', '').strip('"') != 'anolis':
+            return None
+        return fields.get('VERSION_ID', '').strip('"').split('.')[0]
+
+    def a_ck_build(self, *branches):
+        """A stand-in for their ck-build repository, with given branches."""
+        at = tempfile.mkdtemp() + '/ck-build.git'
+        subprocess.run(['git', 'init', '-q', '--bare', at], check=True)
+        tree = self.a_kernel()
+        head = subprocess.run(['git', '-C', tree, 'rev-parse', 'HEAD'],
+                              stdout=subprocess.PIPE).stdout.decode().strip()
+        with open(os.path.join(at, 'objects/info/alternates'), 'w') as f:
+            f.write(os.path.join(tree, '.git/objects'))
+        for branch in branches:
+            subprocess.run(['git', '-C', at, 'update-ref',
+                            'refs/heads/' + branch, head], check=True)
+        return at
+
+    def ck_branch(self, repo, branch, **env):
+        rc, out = self.shell(
+            'unset CK_BUILDER_BRANCH\n'
+            '_AN_TONE_CK_REPO="%s"\n'
+            '_an_tone_ck_branch %s\n'
+            'echo "chose=[${CK_BUILDER_BRANCH:-}]"' % (repo, branch), **env)
+        self.assertEqual(rc, 0, out)
+        return out
+
+    def test_their_builder_for_this_hosts_release_is_preferred(self):
+        # Their anck_build.sh picks an8-5.10 for a 5.10 kernel, because
+        # that is the machine they build 5.10 on.  rpm 4.18 on Anolis 23
+        # rejects that branch's spec template outright -- "%rpmversion
+        # is a built-in" and extra tokens after %endif are errors there,
+        # warnings on their an23 branches -- so on an Anolis 23 host the
+        # an23 builder is the one that gets as far as compiling.
+        release = self.anolis_release()
+        if not release:
+            self.skipTest('not an Anolis host, so there is nothing to prefer')
+        repo = self.a_ck_build('an8-5.10', 'an%s-5.10' % release)
+        out = self.ck_branch(repo, 'devel-5.10')
+        self.assertIn('chose=[an%s-5.10]' % release, out)
+        self.assertIn('different Anolis release', out)
+
+    def test_their_own_default_stands_when_they_publish_nothing_for_us(self):
+        # Leaving it unset is what hands the choice back to their
+        # script, and theirs is the only combination they test.
+        repo = self.a_ck_build('an8-5.10')
+        out = self.ck_branch(repo, 'devel-7.0')
+        self.assertIn('chose=[]', out)
+
+    def test_an_explicit_builder_branch_wins(self):
+        # Their script's own override, which is how a user pins one
+        # without either of us editing their code.
+        rc, out = self.shell(
+            'CK_BUILDER_BRANCH=an8-5.10\n'
+            '_AN_TONE_CK_REPO="%s"\n'
+            '_an_tone_ck_branch devel-5.10\n'
+            'echo "chose=[${CK_BUILDER_BRANCH}]"'
+            % self.a_ck_build('an8-5.10', 'an23-5.10'))
+        self.assertEqual(rc, 0, out)
+        self.assertIn('chose=[an8-5.10]', out)
+
+    def test_no_builder_branch_is_written_down(self):
+        # The release comes from /etc/os-release, the series from the
+        # branch their code was given, and the result is used only if
+        # their repository has it.  A branch name of ours in here would
+        # be a guess with a shelf life.
+        source = self.code_of('anolis', 'an_tone.sh')
+        for guess in ('an8-5.10', 'an23-5.10', 'an23-6.6', 'an8-4.19',
+                      'an23-6.1'):
+            self.assertNotIn(guess, source, guess)
+        self.assertIn('/etc/os-release', source)
+        # And theirs does carry them, which is where they belong.
+        self.assertIn('an8-5.10',
+                      read_file('anolis', 'tone-cli', 'tests',
+                                'anck-pack-and-boot', 'anck_build.sh'))
+
     def test_nothing_un_pins_a_submodule_behind_our_back(self):
         """`submodule update --remote` is not how we follow them.
 
