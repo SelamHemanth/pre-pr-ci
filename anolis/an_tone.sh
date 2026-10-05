@@ -590,13 +590,32 @@ _an_tone_verdict_rc() {
   return 2
 }
 
-# Where their anck_rpm_build left its RPMs, which is where their own
-# anck_boot_test reads them from: /anck_build/ck-build/outputs/0, as
-# seen from outside the sandbox.
+# Where their anck_rpm_build left its RPMs.
+#
+# Their own two functions disagree about this.  anck_boot_test reads
+# /anck_build/ck-build/outputs/0, while the anck_build that produced
+# them collects with
+#
+#   find /anck_build/ck-build/outputs -name *.rpm
+#
+# and the second is the one that is right for both: their an8 builders
+# lay the outputs out under a build number, their an23 ones under
+# rpmbuild/RPMS/$arch.  So this follows the find, and the directory it
+# reports is wherever the kernel packages actually landed.
 an_tone_rpm_dir() {
-  local dir="${AN_TONE_SCRATCH}/anck_rpm_build/ck-build/outputs/0"
-  [ -d "${dir}" ] || return 1
-  echo "${dir}"
+  local outputs="${AN_TONE_SCRATCH}/anck_rpm_build/ck-build/outputs" found
+
+  [ -d "${outputs}" ] || return 1
+
+  # The directory holding the binary packages, not the source ones:
+  # their anck_boot_test installs everything in the directory it is
+  # given, and a src.rpm among them would fail the rpm -Uvh.
+  found=$(find "${outputs}" -name 'kernel-core-*.rpm' -o \
+                            -name 'kernel-[0-9]*.rpm' 2>/dev/null |
+          grep -v '\.src\.rpm$' | head -n 1)
+  [ -n "${found}" ] || return 1
+
+  dirname "${found}"
 }
 
 # The kernel version those RPMs will boot as.

@@ -2461,16 +2461,59 @@ class TestAnolisTheirScripts(unittest.TestCase):
 
     # ---- the handoff to their anck-ci-test ----
 
-    def test_the_rpm_directory_is_the_one_their_boot_test_reads(self):
-        # Their anck_boot_test reads /anck_build/ck-build/outputs/0.
+    def rpms_at(self, layout):
+        """A scratch with their RPMs laid out under outputs/<layout>."""
+        at = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, at, True)
+        where = os.path.join(at, 'anck_rpm_build', 'ck-build', 'outputs',
+                             layout)
+        os.makedirs(where)
+        version = '5.10.134-0.git.abcdef.an23.x86_64'
+        for pkg in ('kernel-core', 'kernel-modules', 'kernel-headers'):
+            open(os.path.join(where, '%s-%s.rpm' % (pkg, version)), 'w').close()
+        return at, where
+
+    def test_the_rpm_directory_is_found_in_either_of_their_layouts(self):
+        # Their own two functions disagree: anck_boot_test reads
+        # outputs/0, while the anck_build that produced them collects
+        # with `find /anck_build/ck-build/outputs -name *.rpm`.  Their
+        # an8 builders lay the outputs out under a build number and
+        # their an23 ones under rpmbuild/RPMS/$arch, so following the
+        # find is the only one of the two that is right for both.
         self.assertIn('anck_rpms_dir="/anck_build/ck-build/outputs/0"',
                       self.their_run_sh())
+        self.assertIn('find /anck_build/ck-build/outputs -name *.rpm',
+                      self.their_run_sh())
+
+        for layout in ('0', 'rpmbuild/RPMS/x86_64'):
+            at, where = self.rpms_at(layout)
+            rc, out = self.shell('AN_TONE_SCRATCH="%s" an_tone_rpm_dir' % at)
+            self.assertEqual(rc, 0, '%s: %s' % (layout, out))
+            self.assertEqual(out.strip(), where, layout)
+
+    def test_no_rpms_is_reported_rather_than_guessed_at(self):
+        # The row that follows is a skip with a reason, not a failure:
+        # nothing was rejected, their build simply has not run yet.
         rc, out = self.shell(
             'AN_TONE_SCRATCH=/tmp/nowhere-$$\n'
-            'an_tone_rpm_dir && echo found || echo "none"')
+            'an_tone_rpm_dir && echo found || echo none')
         self.assertEqual(rc, 0, out)
         self.assertIn('none', out)
-        self.assertIn('ck-build/outputs/0', read_file('anolis', 'an_tone.sh'))
+        self.assertIn('has not produced any RPMs yet',
+                      read_file('anolis', 'test.sh'))
+
+    def test_a_source_rpm_is_not_offered_to_their_boot_test(self):
+        # Their anck_boot_test does `rpm -Uvh --force /anck_rpms/*.rpm`
+        # over the whole directory it is given, which a src.rpm would
+        # fail.
+        self.assertIn('rpm -Uvh --force /anck_rpms/*.rpm',
+                      self.their_run_sh())
+        at, where = self.rpms_at('rpmbuild/SRPMS')
+        os.rename(os.path.join(where,
+                               'kernel-core-5.10.134-0.git.abcdef.an23.x86_64.rpm'),
+                  os.path.join(where, 'kernel-5.10.134-0.git.abcdef.an23.src.rpm'))
+        rc, out = self.shell('AN_TONE_SCRATCH="%s" an_tone_rpm_dir' % at)
+        self.assertNotIn('SRPMS', out)
 
     def test_the_expected_version_is_read_their_way(self):
         # Their anck_boot_test asks the kernel-headers package, with
