@@ -20,6 +20,7 @@ renamed in test.sh and not here, a test becomes unstartable or its output
 becomes invisible.  That had already happened to euler's check_kabi.
 """
 
+import ast
 import os
 import re
 import shutil
@@ -64,6 +65,83 @@ def submodule_paths():
 def read_file(*parts):
     with open(os.path.join(PROJECT_ROOT, *parts), errors='replace') as f:
         return f.read()
+
+
+class TestNoImportIsShadowedInsideAFunction(unittest.TestCase):
+    """A second `import x` inside a function makes x local to all of it.
+
+    Python decides a name is local by looking at the whole function body,
+    not at the order the lines run in, so an `import threading` near the
+    bottom of a function turns every earlier use of threading into a read
+    of an unassigned local.  The function still compiles and still
+    imports; it raises UnboundLocalError on the day the earlier branch is
+    taken.
+
+    It cost a service that would not start.  server.py imports threading
+    at the top, main() started a background thread with it, and sixty
+    lines further down a redundant `import threading` guarded by "only
+    refresh an existing mirror" made the first use fail -- but only when
+    a sub-repository was missing, which is the one morning in fifty that
+    the earlier branch runs at all.  Systemd restarted it sixty-six
+    times.
+
+    Cheap to check for the whole tree, so it is checked for the whole
+    tree rather than for the line that broke.
+    """
+
+    def offenders(self, path):
+        tree = ast.parse(read_file(path))
+
+        def names(node):
+            out = set()
+            for alias in node.names:
+                out.add((alias.asname or alias.name).split('.')[0])
+            return out
+
+        at_module_scope = set()
+        for node in tree.body:
+            if isinstance(node, (ast.Import, ast.ImportFrom)):
+                at_module_scope |= names(node)
+
+        found = []
+        for func in ast.walk(tree):
+            if not isinstance(func, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            for node in ast.walk(func):
+                if not isinstance(node, (ast.Import, ast.ImportFrom)):
+                    continue
+                for name in names(node) & at_module_scope:
+                    found.append('%s:%d: %s() re-imports %s'
+                                 % (path, node.lineno, func.name, name))
+        return found
+
+    def test_nothing_in_the_web_interface_shadows_its_own_imports(self):
+        bad = []
+        for path in ['web/server.py'] + sorted(
+                os.path.join('web', 'prci', f)
+                for f in os.listdir(os.path.join(PROJECT_ROOT, 'web', 'prci'))
+                if f.endswith('.py')):
+            bad += self.offenders(path)
+        self.assertEqual(bad, [], '\n'.join(bad))
+
+    def test_the_check_would_have_caught_the_one_that_got_through(self):
+        # Without this, a check that silently matches nothing looks the
+        # same as a clean tree.
+        source = ('import threading\n'
+                  '\n'
+                  'def main():\n'
+                  '    threading.Thread()\n'
+                  '    if cond:\n'
+                  '        import threading\n'
+                  '        threading.Thread()\n')
+        probe = tempfile.NamedTemporaryFile('w', suffix='.py', dir=PROJECT_ROOT,
+                                            delete=False)
+        probe.write(source)
+        probe.close()
+        self.addCleanup(os.unlink, probe.name)
+        found = self.offenders(os.path.basename(probe.name))
+        self.assertEqual(len(found), 1, found)
+        self.assertIn('main() re-imports threading', found[0])
 
 
 class TestRegistryMatchesScripts(unittest.TestCase):

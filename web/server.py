@@ -603,7 +603,6 @@ def main():
     if not args.no_mirror_sync and os.path.isdir(TORVALDS_REPO):
         # Only refresh an existing mirror; cloning several GB is not something
         # to start behind a server that has not finished booting.
-        import threading
         threading.Thread(target=repo.sync, args=(TORVALDS_REPO,),
                          daemon=True).start()
 
