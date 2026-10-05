@@ -24,3 +24,4 @@ __pycache__/
 # A gigabyte of gcc that can be recreated from the tarballs at any time.
 .toolchains/
 oe-static-checking/
+.anck-build/

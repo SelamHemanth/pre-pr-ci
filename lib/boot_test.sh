@@ -13,10 +13,12 @@
 #
 # Source this file; it defines functions and runs nothing on its own.
 #
-# Expects lib/vm.sh to be sourced too, and the caller to provide the pass/fail
-# helpers, VM_IP, VM_ROOT_PWD and HOST_USER_PWD.
+# Expects lib/vm.sh to be sourced too, and VM_IP, VM_ROOT_PWD and
+# HOST_USER_PWD to be set.  It reports no verdict of its own: the
+# distro's own suite does that, by looking at the machine this leaves
+# running.
 #
-#   run_boot_test <test_name> <rpms_dir> <boot_log>
+#   boot_install_and_reboot <rpms_dir> <boot_log>
 #
 
 BOOT_WAIT_SECONDS="${BOOT_WAIT_SECONDS:-300}"
@@ -57,24 +59,39 @@ _boot_ensure_sshpass() {
 	) >> "${_BOOT_LOG}" 2>&1
 }
 
-run_boot_test() {
-	local test_name="$1"
-	local rpms_dir="$2"
-	local boot_log="$3"
+# Install the series' kernel RPM on the VM and reboot into it.
+#
+# This is not a test and reports no verdict.  On Anolis's CI these two
+# steps are not part of a test either: their anck-ci-test Readme says
+# the platform does them -- "安装RPM" with the artefact link and
+# "重启机器" set to yes, the step chain install_rpm -> reboot ->
+# run_case -- and their suite runs afterwards and only inspects what it
+# finds running.  So this does the platform's two steps, and their
+# check_kernel_version decides whether the right kernel came up.
+#
+#   boot_install_and_reboot <rpms_dir> <boot_log>
+#
+# Returns 0 when the VM answered ssh again after rebooting, 3 when
+# there is no VM to do any of this on, and 1 otherwise with the reason
+# in BOOT_REASON.  Sets BOOT_EXPECT_KVER to the version the installed
+# RPM will report as uname -r, which is their EXPECT_KERNEL_VERSION.
+boot_install_and_reboot() {
+	local rpms_dir="$1"
+	local boot_log="$2"
 
 	_BOOT_LOG="${boot_log}"
 	: > "${boot_log}"
+	BOOT_REASON=''
+	BOOT_EXPECT_KVER=''
 
 	if [ -z "${VM_IP:-}" ]; then
-		skip "${test_name}" "No VM_IP configured"
-		echo ""
-		return
+		BOOT_REASON='No VM_IP configured'
+		return 3
 	fi
 
 	if [ ! -d "${rpms_dir}" ]; then
-		fail "${test_name}" "RPM directory not found: ${rpms_dir}"
-		echo ""
-		return
+		BOOT_REASON="RPM directory not found: ${rpms_dir}"
+		return 1
 	fi
 
 	local kernel_rpm
@@ -83,9 +100,8 @@ run_boot_test() {
 		-type f | head -n 1)
 
 	if [ -z "${kernel_rpm}" ]; then
-		fail "${test_name}" "No kernel RPM found in ${rpms_dir}"
-		echo ""
-		return
+		BOOT_REASON="No kernel RPM found in ${rpms_dir}"
+		return 1
 	fi
 
 	local rpm_name
@@ -95,45 +111,40 @@ run_boot_test() {
 	local kernel_version
 	kernel_version=$(_boot_kernel_release "${kernel_rpm}")
 	if [ -z "${kernel_version}" ]; then
-		fail "${test_name}" "Could not read the kernel version out of ${rpm_name}"
-		echo ""
-		return
+		BOOT_REASON="Could not read the kernel version out of ${rpm_name}"
+		return 1
 	fi
+	BOOT_EXPECT_KVER="${kernel_version}"
 
 	local vmlinuz_path="/boot/vmlinuz-${kernel_version}"
 	_boot_log "Expecting kernel ${kernel_version} at ${vmlinuz_path}"
 
 	_boot_log "Checking that ${VM_IP} answers..."
 	if ! ping -c 2 -W 2 "${VM_IP}" >> "${boot_log}" 2>&1; then
-		fail "${test_name}" "VM ${VM_IP} is not reachable"
-		echo ""
-		return
+		BOOT_REASON="VM ${VM_IP} is not reachable"
+		return 1
 	fi
 
 	if ! _boot_ensure_sshpass; then
-		fail "${test_name}" "Could not install sshpass"
-		echo ""
-		return
+		BOOT_REASON='Could not install sshpass'
+		return 1
 	fi
 
 	_boot_log "Copying the RPM to the VM..."
 	if ! vm_scp "${kernel_rpm}" /tmp/ >> "${boot_log}" 2>&1; then
-		fail "${test_name}" "Could not copy ${rpm_name} to the VM"
-		echo ""
-		return
+		BOOT_REASON="Could not copy ${rpm_name} to the VM"
+		return 1
 	fi
 
 	_boot_log "Installing the RPM on the VM..."
 	if ! vm_ssh "rpm -ivh --force /tmp/${rpm_name}" >> "${boot_log}" 2>&1; then
-		fail "${test_name}" "Installing ${rpm_name} on the VM failed"
-		echo ""
-		return
+		BOOT_REASON="Installing ${rpm_name} on the VM failed"
+		return 1
 	fi
 
 	if ! vm_ssh "test -f ${vmlinuz_path}" >> "${boot_log}" 2>&1; then
-		fail "${test_name}" "No kernel image at ${vmlinuz_path} after install"
-		echo ""
-		return
+		BOOT_REASON="No kernel image at ${vmlinuz_path} after install"
+		return 1
 	fi
 
 	_boot_log "Kernels known to the bootloader before the change:"
@@ -141,9 +152,8 @@ run_boot_test() {
 
 	_boot_log "Making ${vmlinuz_path} the default..."
 	if ! vm_ssh "grubby --set-default=${vmlinuz_path}" >> "${boot_log}" 2>&1; then
-		fail "${test_name}" "grubby could not set the default kernel"
-		echo ""
-		return
+		BOOT_REASON='grubby could not set the default kernel'
+		return 1
 	fi
 
 	local default_kernel
@@ -152,10 +162,8 @@ run_boot_test() {
 	_boot_log "Default kernel is now ${default_kernel}"
 
 	if [ "${default_kernel}" != "${vmlinuz_path}" ]; then
-		fail "${test_name}" \
-			"Default kernel is ${default_kernel}, expected ${vmlinuz_path}"
-		echo ""
-		return
+		BOOT_REASON="Default kernel is ${default_kernel}, expected ${vmlinuz_path}"
+		return 1
 	fi
 
 	_boot_log "Rebooting the VM..."
@@ -165,25 +173,10 @@ run_boot_test() {
 	sleep 10
 	_boot_log "Waiting up to ${BOOT_WAIT_SECONDS}s for the VM to come back..."
 	if ! vm_wait_ssh "${BOOT_WAIT_SECONDS}"; then
-		fail "${test_name}" \
-			"VM did not answer ssh within ${BOOT_WAIT_SECONDS}s of rebooting"
-		echo ""
-		return
+		BOOT_REASON="VM did not answer ssh within ${BOOT_WAIT_SECONDS}s of rebooting"
+		return 1
 	fi
 
-	local running_kernel
-	running_kernel=$(vm_ssh "uname -r" 2>> "${boot_log}")
-	running_kernel="${running_kernel%$'\r'}"
-
-	_boot_log "Running kernel:  ${running_kernel}"
-	_boot_log "Expected kernel: ${kernel_version}"
-
-	if [ "${running_kernel}" = "${kernel_version}" ]; then
-		pass "${test_name}"
-	else
-		fail "${test_name}" \
-			"VM booted ${running_kernel}, expected ${kernel_version}"
-	fi
-
-	echo ""
+	_boot_log "VM is back up running $(vm_ssh "uname -r" 2>> "${boot_log}")"
+	return 0
 }

@@ -47,8 +47,6 @@ export VM_IP
 # output is not a terminal so redirected logs stay free of escapes.
 . "${SCRIPT_DIR}/../lib/log.sh"
 
-# shellcheck source=../lib/torvalds.sh
-. "${WORKDIR}/lib/torvalds.sh"
 # shellcheck source=../lib/vm.sh
 . "${WORKDIR}/lib/vm.sh"
 # shellcheck source=../lib/boot_test.sh
@@ -97,7 +95,10 @@ fi
 
 # Tests are also runnable against a config written before this setting
 # existed, so fall back rather than aborting under "set -u".
-: "${BUILD_THREADS:=$(nproc)}"
+#
+# BUILD_THREADS is not among them any more: their anck_build.sh sets
+# its own job count, one less than the processor count, and that is now
+# what the builds use.
 : "${NUM_PATCHES:=1}"
 
 # An unprepared series has no ANBZ tag and no sign-off, so the checks
@@ -122,15 +123,6 @@ PASSED_TESTS=0
 FAILED_TESTS=0
 SKIPPED_TESTS=0
 WARNED_TESTS=0
-
-if [ $(arch) == "x86_64" ]; then
-  kernel_arch="x86"
-elif [ $(arch) == "aarch64" ]; then
-  kernel_arch="arm64"
-else
-  echo -e "${RED}Error: Not supported arch${NC}"
-  exit 1
-fi
 
 pass() {
   local test_name="$1"
@@ -175,30 +167,41 @@ warn() {
 }
 
 # Common function to build kernel with given config target
-run_kernel_build() {
-  local test_name="$1"
-  local config_target="$2"
-  # The log stem defaults to the test name but can differ: the verdict has to
-  # be the name registry.py knows, while the log file keeps the name it has
-  # always had.
-  local log_stem="${3:-$test_name}"
-  local build_log="${LOGS_DIR}/${log_stem}.log"
-  cd "${LINUX_SRC_PATH}"
+# One case of their anck-pack-and-boot suite.
+#
+# anolis/an_tone.sh is where their scripts are run: their anck_build.py
+# composes the command line and names the log, their anck_build.sh does
+# the clone, the dependencies and every make line, and their own
+# "<case>: pass" is what decides this row.  Nothing here knows what any
+# of their cases builds, which is the point -- when they change a make
+# line, updating the submodule is the whole of following them.
+#
+# The four statuses are their four markers, the same ones
+# cases/lib.sh and anck_ci_test.sh already speak.
+#
+# $1 is their name for the case, $2 ours.  They differ in two places
+# only -- check_Kconfig against check_kconfig, and their
+# build_anolis_debug_defconfig against our build_anolis_debug -- and
+# ours is what registry.py, the web interface and the TEST_* settings
+# in the user's config are keyed on.
+#
+# $3 is the log's name, which is neither of those in two cases: the
+# verdict has to be the name registry.py knows, while the log keeps
+# the name it has always had and that registry.py points the web
+# interface at.
+run_their_build_case() {
+  local theirs="$1" ours="${2:-$1}" stem="${3:-${2:-$1}}"
+  local log="${LOGS_DIR}/${stem}.log"
 
-  make clean > /dev/null 2>&1
-  echo "  → Building kernel with ${config_target}..."
-  if make "${config_target}" > "${build_log}" 2>&1 \
-    && make -j"${BUILD_THREADS}" >> "${build_log}" 2>&1 \
-    && make modules -j"${BUILD_THREADS}" >> "${build_log}" 2>&1; then
-    pass "${test_name}"
-  else
-    fail "${test_name}" "Build failed (see ${build_log})"
-  fi
-  echo ""
-}
-
-sync_torvalds_repo() {
-  TORVALDS_LOG_PREFIX="  → " torvalds_sync || true
+  echo "  → Running their ${theirs}..."
+  bash "${SCRIPT_DIR}/an_tone.sh" "${theirs}" > "${log}" 2>&1
+  case $? in
+    0) pass "${ours}" ;;
+    1) fail "${ours}" "Their ${theirs} failed (see ${log})" ;;
+    3) skip "${ours}" "$(tail -n 4 "${log}")" ;;
+    5) warn "${ours}" "Their ${theirs} flagged something (see ${log})" ;;
+    *) fail "${ours}" "Their suite could not run (see ${log})" ;;
+  esac
   echo ""
 }
 
@@ -206,418 +209,120 @@ sync_torvalds_repo() {
 
 test_check_kconfig() {
   echo -e "${BLUE}Test-1: check_Kconfig${NC}"
-  cd "${LINUX_SRC_PATH}/anolis" 2>/dev/null || {
-    skip "check_kconfig" "anolis/ directory not found"
-    return
-  }
-
-  mkdir -p "${LINUX_SRC_PATH}/anolis/output" 2>/dev/null
-  chmod -R u+w "${LINUX_SRC_PATH}/anolis/output" 2>/dev/null || true
-
-  echo "  → Checking kconfig..."
-
-  check_status=0
-
-  # Step 1: Run the original check
-  if ARCH=${kernel_arch} make dist-configs-check > "${LOGS_DIR}/check_Kconfig.log" 2>&1; then
-	  echo "  → dist-configs-check passed" >> "${LOGS_DIR}/check_Kconfig.log"
-  else
-	  echo "  → dist-configs-check failed" >> "${LOGS_DIR}/check_Kconfig.log"
-	  check_status=1
-  fi
-
-  # Step 2: Run dist-configs-update and check git working tree cleanliness
-  echo "  → Running 'make dist-configs-update' to verify Kconfig baseline..." >> "${LOGS_DIR}/check_Kconfig.log"
-  make dist-configs-update >> "${LOGS_DIR}/check_Kconfig.log" 2>&1
-
-  # Capture git status output
-  git_status_output=$(git status --porcelain=v1 2>&1)
-  git_exit_code=$?
-
-  if [ $git_exit_code -ne 0 ]; then
-	  echo "  ERROR: 'git status' failed. Cannot verify working tree state." >> "${LOGS_DIR}/check_Kconfig.log"
-	  check_status=1
-  elif [ -n "$git_status_output" ]; then
-	  # Working tree is NOT clean
-	  echo "  ERROR: Kconfig baseline is outdated or inconsistent!" >> "${LOGS_DIR}/check_Kconfig.log"
-	  echo "  The following changes were detected after 'make dist-configs-update':" >> "${LOGS_DIR}/check_Kconfig.log"
-	  echo "$git_status_output" >> "${LOGS_DIR}/check_Kconfig.log"
-	  echo "" >> "${LOGS_DIR}/check_Kconfig.log"
-	  echo "  Please update the Kconfig baseline according to:" >> "${LOGS_DIR}/check_Kconfig.log"
-	  echo "     ${SCRIPT_DIR}/'How_to_resolve_kconfig_test_failure?.md'" >> "${LOGS_DIR}/check_Kconfig.log"
-	  check_status=1
-  else
-	  # Working tree is clean
-	  echo "  → Kconfig baseline is consistent (working tree clean after update)." >> "${LOGS_DIR}/check_Kconfig.log"
-  fi
-
-  # Report results based on check_status
-  if [ $check_status -eq 0 ]; then
-    pass "check_kconfig"
-  else
-    fail "check_kconfig" "dist-configs-check failed (see ${LOGS_DIR}/check_Kconfig.log)"
-  fi
-  echo ""
+  run_their_build_case check_Kconfig check_kconfig check_Kconfig
 }
 
 test_build_allyes_config() {
   echo -e "${BLUE}Test-2: build_allyes_config${NC}"
-  run_kernel_build "build_allyes_config" "allyesconfig"
+  run_their_build_case build_allyes_config
 }
 
 test_build_allno_config() {
   echo -e "${BLUE}Test-3: build_allno_config${NC}"
-  run_kernel_build "build_allno_config" "allnoconfig"
+  run_their_build_case build_allno_config
 }
 
 test_build_anolis_defconfig() {
   echo -e "${BLUE}Test-4: build_anolis_defconfig${NC}"
-  run_kernel_build "build_anolis_defconfig" "anolis_defconfig"
+  run_their_build_case build_anolis_defconfig
 }
 
 test_build_anolis_debug_defconfig() {
   echo -e "${BLUE}Test-5: build_anolis_debug_defconfig${NC}"
-  run_kernel_build "build_anolis_debug" "anolis-debug_defconfig" \
-                   "build_anolis_debug_defconfig"
+  run_their_build_case build_anolis_debug_defconfig build_anolis_debug \
+                     build_anolis_debug_defconfig
 }
 
 test_anck_rpm_build() {
   echo -e "${BLUE}Test-6: anck_rpm_build${NC}"
 
-  # Check and install required build dependencies only if missing
-  local packages="audit-libs-devel binutils-devel libbpf-devel libcap-ng-devel libnl3-devel newt-devel pciutils-devel xmlto yum-utils"
-  local missing_packages=""
+  # Theirs does not run `make dist-rpms`, which is what this used to
+  # do.  Their anck_build.sh clones the ck-build harness from
+  # src-anolis-sig, links the kernel into it as cloud-kernel,
+  # generates the spec, installs its build requirements and runs
+  # ck-build's own build.sh -- and the RPMs land in
+  # ck-build/outputs/0, which is where their anck_boot_test then
+  # reads them from.  All of that is theirs now.
+  run_their_build_case anck_rpm_build
+}
 
-  for pkg in $packages; do
-    if ! rpm -q "$pkg" &>/dev/null; then
-      missing_packages="$missing_packages $pkg"
-    fi
-  done
+# Their anck-ci-test, which reports boot_kernel_rpm, check_kapi and
+# check_dmesg.  All three read the running kernel, so all three need
+# the series' RPM installed and booted first, and they share one run of
+# their suite -- cases/anck_ci_test.sh caches it per caller.
+#
+# EXPECT_KERNEL_VERSION is what their check_kernel_version compares
+# uname -r against.  It comes from the RPM their anck_rpm_build built;
+# left unset, theirs falls back to the newest installed kernel-headers
+# and warns, which on the VM is whatever was there before the series.
+run_their_vm_case() {
+  local case_name="$1" stem="${2:-$1}"
+  local log="${LOGS_DIR}/${stem}.log"
 
-  if [ -n "$missing_packages" ]; then
-    echo "  → Installing missing packages:$missing_packages" >> "${LOGS_DIR}/anck_rpm_build.log"
-    # Not fatal: the packages may be present in a form rpm -q does not see,
-    # and failing here would be worse than letting the build try.  But say so,
-    # because otherwise the only clue is a missing header hundreds of lines
-    # later in the log.
-    if ! echo "${HOST_USER_PWD}" | sudo -S yum install -y $missing_packages \
-            >> "${LOGS_DIR}/anck_rpm_build.log" 2>&1; then
-      echo -e "${YELLOW}[WARN]${NC} anck_rpm_build: could not install:$missing_packages"
-      echo -e "${YELLOW}       check the sudo password and repo access; continuing anyway${NC}"
-    fi
-  fi
-
-  # Set build environment variables
-  export BUILD_NUMBER="${BUILD_NUMBER:-0}"
-  export BUILD_MODE="${BUILD_MODE:-devel}"
-  export BUILD_VARIANT="${BUILD_VARIANT:-default}"
-  export BUILD_EXTRA="${BUILD_EXTRA:-debuginfo}"
-
-  cd "${LINUX_SRC_PATH}/anolis" || {
-    fail "anck_rpm_build" "Cannot enter anolis directory"
-    return
-  }
-
-  # Create symlink to kernel source if not exists
-  [ ! -L "cloud-kernel" ] && ln -sf "${LINUX_SRC_PATH}" cloud-kernel
-
-  # Create and clean outputs directory
-  outputdir="${LINUX_SRC_PATH}/anolis/outputs"
-  rm -rf "${outputdir}/rpmbuild"
-  mkdir -p "${outputdir}"
-
-  # Generate spec file if not exists or outdated
-  if [ ! -f output/kernel.spec ] || [ "${LINUX_SRC_PATH}/anolis/Makefile" -nt output/kernel.spec ]; then
-    make dist-genspec >> "${LOGS_DIR}/anck_rpm_build.log" 2>&1 || {
-      fail "anck_rpm_build" "make dist-genspec failed"
-      return
-    }
-  fi
-
-  # Install spec dependencies only once
-  if [ ! -f "${outputdir}/.deps_installed" ]; then
-    echo "  → Installing build dependencies..." >> "${LOGS_DIR}/anck_rpm_build.log"
-    if echo "${HOST_USER_PWD}" | sudo -S yum-builddep -y output/kernel.spec \
-            >> "${LOGS_DIR}/anck_rpm_build.log" 2>&1; then
-      # Only remember success.  Touching this unconditionally meant a single
-      # failed yum-builddep was recorded as done, so every later run skipped
-      # the install and failed identically until someone found and deleted
-      # this hidden marker.
-      touch "${outputdir}/.deps_installed"
-    else
-      echo -e "${YELLOW}[WARN]${NC} anck_rpm_build: yum-builddep failed; will retry next run"
-    fi
-  fi
-
-  # Set ulimit and build
-  ulimit -n 65535
-
-  echo "  → Building RPMs..."
-  if DIST=".an23" \
-     DIST_BUILD_NUMBER=${BUILD_NUMBER} \
-     DIST_OUTPUT=${outputdir} \
-     DIST_BUILD_MODE=${BUILD_MODE} \
-     DIST_BUILD_VARIANT=${BUILD_VARIANT} \
-     DIST_BUILD_EXTRA=${BUILD_EXTRA} \
-     make dist-rpms RPMBUILDOPTS="--define '%_smp_mflags -j${BUILD_THREADS}'" \
-     >> "${LOGS_DIR}/anck_rpm_build.log" 2>&1; then
-
-    local rpm_dir="${outputdir}/rpmbuild/RPMS"
-
-    if [ -d "${rpm_dir}" ]; then
-      local rpm_count=$(find "${rpm_dir}" -name "*.rpm" -type f | wc -l)
-      echo -e "  → Binary RPMs (${rpm_count} packages): ${rpm_dir}" >> "${LOGS_DIR}/anck_rpm_build.log"
-    fi
-
-    pass "anck_rpm_build"
-  else
-    fail "anck_rpm_build" "RPM build failed (see ${LOGS_DIR}/anck_rpm_build.log)"
-  fi
-
+  bash "${SCRIPT_DIR}/cases/anck_ci_test.sh" "${case_name}" > "${log}" 2>&1
+  case $? in
+    0) pass "${case_name}" ;;
+    1) fail "${case_name}" "Their ${case_name} failed (see ${log})" ;;
+    3) skip "${case_name}" "$(tail -n 4 "${log}")" ;;
+    5) warn "${case_name}" "Their ${case_name} flagged something (see ${log})" ;;
+    *) fail "${case_name}" "Their suite could not run (see ${log})" ;;
+  esac
   echo ""
 }
 
 test_boot_kernel_rpm() {
   echo -e "${BLUE}Test-8: boot_kernel_rpm${NC}"
 
-  run_boot_test "boot_kernel_rpm" \
-    "${LINUX_SRC_PATH}/anolis/outputs/rpmbuild/RPMS/$(arch)" \
-    "${LOGS_DIR}/boot_kernel_rpm.log"
+  local boot_log="${LOGS_DIR}/boot_kernel_rpm.log"
+  local rpm_dir
+
+  # Their anck_rpm_build leaves the RPMs in ck-build/outputs/0, which
+  # is where their own anck_boot_test reads them from.
+  if ! rpm_dir=$(bash "${SCRIPT_DIR}/an_tone.sh" --rpm-dir 2>/dev/null); then
+    skip "boot_kernel_rpm" \
+         "Their anck_rpm_build has not produced any RPMs yet"
+    echo ""
+    return
+  fi
+
+  # Installing the RPM and rebooting are the two steps their tone
+  # platform performs before their suite runs; neither is a test.
+  echo "  → Installing the RPM on ${VM_IP:-the VM} and rebooting..."
+  local rc=0
+  boot_install_and_reboot "${rpm_dir}" "${boot_log}" || rc=$?
+  case ${rc} in
+    0) ;;
+    3) skip "boot_kernel_rpm" "${BOOT_REASON}"; echo ""; return ;;
+    *) fail "boot_kernel_rpm" "${BOOT_REASON} (see ${boot_log})"
+       echo ""; return ;;
+  esac
+
+  # Now their code decides whether the kernel that came up is the one
+  # the series built.
+  export EXPECT_KERNEL_VERSION="${BOOT_EXPECT_KVER}"
+  run_their_vm_case boot_kernel_rpm
 }
 
 test_check_kapi() {
   echo -e "${BLUE}Test-9: check_kapi${NC}"
 
-  local KAPI_TEST_DIR="${SCRIPT_DIR}"
-  local KABI_DW_DIR="${KAPI_TEST_DIR}/kabi-dw"
-  local KABI_WHITELIST_DIR="${KAPI_TEST_DIR}/kabi-whitelist"
-  local KAPI_LOG="${LOGS_DIR}/kapi_test.log"
-  local KAPI_WITHOUT_BP="${KAPI_TEST_DIR}/kapiwithoutbp"
-  local KAPI_WITH_BP="${KAPI_TEST_DIR}/kapiwithbp"
-  local KAPI_DIFF_OUTPUT="${KAPI_TEST_DIR}/kapi_diff.txt"
-  local KAPI_OP_DIR="${KAPI_TEST_DIR}/outputs"
-
-  # Determine kernel branch for kabi-whitelist
-  local KERNEL_VERSION=$(grep "^VERSION = " "${LINUX_SRC_PATH}/Makefile" | awk '{print $3}')
-  local PATCHLEVEL=$(grep "^PATCHLEVEL = " "${LINUX_SRC_PATH}/Makefile" | awk '{print $3}')
-  local KABI_BRANCH="devel-${KERNEL_VERSION}.${PATCHLEVEL}"
-
-  echo "  → Checking KAPI..." > "$KAPI_LOG"
-
-  # Ensure submodules are initialized
-  if [ ! "$(ls "${KABI_DW_DIR}" 2>/dev/null)" ] || \
-	  [ ! "$(ls "${KABI_WHITELIST_DIR}" 2>/dev/null)" ]; then
-     echo "Initializing and updating submodules..." >> "$KAPI_LOG"
-     git -C "${WORKDIR}" submodule update --init --recursive >> "$KAPI_LOG" 2>&1
-     if [ $? -ne 0 ]; then
-	     fail "check_kapi" "Failed to init/update submodules"
-	     return
-     fi
-  fi
-
-  # Update submodules
-  echo "Updating submodules..." >> "$KAPI_LOG"
-  git -C "${WORKDIR}" submodule update --remote --recursive >> "$KAPI_LOG"
-
-  # Clean and build kabi-dw tool
-  cd "${KABI_DW_DIR}"
-  make clean >> "${KAPI_LOG}" 2>&1
-  if ! make >> "${KAPI_LOG}" 2>&1; then
-    fail "check_kapi" "Failed to build kabi-dw tool"
-    return
-  fi
-
-  # Determine architecture
-  local KABI_ARCH=""
-  if [ "${kernel_arch}" == "x86" ] || [ "${kernel_arch}" == "x86_64" ]; then
-    KABI_ARCH="x86_64"
-  elif [ "${kernel_arch}" == "arm64" ] || [ "${kernel_arch}" == "aarch64" ]; then
-    KABI_ARCH="aarch64"
-  else
-    fail "check_kapi" "Unsupported architecture: ${kernel_arch}"
-    return
-  fi
-
-  # Set whitelist file path
-  local WHITELIST_FILE="${KABI_WHITELIST_DIR}/kabi_whitelist_${KABI_ARCH}"
-  if [ ! -f "${WHITELIST_FILE}" ]; then
-    fail "check_kapi" "Whitelist file not found: ${WHITELIST_FILE}"
-    return
-  fi
-
-  # Get current HEAD commit ID.  Must be the full hash: this is what the tree
-  # gets reset to later, and an abbreviated one can become ambiguous.
-  cd "${LINUX_SRC_PATH}"
-  local HEAD_SHAID
-  HEAD_SHAID=$(git rev-parse HEAD 2>> "${KAPI_LOG}")
-  if [ -z "${HEAD_SHAID}" ]; then
-    fail "check_kapi" "Failed to get HEAD commit ID"
-    return
-  fi
-
-  # This test rewinds the kernel tree to build it with and without the
-  # backports.  Restore it however the function exits, or a failed build
-  # leaves the user's patches off HEAD with no indication why.
-  _kapi_restore_tree() {
-    local target="$1"
-    if ! git -C "${LINUX_SRC_PATH}" reset --hard "${target}" >> "${KAPI_LOG}" 2>&1; then
-      echo "  → WARNING: could not restore ${LINUX_SRC_PATH} to ${target}" |
-        tee -a "${KAPI_LOG}"
-    fi
-  }
-  trap '_kapi_restore_tree "${HEAD_SHAID}"; trap - RETURN' RETURN
-
-  echo "  → Generating KAPI symbols..."
-
-  # Reset to base (without backport patches)
-  echo "  → Building kernel without backport patches..." >> "$KAPI_LOG"
-  if ! git reset --hard "HEAD~${NUM_PATCHES}" >> "${KAPI_LOG}" 2>&1; then
-    fail "check_kapi" "Could not rewind ${NUM_PATCHES} commits"
-    return
-  fi
-  make mrproper >> "${KAPI_LOG}" 2>&1
-  make anolis_defconfig >> "${KAPI_LOG}" 2>&1
-
-  if ! make -j"${BUILD_THREADS}" >> "${KAPI_LOG}" 2>&1; then
-    fail "check_kapi" "Failed to build kernel without BP"
-    return
-  fi
-
-  # Check if vmlinux exists
-  local VMLINUX_PATH="${LINUX_SRC_PATH}/vmlinux"
-  if [ ! -f "${VMLINUX_PATH}" ]; then
-    fail "check_kapi" "vmlinux not found (without BP)"
-    return
-  fi
-
-  # Generate kABI without backport patches
-  cd "${KAPI_TEST_DIR}"
-  mkdir -p outputs
-  "${KABI_DW_DIR}/kabi-dw" generate -s "${WHITELIST_FILE}" -o "${KAPI_OP_DIR}" "${VMLINUX_PATH}" > "${KAPI_WITHOUT_BP}" 2>&1
-
-  # Reset back to HEAD (with backport patches)
-  echo "  → Building kernel with backport patches..." >> "$KAPI_LOG"
-  cd "${LINUX_SRC_PATH}"
-  if ! git reset --hard "${HEAD_SHAID}" >> "${KAPI_LOG}" 2>&1; then
-    fail "check_kapi" "Could not return the tree to ${HEAD_SHAID}"
-    return
-  fi
-  make mrproper >> "${KAPI_LOG}" 2>&1
-  make anolis_defconfig >> "${KAPI_LOG}" 2>&1
-
-  if ! make -j"${BUILD_THREADS}" >> "${KAPI_LOG}" 2>&1; then
-    fail "check_kapi" "Failed to build kernel with BP"
-    return
-  fi
-
-  # Check if vmlinux exists
-  if [ ! -f "${VMLINUX_PATH}" ]; then
-    fail "check_kapi" "vmlinux not found (with BP)"
-    return
-  fi
-
-  # Generate kABI with backport patches
-  cd "${KAPI_TEST_DIR}"
-  "${KABI_DW_DIR}/kabi-dw" generate -s "${WHITELIST_FILE}" -o "${KAPI_OP_DIR}" "${VMLINUX_PATH}" > "${KAPI_WITH_BP}" 2>&1
-
-  # Compare the two kABI outputs
-  echo "  → Comparing kABI symbols..."
-  diff "${KAPI_WITH_BP}" "${KAPI_WITHOUT_BP}" > "${KAPI_DIFF_OUTPUT}" 2>&1
-  local diff_exit_code=$?
-
-  if [ ${diff_exit_code} -eq 0 ]; then
-    pass "check_kapi"
-  else
-    # Extract only the symbol names from diff output (lines with "not found!")
-    local unknown_symbols=$(grep "not found!" "${KAPI_DIFF_OUTPUT}" | grep -E "^[<>]" | sed 's/^[<>] //' | sed 's/ not found!$//')
-
-    if [ -z "${unknown_symbols}" ]; then
-      pass "check_kapi"
-    else
-      echo ""
-      echo -e "${RED}  ✗ kABI symbols mismatch:${NC}"
-      echo "  ========================================"
-      echo "${unknown_symbols}"
-      echo "  ========================================"
-      echo ""
-
-      mv "${KAPI_WITHOUT_BP}" "${LOGS_DIR}/"
-      mv "${KAPI_WITH_BP}" "${LOGS_DIR}/"
-      mv "${KAPI_DIFF_OUTPUT}" "${LOGS_DIR}/"
-
-      fail "check_kapi" "kABI symbols mismatch detected"
-    fi
-  fi
-
-  echo ""
+  # Theirs clones kabi-dw and the branch's kabi-whitelist itself,
+  # unpacks vmlinux from the installed kernel-debuginfo, runs
+  # kabi-dw generate and compare, and judges on whether the func--
+  # blocks it filters out are empty -- explicitly not on compare's exit
+  # status, which is 2 whenever anything differs at all.  That last
+  # point is why this is not worth reimplementing.
+  run_their_vm_case check_kapi kapi_test
 }
 
 test_build_perf() {
   echo -e "${BLUE}Test-7: build_perf${NC}"
-
-  local perf_log="${LOGS_DIR}/build_perf.log"
-  local perf_dir="${LINUX_SRC_PATH}/tools/perf"
-
-  # Check and install required build dependencies only if missing
-  local packages="glibc-static flex bison elfutils-libelf-devel openssl-devel dwarves libtraceevent-devel libcap-devel"
-  local missing_packages=""
-
-  for pkg in $packages; do
-    if ! rpm -q "$pkg" &>/dev/null; then
-      missing_packages="$missing_packages $pkg"
-    fi
-  done
-
-  if [ -n "$missing_packages" ]; then
-    echo "  → Installing missing packages:$missing_packages" | tee -a "${perf_log}"
-    if ! echo "${HOST_USER_PWD}" | sudo -S yum install -y $missing_packages >> "${perf_log}" 2>&1; then
-      fail "build_perf" "Failed to install perf dependencies (see ${perf_log})"
-      echo ""
-      return
-    fi
-  else
-    echo "  → All perf dependencies already satisfied." | tee -a "${perf_log}"
-  fi
-
-  # Verify tools/perf directory exists
-  if [ ! -d "${perf_dir}" ]; then
-    fail "build_perf" "tools/perf directory not found: ${perf_dir}"
-    echo ""
-    return
-  fi
-
-  echo "  → Building perf..." | tee -a "${perf_log}"
-  cd "${perf_dir}"
-
-  if make -j"${BUILD_THREADS}" -s >> "${perf_log}" 2>&1; then
-    pass "build_perf"
-  else
-    fail "build_perf" "perf build failed (see ${perf_log})"
-  fi
-
-  echo ""
+  run_their_build_case build_perf
 }
 
 test_check_dmesg() {
   echo -e "${BLUE}Test-10: check_dmesg${NC}"
-
-  # Theirs is one of the three cases their anck-ci-test suite reports,
-  # and it reads the log of the running kernel -- so it only means
-  # anything on the VM, after the series' RPM is installed and booted.
-  # The case script runs their suite there and hands back this row.
-  local dmesg_log="${LOGS_DIR}/check_dmesg.log"
-
-  bash "${SCRIPT_DIR}/cases/anck_ci_test.sh" check_dmesg \
-    > "${dmesg_log}" 2>&1
-  case $? in
-    0) pass "check_dmesg" ;;
-    3) skip "check_dmesg" "$(tail -n 4 "${dmesg_log}")" ;;
-    5) warn "check_dmesg" "Their check flagged the boot log (see ${dmesg_log})" ;;
-    1) fail "check_dmesg" "Errors in the boot log of the booted kernel (see ${dmesg_log})" ;;
-    *) fail "check_dmesg" "Their suite could not run (see ${dmesg_log})" ;;
-  esac
-
-  echo ""
+  run_their_vm_case check_dmesg
 }
 
 # ---- TEST EXECUTION ----

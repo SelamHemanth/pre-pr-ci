@@ -279,9 +279,25 @@ class TestRegistryMatchesScripts(unittest.TestCase):
                     # name, so the name to look for is the variable.
                     wanted = 'arch'
                     named = named or 'run_oe_build "${arch}"' in script
-                built = re.search(
-                    r'run_(?:kernel_build|oe_check|oe_build)'
-                    r'(?:\s+"[^"]*")*\s+"%s"' % re.escape(wanted), joined)
+                built = False
+                # run_their_build_case and run_their_vm_case default
+                # each argument to the one before it, so whichever
+                # argument comes last is the log's name.  Checking that
+                # position rather than any position is the difference
+                # between this noticing a wrong log name and not.
+                for call in re.finditer(
+                        r'run_their_(?:build_case|vm_case)([^\n;]*)', joined):
+                    args = [a.strip('"\'') for a in call.group(1).split()]
+                    if args and args[-1] == wanted:
+                        built = True
+                        break
+                for call in re.finditer(
+                        r'run_(?:kernel_build|oe_check|oe_build)([^\n;]*)',
+                        joined):
+                    args = [a.strip('"\'') for a in call.group(1).split()]
+                    if wanted in args:
+                        built = True
+                        break
                 self.assertTrue(
                     named or built,
                     '%s/test.sh never writes %s (for test %r)'
@@ -1972,6 +1988,564 @@ class TestOpenEulerTheirScripts(unittest.TestCase):
             'cd "%s" && _oe_set_no_werror "" && printf "%%s\\n" '
             '"${_OE_NO_WERROR[0]}"' % tree)
         self.assertNotIn('no-such-warning-exists', out)
+
+
+class TestAnolisTheirScripts(unittest.TestCase):
+    """That Anolis's own anck-pack-and-boot runs, and runs unaltered.
+
+    Their suite is three files: run.sh holds the caselist and the rule
+    that turns a build log into a verdict, anck_build.py composes the
+    command line and names the log, and anck_build.sh does the clone,
+    the dependency installs and every make line.  None of that is
+    reimplemented any more, so what is worth testing is the seam --
+    that their code loads without running, that the three things this
+    machine cannot give their scripts are stood in for without
+    touching anything that decides a verdict, and that the two tables
+    we do keep are read back out of their files rather than remembered.
+    """
+
+    SUITE = os.path.join(PROJECT_ROOT, 'anolis', 'tone-cli', 'tests',
+                         'anck-pack-and-boot')
+
+    def setUp(self):
+        if not os.path.isdir(self.SUITE):
+            self.skipTest('anolis/tone-cli is not checked out')
+
+    def shell(self, body, **env):
+        """Run body with an_tone.sh sourced, and hand back what it said.
+
+        The passwords are cleared out of the inherited environment
+        first.  An already-exported HOST_USER_PWD would stay exported
+        through a plain assignment, which is the opposite of what the
+        real flow does and would quietly make one of these tests pass
+        for the wrong reason.
+        """
+        script = '. "%s/anolis/an_tone.sh"\n%s' % (PROJECT_ROOT, body)
+        clean = dict(os.environ, **env)
+        for secret in ('HOST_USER_PWD', 'VM_ROOT_PWD'):
+            clean.pop(secret, None)
+        done = subprocess.run(
+            ['bash', '-c', script], env=clean,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        return done.returncode, done.stdout.decode('utf-8', 'replace')
+
+    def code_of(self, *parts):
+        """A shell file with its comments and blank lines taken out.
+
+        Several of these ask whether a make line of ours survives, and
+        the comments explaining which of their make lines replaced it
+        would otherwise answer yes.
+        """
+        lines = []
+        for line in read_file(*parts).splitlines():
+            bare = line.strip()
+            if bare and not bare.startswith('#'):
+                lines.append(line)
+        return '\n'.join(lines)
+
+    def their_run_sh(self):
+        return read_file('anolis', 'tone-cli', 'tests', 'anck-pack-and-boot',
+                         'run.sh')
+
+    # ---- loading their code without running it ----
+
+    def test_their_functions_load_and_nothing_of_theirs_runs(self):
+        # run.sh is a pure function library -- unlike openEuler's, there
+        # is no `main "$@"` at the end to strip -- so this checks the
+        # other half of that claim: that sourcing it really does execute
+        # none of their suite.
+        rc, out = self.shell(
+            'AN_TONE_LOGS=/tmp _an_tone_load\n'
+            'declare -f run show_result anck_build anck_boot_test '
+            'check_kapi check_dmesg pass fail skip warn >/dev/null '
+            '&& echo all-defined')
+        self.assertEqual(rc, 0, out)
+        self.assertIn('all-defined', out)
+        # Their run() builds a kernel and prints these on the way.
+        self.assertNotIn('====', out)
+        self.assertNotIn('Clone kernel repository', out)
+
+    def test_what_decides_a_verdict_is_theirs_verbatim(self):
+        # The guard against the obvious regression: a shim that quietly
+        # shadowed one of these would leave the tool reporting its own
+        # opinion under Anolis's name.  run() is the caselist and the
+        # grep, show_result turns a status into a marker, and the four
+        # markers are what their parse.awk reads.
+        theirs = 'run show_result pass fail skip warn prepare_build_repo'
+        rc, out = self.shell(
+            'AN_TONE_LOGS=/tmp _an_tone_load\n'
+            '_an_tone_shim_boot; _an_tone_shim_build\n'
+            'for f in %s; do declare -f "$f" | md5sum | cut -d" " -f1; done'
+            % theirs)
+        self.assertEqual(rc, 0, out)
+        unshimmed = subprocess.run(
+            ['bash', '-c',
+             '. "%s/run.sh"\n'
+             'for f in %s; do declare -f "$f" | md5sum | cut -d" " -f1; done'
+             % (self.SUITE, theirs)],
+            stdout=subprocess.PIPE)
+        self.assertEqual(out.split(), unshimmed.stdout.decode().split())
+
+    def test_only_their_harness_and_their_hosts_are_shimmed(self):
+        # The other direction: the functions we do replace should be the
+        # ones that reach for their build hosts and their artefact
+        # store, and no others.
+        rc, out = self.shell(
+            'AN_TONE_LOGS=/tmp _an_tone_load\n'
+            '_an_tone_shim_boot; _an_tone_shim_build\n'
+            'for f in anck_build anck_boot_test check_kapi; do\n'
+            '  declare -f "$f" | md5sum | cut -d" " -f1\n'
+            'done')
+        self.assertEqual(rc, 0, out)
+        unshimmed = subprocess.run(
+            ['bash', '-c',
+             '. "%s/run.sh"\n'
+             'for f in anck_build anck_boot_test check_kapi; do '
+             '  declare -f "$f" | md5sum | cut -d" " -f1; done' % self.SUITE],
+            stdout=subprocess.PIPE)
+        for ours, unchanged in zip(out.split(),
+                                   unshimmed.stdout.decode().split()):
+            self.assertNotEqual(ours, unchanged)
+
+    # ---- the two tables, read back out of their files ----
+
+    def test_the_caselist_is_their_caselist(self):
+        # Their run() walks a caselist of its own.  If they add a case
+        # and we do not, the tool silently stops running it, which is
+        # the failure mode this whole approach exists to avoid.
+        theirs = re.search(r'(?m)^\s*caselist="([^"]+)"', self.their_run_sh())
+        self.assertIsNotNone(theirs, 'their caselist moved')
+        rc, out = self.shell('an_tone_cases')
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(sorted(out.split()), sorted(theirs.group(1).split()))
+
+    def test_every_case_maps_to_the_keyword_their_py_selects_it_by(self):
+        # anck_build.py picks cases out of $testcases by substring.  Our
+        # table has to agree with theirs or asking for one case would
+        # build another, or none.
+        py = read_file('anolis', 'tone-cli', 'tests', 'anck-pack-and-boot',
+                       'anck_build.py')
+        theirs = dict(
+            (case, keyword) for keyword, case in
+            re.findall(r'if "(\w+)" in cases:\s*\n\s*group\d\.append\("(\w+)"\)',
+                       py))
+        self.assertTrue(theirs, 'their keyword mapping moved')
+        for case, keyword in theirs.items():
+            rc, out = self.shell('_an_tone_keyword %s' % case)
+            self.assertEqual(rc, 0, '%s: %s' % (case, out))
+            self.assertEqual(out.strip(), keyword, case)
+
+    def test_a_name_that_is_not_one_of_theirs_is_refused(self):
+        rc, out = self.shell('_an_tone_keyword build_everything')
+        self.assertNotEqual(rc, 0)
+        rc, out = self.shell('an_tone_case build_everything',
+                             LINUX_SRC_PATH=PROJECT_ROOT)
+        self.assertEqual(rc, 2, out)
+        self.assertIn('no case', out)
+
+    # ---- the repository their clone line is pointed at ----
+
+    def a_kernel(self, version='5.10.134'):
+        """A git repository that answers `make -s kernelversion`."""
+        tree = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tree, True)
+        with open(os.path.join(tree, 'Makefile'), 'w') as f:
+            f.write('kernelversion:\n\t@echo %s\n' % version)
+        for cmd in (['git', 'init', '-q', '-b', 'pr_13653'],
+                    ['git', 'add', '-A'],
+                    ['git', '-c', 'user.email=t@t', '-c', 'user.name=t',
+                     'commit', '-qm', 'base']):
+            subprocess.run(cmd, cwd=tree, check=True,
+                           stdout=subprocess.DEVNULL)
+        return tree
+
+    def test_the_repo_carries_their_branch_at_the_series(self):
+        # Their clone line takes a branch named for one of their
+        # releases, and that name is not decoration: the same string
+        # picks the ck-build branch, the dependency list and which of
+        # their two Kconfig checks runs.  The user's tree is on a pull
+        # request branch instead, so it gets a repository that has both.
+        tree = self.a_kernel()
+        bare = tempfile.mkdtemp() + '/cloud-kernel.git'
+        rc, out = self.shell('_an_tone_repo "%s" devel-5.10 "%s"'
+                             % (tree, bare))
+        self.assertEqual(rc, 0, out)
+        head = subprocess.run(['git', '-C', tree, 'rev-parse', 'HEAD'],
+                              stdout=subprocess.PIPE).stdout.decode().strip()
+        there = subprocess.run(
+            ['git', '-C', bare, 'rev-parse', 'refs/heads/devel-5.10'],
+            stdout=subprocess.PIPE).stdout.decode().strip()
+        self.assertEqual(there, head)
+
+    def test_the_repo_borrows_the_objects_rather_than_copying_them(self):
+        # A kernel is two gigabytes of history and this runs once per
+        # case.  An alternates file lends it the user's object store.
+        tree = self.a_kernel()
+        bare = tempfile.mkdtemp() + '/cloud-kernel.git'
+        rc, out = self.shell('_an_tone_repo "%s" devel-5.10 "%s"'
+                             % (tree, bare))
+        self.assertEqual(rc, 0, out)
+        with open(os.path.join(bare, 'objects/info/alternates')) as f:
+            self.assertEqual(f.read().strip(),
+                             os.path.join(tree, '.git/objects'))
+        packs = os.path.join(bare, 'objects', 'pack')
+        self.assertEqual([] if not os.path.isdir(packs) else os.listdir(packs),
+                         [])
+
+    def test_the_users_tree_is_not_written_to(self):
+        # It is the tree they are about to send upstream.
+        tree = self.a_kernel()
+
+        def state():
+            return subprocess.run(
+                ['git', '-C', tree, 'for-each-ref'],
+                stdout=subprocess.PIPE).stdout.decode()
+
+        before = state()
+        bare = tempfile.mkdtemp() + '/cloud-kernel.git'
+        rc, out = self.shell('_an_tone_repo "%s" devel-5.10 "%s"'
+                             % (tree, bare))
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(state(), before)
+        # In particular, no branch of theirs was created in it.
+        self.assertNotIn('devel-5.10', before + state())
+
+    def test_the_repo_is_named_what_their_rpm_build_expects(self):
+        # Their anck_rpm_build does `ln -sf ../$anck_repo cloud-kernel`,
+        # and $anck_repo is the basename of the URL with .git removed.
+        # Any other name and their ck-build harness links nothing.
+        self.assertIn('ln -sf ../${anck_repo} cloud-kernel',
+                      read_file('anolis', 'tone-cli', 'tests',
+                                'anck-pack-and-boot', 'anck_build.sh'))
+        rc, out = self.shell('echo "${AN_TONE_SCRATCH}"')
+        self.assertEqual(rc, 0, out)
+        source = read_file('anolis', 'an_tone.sh')
+        self.assertIn('cloud-kernel.git', source)
+
+    def test_their_branch_gate_refuses_a_kernel_they_do_not_build(self):
+        # Their anck_build.sh takes 4.19, 5.10, 6.1, 6.6 and 7.0 and
+        # calls anything else unsupported.  Better to say so up front
+        # than to clone and build for an hour first.
+        tree = self.a_kernel(version='6.12.0')
+        rc, out = self.shell('an_tone_case check_Kconfig',
+                             LINUX_SRC_PATH=tree)
+        self.assertEqual(rc, 2, out)
+        self.assertIn('not one of their CI branches', out)
+
+    # ---- the overlay ----
+
+    def test_the_overlay_replaces_only_their_entry_point(self):
+        # anck_build.sh is the one file that has to change, because it
+        # is the one that needs /anck_build.  Their run.sh and their
+        # anck_build.py are what decide and what drives, and they are
+        # copied byte for byte.
+        at = tempfile.mkdtemp() + '/suite'
+        rc, out = self.shell('_an_tone_overlay "%s"' % at)
+        self.assertEqual(rc, 0, out)
+
+        for name in ('run.sh', 'anck_build.py', 'parse.awk'):
+            with open(os.path.join(at, name), 'rb') as ours, \
+                 open(os.path.join(self.SUITE, name), 'rb') as theirs:
+                self.assertEqual(ours.read(), theirs.read(), name)
+
+        with open(os.path.join(at, 'anck_build.sh')) as f:
+            stub = f.read()
+        self.assertIn('--sandbox', stub)
+        self.assertIn('an_tone.sh', stub)
+        # And their real one is what the stub ends up running.
+        self.assertNotIn('KERNEL_CI_REPO_URL=$2', stub)
+        self.assertIn('KERNEL_CI_REPO_URL=$2',
+                      read_file('anolis', 'tone-cli', 'tests',
+                                'anck-pack-and-boot', 'anck_build.sh'))
+
+    def test_the_overlay_does_not_write_into_their_checkout(self):
+        # Theirs is a submodule; a modification there would show up as a
+        # local change of theirs and would be carried into a commit.
+        before = subprocess.run(
+            ['git', '-C', os.path.join(PROJECT_ROOT, 'anolis', 'tone-cli'),
+             'status', '--porcelain'],
+            stdout=subprocess.PIPE).stdout.decode()
+        at = tempfile.mkdtemp() + '/suite'
+        rc, out = self.shell('_an_tone_overlay "%s"' % at)
+        self.assertEqual(rc, 0, out)
+        after = subprocess.run(
+            ['git', '-C', os.path.join(PROJECT_ROOT, 'anolis', 'tone-cli'),
+             'status', '--porcelain'],
+            stdout=subprocess.PIPE).stdout.decode()
+        self.assertEqual(before, after)
+
+    # ---- root, and where the password does not go ----
+
+    def test_the_password_does_not_reach_the_environment(self):
+        # anolis/test.sh is explicit that the two passwords are
+        # deliberately not exported "so they stay out of
+        # /proc/<pid>/environ of every command a test runs", and a
+        # kernel build runs a great many commands.  So it goes through
+        # an askpass helper instead, and this is the test that says so.
+        #
+        # HOST_USER_PWD is set here as a plain shell variable and not
+        # through the environment, because that is how it arrives: read
+        # out of .configure, never exported.
+        at = tempfile.mkdtemp()
+        rc, out = self.shell(
+            'unset HOST_USER_PWD; HOST_USER_PWD=hunter2\n'
+            'AN_TONE_OVERLAY=/tmp; AN_TONE_BIN="%s"; AN_TONE_LOGS=/tmp\n'
+            '_an_tone_askpass "%s" || exit 1\n'
+            '_an_tone_env /tmp devel-5.10 /tmp/x.git\n'
+            'env | grep -c hunter2 || true' % (at, at))
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(out.strip().splitlines()[-1], '0',
+                         'the password reached the environment')
+        self.assertNotIn('hunter2', read_file('anolis', 'an_tone.sh'))
+
+    def test_the_password_is_read_from_the_config_not_inherited(self):
+        # test.sh runs an_tone.sh as a script, so anything it does not
+        # export is gone.  It does not export this one on purpose, which
+        # would have left their yum silently installing nothing.
+        source = read_file('anolis', 'an_tone.sh')
+        self.assertIn('.configure', source)
+        self.assertNotIn('export HOST_USER_PWD', source)
+        self.assertNotIn('export HOST_USER_PWD', read_file('anolis', 'test.sh'))
+
+    def test_the_password_file_is_readable_only_by_its_owner(self):
+        at = tempfile.mkdtemp()
+        rc, out = self.shell('unset HOST_USER_PWD; HOST_USER_PWD=hunter2\n'
+                             '_an_tone_askpass "%s"' % at)
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(stat.S_IMODE(os.stat(os.path.join(at, '.pw')).st_mode),
+                         0o600)
+        # And the helper hands it to sudo, which is the only reader.
+        with open(os.path.join(at, 'askpass')) as f:
+            self.assertIn('.pw', f.read())
+
+    def test_the_password_file_does_not_outlive_the_run(self):
+        at = tempfile.mkdtemp()
+        rc, out = self.shell(
+            'unset HOST_USER_PWD; HOST_USER_PWD=hunter2\n'
+            '_an_tone_askpass "%s" || exit 1\n'
+            'AN_TONE_BIN="%s"\n'
+            'test -f "%s/.pw" || { echo never-written; exit 1; }\n'
+            '_an_tone_cleanup\n'
+            'test -f "%s/.pw" && echo still-there || echo gone'
+            % (at, at, at, at))
+        self.assertEqual(rc, 0, out)
+        self.assertIn('gone', out)
+
+    def test_yum_reports_their_real_exit_status(self):
+        # Most of their yum lines go unchecked, but build_perf's does
+        # not: it reports "Failed to install perf dependencies" and
+        # stops.  Swallowing a failure there would turn their clear
+        # message into a compile error hundreds of lines later.
+        self.assertIn('show_result $1 1 "Failed to install perf dependencies"',
+                      read_file('anolis', 'tone-cli', 'tests',
+                                'anck-pack-and-boot', 'anck_build.sh'))
+        at = tempfile.mkdtemp()
+        # A sudo that fails, reached the way the shim reaches it.
+        fake = os.path.join(at, 'bin')
+        os.makedirs(fake)
+        with open(os.path.join(fake, 'sudo'), 'w') as f:
+            f.write('#!/bin/sh\nexit 7\n')
+        os.chmod(os.path.join(fake, 'sudo'), 0o755)
+        rc, out = self.shell(
+            'unset HOST_USER_PWD; HOST_USER_PWD=hunter2\n'
+            '_an_tone_bin "%s/shims" || exit 1\n'
+            '_an_tone_askpass "%s/shims" || exit 1\n'
+            'PATH="%s:$PATH" "%s/shims/yum" install -y anything\n'
+            'echo "rc=$?"' % (at, at, fake, at))
+        self.assertIn('rc=7', out)
+
+    def test_yum_without_a_password_says_so_instead_of_failing(self):
+        # A dependency that is already present must not fail the case,
+        # and most of their yum lines are unchecked anyway.
+        at = tempfile.mkdtemp()
+        rc, out = self.shell(
+            '_an_tone_bin "%s" || exit 1\n'
+            'unset SUDO_ASKPASS\n'
+            '"%s/yum" install -y anything\n'
+            'echo "rc=$?"' % (at, at))
+        self.assertIn('rc=0', out)
+        self.assertIn('no sudo password', out)
+
+    # ---- the sandbox ----
+
+    def test_the_build_does_not_run_as_root(self):
+        # The mount namespace needs root to create; the build must not
+        # have it.  setpriv drops back to the user between the two.
+        source = read_file('anolis', 'an_tone.sh')
+        self.assertIn('setpriv --reuid', source)
+        sandbox = source[source.index('_an_tone_sandbox() {'):]
+        sandbox = sandbox[:sandbox.index('\n}\n')]
+        self.assertIn('unshare --mount', sandbox)
+        self.assertIn('setpriv', sandbox)
+        # Their anck_build.sh must be reached through setpriv, not
+        # before it.
+        self.assertLess(sandbox.index('setpriv'),
+                        sandbox.index('anck_build.sh'))
+
+    def test_path_and_home_survive_the_privilege_drop(self):
+        # sudo keeps the rest of the environment with -E but overrides
+        # PATH from secure_path, which is where the yum shims are, and
+        # always_set_home makes HOME /root, which their rpmbuild would
+        # then try to build under.
+        source = read_file('anolis', 'an_tone.sh')
+        sandbox = source[source.index('_an_tone_sandbox() {'):]
+        sandbox = sandbox[:sandbox.index('\n}\n')]
+        self.assertIn('PATH=', sandbox)
+        self.assertIn('HOME=', sandbox)
+
+    def test_each_case_gets_its_own_anck_build(self):
+        # Their three groups run in parallel on three separate hosts and
+        # do not share /anck_build.  Sharing one here would have them
+        # deleting each other's kernel tree: their anck_build.sh starts
+        # with `rm -rf $anck_repo`.
+        self.assertIn('rm -rf $anck_repo',
+                      read_file('anolis', 'tone-cli', 'tests',
+                                'anck-pack-and-boot', 'anck_build.sh'))
+        source = read_file('anolis', 'an_tone.sh')
+        sandbox = source[source.index('_an_tone_sandbox() {'):]
+        sandbox = sandbox[:sandbox.index('\n}\n')]
+        self.assertIn('${AN_TONE_SCRATCH}/${case_name}', sandbox)
+
+    def test_their_three_groups_all_build_here(self):
+        # Their anck_build.py sends two of the three groups to other
+        # hosts when it is told about them.  The VM has no resources to
+        # build a kernel with, so all three stay here -- which is what
+        # their third group already does.
+        rc, out = self.shell(
+            'AN_TONE_OVERLAY=/tmp AN_TONE_BIN=/tmp AN_TONE_LOGS=/tmp\n'
+            '_an_tone_env /tmp devel-5.10 /tmp/x.git\n'
+            'echo "yes=[${YES_BUILDER}] def=[${DEF_BUILDER}]'
+            ' remote=[${REMOTE_HOST}]"')
+        self.assertEqual(rc, 0, out)
+        self.assertIn('yes=[] def=[] remote=[]', out)
+
+    def test_no_pull_request_is_applied(self):
+        # Their anck_build.sh applies KERNEL_CI_PR_ID with git am on top
+        # of the branch it cloned.  There is no pull request yet -- that
+        # is the point of running this before submission -- and the
+        # clone is already the series, so theirs takes its own
+        # "Skip apply patch" path.
+        self.assertIn('Skip apply patch',
+                      read_file('anolis', 'tone-cli', 'tests',
+                                'anck-pack-and-boot', 'anck_build.sh'))
+        rc, out = self.shell(
+            'AN_TONE_OVERLAY=/tmp AN_TONE_BIN=/tmp AN_TONE_LOGS=/tmp\n'
+            '_an_tone_env /tmp devel-5.10 /tmp/x.git\n'
+            'echo "pr=[${KERNEL_CI_PR_ID}]"')
+        self.assertIn('pr=[]', out)
+
+    # ---- their four markers ----
+
+    def test_their_four_markers_become_four_statuses(self):
+        # parse.awk is where their markers are spelled, and Warning is
+        # one of them: a case they print and still accept.  Folding it
+        # into pass would hide something they flagged and into fail
+        # would reject a series they let through.
+        awk = read_file('anolis', 'tone-cli', 'tests', 'anck-pack-and-boot',
+                        'parse.awk')
+        for marker in ('====PASS:', '====FAIL:', '====SKIP:', '====WARN:'):
+            self.assertIn(marker, awk, marker)
+
+        for marker, want in (('====PASS: build_perf', 0),
+                             ('====FAIL: build_perf', 1),
+                             ('====SKIP: build_perf', 3),
+                             ('====WARN: build_perf', 5),
+                             ('nothing of theirs at all', 2)):
+            rc, out = self.shell('_an_tone_verdict_rc "%s"' % marker)
+            self.assertEqual(rc, want, '%s gave %d: %s' % (marker, rc, out))
+
+    def test_a_failure_outranks_a_warning(self):
+        rc, _ = self.shell(
+            '_an_tone_verdict_rc "====WARN: a\n====FAIL: b"')
+        self.assertEqual(rc, 1)
+
+    # ---- the handoff to their anck-ci-test ----
+
+    def test_the_rpm_directory_is_the_one_their_boot_test_reads(self):
+        # Their anck_boot_test reads /anck_build/ck-build/outputs/0.
+        self.assertIn('anck_rpms_dir="/anck_build/ck-build/outputs/0"',
+                      self.their_run_sh())
+        rc, out = self.shell(
+            'AN_TONE_SCRATCH=/tmp/nowhere-$$\n'
+            'an_tone_rpm_dir && echo found || echo "none"')
+        self.assertEqual(rc, 0, out)
+        self.assertIn('none', out)
+        self.assertIn('ck-build/outputs/0', read_file('anolis', 'an_tone.sh'))
+
+    def test_the_expected_version_is_read_their_way(self):
+        # Their anck_boot_test asks the kernel-headers package, with
+        # this exact query format, and their anck-ci-test compares
+        # uname -r against it.  Left unset, theirs falls back to the
+        # newest installed kernel-headers and warns -- which on the VM
+        # is whatever was there before the series.
+        self.assertIn('%{VERSION}-%{RELEASE}.%{ARCH}', self.their_run_sh())
+        self.assertIn('%{VERSION}-%{RELEASE}.%{ARCH}',
+                      read_file('anolis', 'an_tone.sh'))
+        self.assertIn('EXPECT_KERNEL_VERSION', read_file('anolis', 'test.sh'))
+
+    def test_installing_and_rebooting_reports_no_verdict(self):
+        # On their CI those two steps are the platform's, not a test's:
+        # their anck-ci-test Readme gives the chain as install_rpm ->
+        # reboot -> run_case, and their suite only inspects what it
+        # finds running.  So the helper that does them must not be
+        # deciding a row.
+        boot = read_file('lib', 'boot_test.sh')
+        for verdict in ('pass "', 'fail "', 'skip "'):
+            self.assertNotIn(verdict, boot, verdict)
+        self.assertIn('boot_install_and_reboot', boot)
+        self.assertIn('boot_install_and_reboot', read_file('anolis', 'test.sh'))
+
+    # ---- nothing of ours left in the build ----
+
+    def test_no_make_line_of_ours_survives_in_test_sh(self):
+        # Every one of their build cases is a make line in their
+        # anck_build.sh.  A copy of one here is the drift this replaced:
+        # their build_allno_config does not run `make modules` and ours
+        # did, and their two defconfig cases run `make olddefconfig`
+        # after the defconfig and ours did not.
+        ours = self.code_of('anolis', 'test.sh')
+        for line in ('make clean', 'make allyesconfig', 'make allnoconfig',
+                     'make anolis_defconfig', 'make anolis-debug_defconfig',
+                     'make olddefconfig', 'make dist-configs-check',
+                     'make dist-configs-update', 'make dist-genspec',
+                     'make dist-rpms', 'make modules', 'make -j'):
+            self.assertNotIn(line, ours, '%s is still run by test.sh' % line)
+        # And every one of them is in theirs, so this is not passing
+        # because the names changed.
+        theirs = read_file('anolis', 'tone-cli', 'tests',
+                           'anck-pack-and-boot', 'anck_build.sh')
+        for line in ('make clean', 'make allyesconfig', 'make allnoconfig',
+                     'make anolis_defconfig', 'make olddefconfig',
+                     'make dist-genspec'):
+            self.assertIn(line, theirs, line)
+
+    def test_nothing_un_pins_a_submodule_behind_our_back(self):
+        """`submodule update --remote` is not how we follow them.
+
+        It moves a submodule to the tip of its branch without recording
+        it, so the commit this repository pins and the code actually
+        running stop being the same thing -- and the whole argument for
+        running their scripts instead of copying them is that the pinned
+        commit is what we ran.  A deliberate update is a commit that
+        moves the pointer, not a side effect of running a test.
+
+        This used to sit in the check_kapi reimplementation, which is
+        gone.
+        """
+        for where in ('anolis', 'euler', 'lib'):
+            for name in sorted(os.listdir(os.path.join(PROJECT_ROOT, where))):
+                if not name.endswith('.sh'):
+                    continue
+                body = self.code_of(where, name)
+                self.assertNotIn('--remote', body, '%s/%s' % (where, name))
+
+    def test_the_build_job_count_is_theirs(self):
+        # Their anck_build.sh sets its own, one less than the processor
+        # count, so the tool's BUILD_THREADS no longer applies here.
+        self.assertIn('job_num',
+                      read_file('anolis', 'tone-cli', 'tests',
+                                'anck-pack-and-boot', 'anck_build.sh'))
+        self.assertNotIn('BUILD_THREADS=', read_file('anolis', 'test.sh'))
 
 
 class TestConflictSection(unittest.TestCase):
