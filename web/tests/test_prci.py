@@ -619,7 +619,9 @@ class TestConfigFile(unittest.TestCase):
         self.assertEqual(shown['BUGZILLA_ID'], '12345')
 
     def test_unconfigured_workspace(self):
-        fresh = Workspace(tempfile.mkdtemp())
+        at = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, at, True)
+        fresh = Workspace(at)
         self.assertIsNone(fresh.selected_distro())
         self.assertFalse(fresh.is_configured())
         self.assertIsNone(fresh.read_config())
@@ -2011,6 +2013,18 @@ class TestAnolisTheirScripts(unittest.TestCase):
         if not os.path.isdir(self.SUITE):
             self.skipTest('anolis/tone-cli is not checked out')
 
+    def scratch(self):
+        """A directory that goes away again.
+
+        Several of these hold a kernel clone, and /tmp on a build host
+        is as likely as not a tmpfs -- it is 756G of RAM on this one --
+        so a suite that leaves its scratch behind is spending memory on
+        every run.
+        """
+        at = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, at, True)
+        return at
+
     def shell(self, body, **env):
         """Run body with an_tone.sh sourced, and hand back what it said.
 
@@ -2147,7 +2161,7 @@ class TestAnolisTheirScripts(unittest.TestCase):
 
     def a_kernel(self, version='5.10.134'):
         """A git repository that answers `make -s kernelversion`."""
-        tree = tempfile.mkdtemp()
+        tree = self.scratch()
         self.addCleanup(shutil.rmtree, tree, True)
         with open(os.path.join(tree, 'Makefile'), 'w') as f:
             f.write('kernelversion:\n\t@echo %s\n' % version)
@@ -2166,7 +2180,7 @@ class TestAnolisTheirScripts(unittest.TestCase):
         # their two Kconfig checks runs.  The user's tree is on a pull
         # request branch instead, so it gets a repository that has both.
         tree = self.a_kernel()
-        bare = tempfile.mkdtemp() + '/cloud-kernel.git'
+        bare = self.scratch() + '/cloud-kernel.git'
         rc, out = self.shell('_an_tone_repo "%s" devel-5.10 "%s"'
                              % (tree, bare))
         self.assertEqual(rc, 0, out)
@@ -2181,7 +2195,7 @@ class TestAnolisTheirScripts(unittest.TestCase):
         # A kernel is two gigabytes of history and this runs once per
         # case.  An alternates file lends it the user's object store.
         tree = self.a_kernel()
-        bare = tempfile.mkdtemp() + '/cloud-kernel.git'
+        bare = self.scratch() + '/cloud-kernel.git'
         rc, out = self.shell('_an_tone_repo "%s" devel-5.10 "%s"'
                              % (tree, bare))
         self.assertEqual(rc, 0, out)
@@ -2202,7 +2216,7 @@ class TestAnolisTheirScripts(unittest.TestCase):
                 stdout=subprocess.PIPE).stdout.decode()
 
         before = state()
-        bare = tempfile.mkdtemp() + '/cloud-kernel.git'
+        bare = self.scratch() + '/cloud-kernel.git'
         rc, out = self.shell('_an_tone_repo "%s" devel-5.10 "%s"'
                              % (tree, bare))
         self.assertEqual(rc, 0, out)
@@ -2239,7 +2253,7 @@ class TestAnolisTheirScripts(unittest.TestCase):
         # is the one that needs /anck_build.  Their run.sh and their
         # anck_build.py are what decide and what drives, and they are
         # copied byte for byte.
-        at = tempfile.mkdtemp() + '/suite'
+        at = self.scratch() + '/suite'
         rc, out = self.shell('_an_tone_overlay "%s"' % at)
         self.assertEqual(rc, 0, out)
 
@@ -2265,7 +2279,7 @@ class TestAnolisTheirScripts(unittest.TestCase):
             ['git', '-C', os.path.join(PROJECT_ROOT, 'anolis', 'tone-cli'),
              'status', '--porcelain'],
             stdout=subprocess.PIPE).stdout.decode()
-        at = tempfile.mkdtemp() + '/suite'
+        at = self.scratch() + '/suite'
         rc, out = self.shell('_an_tone_overlay "%s"' % at)
         self.assertEqual(rc, 0, out)
         after = subprocess.run(
@@ -2286,7 +2300,7 @@ class TestAnolisTheirScripts(unittest.TestCase):
         # HOST_USER_PWD is set here as a plain shell variable and not
         # through the environment, because that is how it arrives: read
         # out of .configure, never exported.
-        at = tempfile.mkdtemp()
+        at = self.scratch()
         rc, out = self.shell(
             'unset HOST_USER_PWD; HOST_USER_PWD=hunter2\n'
             'AN_TONE_OVERLAY=/tmp; AN_TONE_BIN="%s"; AN_TONE_LOGS=/tmp\n'
@@ -2308,7 +2322,7 @@ class TestAnolisTheirScripts(unittest.TestCase):
         self.assertNotIn('export HOST_USER_PWD', read_file('anolis', 'test.sh'))
 
     def test_the_password_file_is_readable_only_by_its_owner(self):
-        at = tempfile.mkdtemp()
+        at = self.scratch()
         rc, out = self.shell('unset HOST_USER_PWD; HOST_USER_PWD=hunter2\n'
                              '_an_tone_askpass "%s"' % at)
         self.assertEqual(rc, 0, out)
@@ -2319,7 +2333,7 @@ class TestAnolisTheirScripts(unittest.TestCase):
             self.assertIn('.pw', f.read())
 
     def test_the_password_file_does_not_outlive_the_run(self):
-        at = tempfile.mkdtemp()
+        at = self.scratch()
         rc, out = self.shell(
             'unset HOST_USER_PWD; HOST_USER_PWD=hunter2\n'
             '_an_tone_askpass "%s" || exit 1\n'
@@ -2339,7 +2353,7 @@ class TestAnolisTheirScripts(unittest.TestCase):
         self.assertIn('show_result $1 1 "Failed to install perf dependencies"',
                       read_file('anolis', 'tone-cli', 'tests',
                                 'anck-pack-and-boot', 'anck_build.sh'))
-        at = tempfile.mkdtemp()
+        at = self.scratch()
         # A sudo that fails, reached the way the shim reaches it.
         fake = os.path.join(at, 'bin')
         os.makedirs(fake)
@@ -2357,7 +2371,7 @@ class TestAnolisTheirScripts(unittest.TestCase):
     def test_yum_without_a_password_says_so_instead_of_failing(self):
         # A dependency that is already present must not fail the case,
         # and most of their yum lines are unchecked anyway.
-        at = tempfile.mkdtemp()
+        at = self.scratch()
         rc, out = self.shell(
             '_an_tone_bin "%s" || exit 1\n'
             'unset SUDO_ASKPASS\n'
@@ -2419,7 +2433,7 @@ class TestAnolisTheirScripts(unittest.TestCase):
         # build case fails under the service with no hint as to why.
         if not os.path.isdir('/anck_build'):
             self.skipTest('/anck_build has not been created yet')
-        at = tempfile.mkdtemp()
+        at = self.scratch()
         self.addCleanup(shutil.rmtree, at, True)
         open(os.path.join(at, 'proof'), 'w').close()
         rc, out = self.shell(
@@ -2436,7 +2450,7 @@ class TestAnolisTheirScripts(unittest.TestCase):
         # delete would wedge every later run.
         if not os.path.isdir('/anck_build'):
             self.skipTest('/anck_build has not been created yet')
-        at = tempfile.mkdtemp()
+        at = self.scratch()
         self.addCleanup(shutil.rmtree, at, True)
         rc, out = self.shell(
             'setpriv --no-new-privs unshare --user --map-root-user '
@@ -2525,7 +2539,7 @@ class TestAnolisTheirScripts(unittest.TestCase):
 
     def rpms_at(self, layout):
         """A scratch with their RPMs laid out under outputs/<layout>."""
-        at = tempfile.mkdtemp()
+        at = self.scratch()
         self.addCleanup(shutil.rmtree, at, True)
         where = os.path.join(at, 'anck_rpm_build', 'ck-build', 'outputs',
                              layout)
@@ -2742,7 +2756,7 @@ class TestAnolisTheirScripts(unittest.TestCase):
 
     def a_ck_build(self, *branches):
         """A stand-in for their ck-build repository, with given branches."""
-        at = tempfile.mkdtemp() + '/ck-build.git'
+        at = self.scratch() + '/ck-build.git'
         subprocess.run(['git', 'init', '-q', '--bare', at], check=True)
         tree = self.a_kernel()
         head = subprocess.run(['git', '-C', tree, 'rev-parse', 'HEAD'],

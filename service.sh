@@ -169,7 +169,21 @@ Environment="PYTHONPATH=$PROJECT_ROOT"
 Environment="PYTHONUNBUFFERED=1"
 
 # Security
-NoNewPrivileges=true
+#
+# NoNewPrivileges is deliberately off.  The distros' own build scripts
+# install their build dependencies as root -- Anolis's anck_build.sh
+# runs yum-builddep, openEuler's installs its own -- and the boot test
+# installs an RPM on the VM.  The flag forbids a setuid binary from
+# gaining privilege at all, so under it sudo refuses before it even
+# asks for a password, and every Anolis build case failed on
+#
+#   sudo: The "no new privileges" flag is set, which prevents sudo
+#   from running as root.
+#
+# while passing from a shell.  The sudo password in each distro's
+# .configure is there for exactly these installs; turning this on
+# makes it unusable and the failure is a long way from the cause.
+NoNewPrivileges=false
 PrivateTmp=true
 
 [Install]
