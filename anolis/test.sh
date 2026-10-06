@@ -62,6 +62,11 @@ PROGRESS_TOTALS="${WORKDIR}/.prci/progress"
 # verdict is read from and must stay exactly as their scripts wrote it.
 # shellcheck source=../lib/progress.sh
 . "${WORKDIR}/lib/progress.sh"
+# Counts the warnings their build raises and says which of them are the
+# series'.  Nothing is filtered here: their scripts do not read warnings,
+# so there is no verdict to protect and no reason to hide any.
+# shellcheck source=../lib/warnings.sh
+. "${WORKDIR}/lib/warnings.sh"
 
 # Function to list available tests
 list_tests() {
@@ -221,6 +226,10 @@ run_their_build_case() {
   with_progress "${scratch}" "${log}" "${stem}" \
                 "$(bash "${SCRIPT_DIR}/an_tone.sh" --case-log "${theirs}")" \
                 bash "${SCRIPT_DIR}/an_tone.sh" "${theirs}" || rc=$?
+
+  # Appended after their output rather than mixed into it, so their
+  # verdict is read from the log exactly as their script wrote it.
+  warnings_summarise "${log}" "${LINUX_SRC_PATH}"
 
   case ${rc} in
     0) pass "${ours}" ;;

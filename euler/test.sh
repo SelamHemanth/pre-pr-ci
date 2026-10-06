@@ -60,6 +60,8 @@ PROGRESS_TOTALS="${WORKDIR}/.prci/progress"
 
 # shellcheck source=../lib/progress.sh
 . "${WORKDIR}/lib/progress.sh"
+# shellcheck source=../lib/warnings.sh
+. "${WORKDIR}/lib/warnings.sh"
 # oe_hulk.sh sources oe_build.sh for the host-side knowledge their
 # scripts are handed by Jenkins; the checks themselves come out of the
 # submodule.

@@ -402,64 +402,11 @@ _hulk_disable_werror_config() {
 # The row can still fail, and fails for the thing it is for: a warning
 # in a file the series touched.  Nothing is dropped when the series
 # cannot be determined, and `make` errors are always kept.
-_hulk_touched_files() {
-  local back="${NUM_PATCHES:-0}"
-  [ "${back}" -gt 0 ] || return 0
-  git rev-parse --verify -q "HEAD~${back}" >/dev/null 2>&1 || return 0
-  git diff --name-only "HEAD~${back}" HEAD 2>/dev/null
-}
-
-# Keep only the diagnostics that name a file the series touched.
 #
-# gcc reports in groups -- a "file:line:col: warning:" line, then the
-# source it is pointing at, then any "note:" lines -- so the decision is
-# made once per group and the rest of the group follows it.
-#
-# Paths are normalised before being compared because the kernel's own
-# are not: hinic5 compiles through
-# drivers/.../nic/linux/../../../sdk/knldk/lld/hinic5_lld.c, which is
-# the same file git names without the dot-dots.
-_HULK_ONLY_OURS=$(cat <<'AWK'
-function norm(p,   parts, m, i, out, k, r) {
-  m = split(p, parts, "/"); k = 0
-  for (i = 1; i <= m; i++) {
-    if (parts[i] == "..") { if (k > 0) k-- }
-    else if (parts[i] != "." && parts[i] != "") { out[++k] = parts[i] }
-  }
-  r = ""
-  for (i = 1; i <= k; i++) r = r (i > 1 ? "/" : "") out[i]
-  return r
-}
-BEGIN {
-  n = split(TOUCHED, a, "\n")
-  for (i = 1; i <= n; i++) if (a[i] != "") ours[norm(a[i])] = 1
-  keep = 1
-}
-/^[^ \t]+:[0-9]+:[0-9]+: (warning|note|error):/ ||
-/^[^ \t]+: (In function|In file included from)/ {
-  f = $0; sub(/:.*/, "", f)
-  keep = (norm(f) in ours)
-}
-# A build that stopped is reported whatever broke it: the row that
-# failed has already said so, and hiding why would be worse than noise.
-/^make(\[[0-9]+\])?:/ { print; next }
-{ if (keep) print }
-AWK
-)
-
-_hulk_keep_only_ours() {
-  local out="$1" before="$2" touched tmp
-  touched=$(_hulk_touched_files)
-  # No series to ask about, or no way to ask: their file stands.
-  [ -n "${touched}" ] || return 0
-  [ -s "${out}" ] || return 0
-
-  tmp=$(mktemp) || return 0
-  head -c "${before}" "${out}" > "${tmp}" 2>/dev/null
-  tail -c "+$((before + 1))" "${out}" 2>/dev/null \
-    | awk -v TOUCHED="${touched}" "${_HULK_ONLY_OURS}" >> "${tmp}"
-  mv -f "${tmp}" "${out}"
-}
+# The mechanism is in lib/warnings.sh, because Anolis's builds raise the
+# same warnings on the same host and had no answer for them.  What
+# differs is what is done about it, and that stays here: openEuler is
+# the one whose script reads the file to decide.
 
 # Around each of their builds, so that what a build appended is judged
 # as soon as it appends it.  Their check_kabi and check_defconfig write
@@ -476,7 +423,7 @@ _hulk_shim_builds() {
       before=\$(wc -c < \"\${out}\" 2>/dev/null) || before=0
       _hulk_their_${f}
       rc=\$?
-      _hulk_keep_only_ours \"\${out}\" \"\${before}\"
+      warnings_keep_only_ours \"\${out}\" \"\${before}\"
       return \${rc}
     }"
   done

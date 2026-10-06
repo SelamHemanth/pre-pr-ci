@@ -1476,7 +1476,8 @@ class TestOpenEulerTheirScripts(unittest.TestCase):
 
     def shell(self, body, **env):
         """Run body with oe_hulk.sh sourced, and hand back what it said."""
-        script = '. "%s/euler/oe_hulk.sh"\n%s' % (PROJECT_ROOT, body)
+        script = ('. "%s/lib/warnings.sh"\n. "%s/euler/oe_hulk.sh"\n%s'
+                  % (PROJECT_ROOT, PROJECT_ROOT, body))
         done = subprocess.run(
             ['bash', '-c', script],
             env=dict(os.environ,
@@ -1903,7 +1904,7 @@ class TestOpenEulerTheirScripts(unittest.TestCase):
     )
 
     def filtered(self, text, touched):
-        """What survives _hulk_keep_only_ours of a build's own output."""
+        """What survives warnings_keep_only_ours of a build's own output."""
         out = tempfile.NamedTemporaryFile('w', delete=False)
         out.write(text)
         out.close()
@@ -1912,7 +1913,7 @@ class TestOpenEulerTheirScripts(unittest.TestCase):
             'git() { case "$*" in *rev-parse*) echo deadbeef ;;'
             '                     *diff*) printf "%%s\\n" %(touched)s ;;'
             ' esac; }\n'
-            '_hulk_keep_only_ours %(out)s 0'
+            'warnings_keep_only_ours %(out)s 0'
             % {'touched': ' '.join("'%s'" % t for t in touched) or "''",
                'out': out.name},
             NUM_PATCHES='1')
@@ -1974,7 +1975,7 @@ class TestOpenEulerTheirScripts(unittest.TestCase):
             '_hulk_load "%s/checkkabi.sh"\n'
             '_hulk_shim_builds\n'
             'declare -f check_kabi check_defconfig | grep -c '
-            '_hulk_keep_only_ours' % (self.SUB, self.SUB))
+            'warnings_keep_only_ours' % (self.SUB, self.SUB))
         self.assertIn('0', out)
         self.assertNotEqual(rc, 0)  # grep -c found none
 
@@ -3758,6 +3759,131 @@ class TestProgressBar(unittest.TestCase):
         self.assertIn('_PROGRESS_RE', observe)
         self.assertLess(observe.index('_PROGRESS_RE'),
                         observe.index("job['last_line']"))
+
+
+class TestCountingWarnings(unittest.TestCase):
+    """What a build's warnings amount to, for the distro that ignores them.
+
+    A 5.10 tree under gcc 12.3 raises hundreds of warnings that predate
+    any series: -Wdangling-pointer and -Warray-compare did not exist
+    when the code was written.  openEuler's gate fails on any of them,
+    so there they are filtered before their script reads the file.
+    Anolis never looks, so there nothing is filtered and a count is
+    appended instead -- read as a list, the one warning that matters is
+    buried in the ones that never will.
+    """
+
+    LOG = (
+        "arch/x86/kvm/mmu/mmu.c:4321:9: warning: unused variable 'x' "
+        "[-Wunused-variable]\n"
+        "drivers/pci/rom.c:107:13: warning: comparison of distinct "
+        "pointer types lacks a cast\n"
+        "arch/x86/boot/bioscall.S:35: Warning: found `movsd'\n"
+        "samples/ftrace/ftrace-direct-multi.o: warning: objtool: "
+        "my_tramp()+0x10: 'naked' return found in RETHUNK build\n"
+    )
+
+    def summarised(self, text, touched):
+        """The lines warnings_summarise appends to a log."""
+        log = tempfile.NamedTemporaryFile('w', delete=False, suffix='.log')
+        log.write(text)
+        log.close()
+        self.addCleanup(os.unlink, log.name)
+        script = (
+            '. "%(root)s/lib/warnings.sh"\n'
+            'git() { case "$*" in *rev-parse*) echo deadbeef ;;'
+            '                     *diff*) printf "%%s\\n" %(touched)s ;;'
+            ' esac; }\n'
+            'warnings_summarise %(log)s'
+            % {'root': PROJECT_ROOT, 'log': log.name,
+               'touched': ' '.join("'%s'" % t for t in touched) or "''"})
+        subprocess.run(['bash', '-c', script],
+                       env=dict(os.environ, NUM_PATCHES='1'),
+                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        with open(log.name) as f:
+            return [l for l in f.read().splitlines()
+                    if l.startswith('[prci]')]
+
+    def test_their_own_output_is_left_exactly_as_they_wrote_it(self):
+        # Their verdict is read back out of this file.  The count goes
+        # after it, never into it.
+        log = tempfile.NamedTemporaryFile('w', delete=False, suffix='.log')
+        log.write(self.LOG)
+        log.close()
+        self.addCleanup(os.unlink, log.name)
+        subprocess.run(
+            ['bash', '-c',
+             '. "%s/lib/warnings.sh"\n'
+             'git() { case "$*" in *rev-parse*) echo deadbeef ;;'
+             '                     *diff*) echo fs/foo.c ;; esac; }\n'
+             'warnings_summarise %s' % (PROJECT_ROOT, log.name)],
+            env=dict(os.environ, NUM_PATCHES='1'),
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        with open(log.name) as f:
+            kept = f.read()
+        self.assertTrue(kept.startswith(self.LOG), 'their output was edited')
+
+    def test_a_warning_the_series_did_not_cause_is_counted_not_blamed(self):
+        said = '\n'.join(self.summarised(self.LOG, ['fs/foo.c']))
+        self.assertIn('none of them in a file this series', said)
+        self.assertNotIn('rom.c', said, 'a stranger\'s warning was listed')
+
+    def test_a_warning_the_series_did_cause_is_named(self):
+        said = '\n'.join(
+            self.summarised(self.LOG, ['arch/x86/kvm/mmu/mmu.c']))
+        self.assertIn('1 of them in a file this series', said)
+        self.assertIn("mmu.c:4321:9: warning: unused variable 'x'", said)
+        # And what it would mean elsewhere, since one distro fails on it.
+        self.assertIn("openEuler's CI fails a build for any warning", said)
+
+    def test_both_spellings_of_a_warning_are_counted(self):
+        # gcc writes "file:line:col: warning:"; the assembler writes
+        # "file:line: Warning:" with no column and a capital; objtool
+        # reports against the object file.  All four lines above count.
+        said = '\n'.join(self.summarised(self.LOG, ['fs/foo.c']))
+        self.assertIn('4 compiler warnings', said)
+
+    def test_an_error_is_counted_as_an_error(self):
+        # build_perf is the one case that compiles with -Werror, so
+        # there every diagnostic arrives as an error.  Whose files they
+        # are in is the first thing worth knowing about a failure.
+        said = '\n'.join(self.summarised(
+            "util/scripting-engines/trace-event-python.c:1642:9: error: "
+            "'PySys_SetArgv' is deprecated [-Werror=deprecated-declarations]"
+            "\n", ['fs/foo.c']))
+        self.assertIn('1 compiler errors', said)
+        self.assertNotIn('warnings and', said)
+
+    def test_nothing_is_claimed_when_the_series_cannot_be_determined(self):
+        said = '\n'.join(self.summarised(self.LOG, []))
+        self.assertIn('cannot', said)
+        self.assertNotIn('none of them in a file', said)
+
+    def test_a_build_with_nothing_to_say_says_nothing(self):
+        self.assertEqual(
+            self.summarised('build_allno_config: pass\n', ['fs/foo.c']), [])
+
+    def test_both_runners_share_one_implementation(self):
+        # It was openEuler's alone, which is why Anolis's logs had no
+        # answer for the same warnings on the same host.
+        for distro in ('euler', 'anolis'):
+            self.assertIn('lib/warnings.sh',
+                          read_file(distro, 'test.sh'),
+                          '%s does not load the shared one' % distro)
+        hulk = read_file('euler', 'oe_hulk.sh')
+        self.assertIn('warnings_keep_only_ours', hulk)
+        self.assertNotIn('_HULK_ONLY_OURS', hulk, 'the old copy is still here')
+
+    def test_anolis_counts_after_every_build_case(self):
+        # One call in their shared runner rather than per case, so a
+        # case added to their suite is covered by having been added.
+        source = read_file('anolis', 'test.sh')
+        runner = source[source.index('run_their_build_case()'):]
+        runner = runner[:runner.index('\n}')]
+        self.assertIn('warnings_summarise', runner)
+        self.assertLess(runner.index('warnings_summarise'),
+                        runner.index('case ${rc} in'),
+                        'the count lands after the verdict is reported')
 
 
 class TestCopyingALog(unittest.TestCase):
