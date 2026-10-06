@@ -3952,6 +3952,41 @@ class TestCopyingALog(unittest.TestCase):
         self.assertIn('logCopied = true', self.copy)
 
 
+class TestTheTerminalFillsTheWindow(unittest.TestCase):
+    """The shell is as tall as what is left of the window below it.
+
+    It used to be 60vh, which left a band of empty page under it on a
+    tall screen and cut it short on a laptop.
+    """
+
+    def setUp(self):
+        with open(os.path.join(PROJECT_ROOT, 'web', 'templates',
+                               'index.html')) as f:
+            self.page = f.read()
+        self.fit = self.page[self.page.index('fitTerm(again = true)'):]
+        self.fit = self.fit[:self.fit.index('\n    buildTerm()')]
+
+    def test_the_height_is_not_a_fraction_of_the_window(self):
+        self.assertNotIn('.term-host { height: 60vh', self.page)
+        self.assertIn('--term-h', self.page)
+
+    def test_the_room_below_is_measured_not_guessed(self):
+        # The footer is asked how tall it is, so a change to it does not
+        # leave the shell overlapping or short.
+        self.assertIn("querySelector('footer')", self.fit)
+        self.assertIn('offsetHeight', self.fit)
+
+    def test_a_hidden_shell_is_not_measured(self):
+        # A hidden element has a top of zero, which would make the shell
+        # the height of the whole window.
+        self.assertIn('offsetParent', self.fit)
+
+    def test_it_measures_again_once_the_panel_has_settled(self):
+        # The panel lifts as it opens, so the first measurement is taken
+        # against a box that is still moving.
+        self.assertIn('this.fitTerm(false)', self.fit)
+
+
 class TestExplainingAMissingPackage(unittest.TestCase):
     """Why one of their BuildRequires cannot be satisfied here.
 

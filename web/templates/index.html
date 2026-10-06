@@ -213,11 +213,11 @@ body { transition: background-color var(--t-base), color var(--t-base); }
         color-mix(in srgb, var(--accent) 65%, #a855f7) 0%,
         transparent 68%);
     filter: blur(70px);
-    opacity: .16;
+    opacity: .08;
     transform: translate3d(var(--px, 50vw), var(--py, 45vh), 0);
     will-change: transform;
 }
-[data-theme="dark"] .cursor-light { opacity: .26; filter: blur(84px); }
+[data-theme="dark"] .cursor-light { opacity: .13; filter: blur(84px); }
 /* It is ambience, not a cursor: with no pointer on the page there is
    nothing for it to follow and it should not sit in the middle
    pretending. */
@@ -231,10 +231,10 @@ body { transition: background-color var(--t-base), color var(--t-base); }
     position: absolute; display: block;
     border-radius: 50%;
     filter: blur(90px);
-    opacity: .36;
+    opacity: .18;
     will-change: transform;
 }
-[data-theme="dark"] .ambient i { opacity: .40; filter: blur(110px); }
+[data-theme="dark"] .ambient i { opacity: .20; filter: blur(110px); }
 
 .ambient .a1 {
     width: 46vmax; height: 46vmax; top: -6vmax; left: -4vmax;
@@ -1059,7 +1059,7 @@ body.dragging .log-panel { transition: none; }
    that left a band of empty page under the shell on a tall screen and
    cut it short on a laptop; the figure is measured instead, in
    fitTerm(). */
-.term-host { height: var(--term-h, 60vh); min-height: 240px; }
+.term-host { height: var(--term-h, calc(100vh - 260px)); min-height: 360px; }
 .term-bar {
     display: flex; align-items: center; gap: 10px;
     padding: 11px 16px; border-bottom: 1px solid var(--glass-edge);
@@ -2950,16 +2950,30 @@ createApp({
     // The shell is given whatever is left of the window under it, and
     // xterm is told afterwards: it works in whole rows and columns, so
     // it has to re-measure the box before it can fill it.
-    fitTerm() {
+    fitTerm(again = true) {
       const host = this.$refs.termHost;
-      if (host) {
-        // The gap is the footer and the page's own bottom padding, which
-        // the shell should stop above rather than slide under.
-        const top = host.getBoundingClientRect().top;
-        host.style.setProperty(
-          '--term-h', Math.max(240, innerHeight - top - 58) + 'px');
+      if (!host) return;
+
+      // Measuring a hidden element gives a top of zero and a shell the
+      // height of the whole window, so wait until it is on the page.
+      if (!host.offsetParent) {
+        if (again) setTimeout(() => this.fitTerm(false), 140);
+        return;
       }
+
+      // The gap below is the footer, asked how tall it is rather than
+      // guessed at, plus the room the page leaves under it.
+      const footer = document.querySelector('footer');
+      const gap = (footer ? footer.offsetHeight : 40) + 18;
+      const top = host.getBoundingClientRect().top;
+      host.style.setProperty(
+        '--term-h', Math.round(Math.max(360, innerHeight - top - gap)) + 'px');
       if (this._fit) try { this._fit.fit(); } catch (_) {}
+
+      // The panel fades and lifts as it opens, so the first measurement
+      // is taken against a box that is still moving.  One more once it
+      // has settled, and the shell ends up where it belongs.
+      if (again) setTimeout(() => this.fitTerm(false), 320);
     },
 
     buildTerm() {
