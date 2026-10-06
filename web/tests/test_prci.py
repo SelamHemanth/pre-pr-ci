@@ -3952,6 +3952,105 @@ class TestCopyingALog(unittest.TestCase):
         self.assertIn('logCopied = true', self.copy)
 
 
+class TestExplainingAMissingPackage(unittest.TestCase):
+    """Why one of their BuildRequires cannot be satisfied here.
+
+    Their kernel.spec asks for a name Red Hat publishes and Anolis does
+    not, with no Provides linking the two, so yum says "Some packages
+    could not be found" and names nothing.  Four unexplained lines at
+    the top of every case log, about something that does not matter.
+    """
+
+    def explain(self, argv, rpm='', repoquery='', installed=''):
+        """pkg_explain's output, with the host's tools stubbed.
+
+        Their real answers are this host's, and this host is not the one
+        the next person runs these on.
+        """
+        script = (
+            '. "%(root)s/lib/pkgexplain.sh"\n'
+            'rpm() { case "$*" in'
+            '  *--whatprovides*) printf "%%s" %(rpm)s ;;'
+            '  *-qa*) printf "%%s" %(installed)s ;;'
+            ' esac; }\n'
+            'dnf() { printf "%%s" %(repoquery)s; }\n'
+            'pkg_explain %(argv)s\n'
+            % {'root': PROJECT_ROOT, 'argv': argv,
+               'rpm': "'%s'" % rpm, 'repoquery': "'%s'" % repoquery,
+               'installed': "'%s'" % installed})
+        done = subprocess.run(['bash', '-c', script],
+                              stdout=subprocess.PIPE,
+                              stderr=subprocess.STDOUT)
+        return done.stdout.decode()
+
+    def test_a_name_that_resolves_is_not_mentioned(self):
+        # Silence is the usual answer, and the whole point: a command
+        # can fail for its own reasons and inventing a dependency
+        # problem to explain a network timeout is worse than nothing.
+        said = self.explain('install -y gcc bash')
+        self.assertEqual(said.strip(), '')
+
+    def wanted(self, argv):
+        """The names a command was asking for, as _pkg_wanted sees them."""
+        done = subprocess.run(
+            ['bash', '-c', '. "%s/lib/pkgexplain.sh"\n_pkg_wanted %s'
+             % (PROJECT_ROOT, argv)],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        return done.stdout.decode().split()
+
+    def test_the_verb_is_not_taken_for_a_package(self):
+        # "install" is not something to look up.  Recognised by
+        # position, since the verbs are theirs to choose.
+        self.assertEqual(self.wanted('install -y gcc bash'),
+                         ['gcc', 'bash'])
+        self.assertEqual(self.wanted('remove --setopt=x=1 tmux'), ['tmux'])
+
+    def test_a_name_no_repository_offers_is_explained_away(self):
+        said = self.explain('install -y vendor-rpm-config',
+                            rpm='no package provides vendor-rpm-config\n',
+                            installed='system-rpm-config\nbash\n')
+        self.assertIn('vendor-rpm-config is not a package on this host',
+                      said)
+        self.assertIn('system-rpm-config is installed and named like it',
+                      said)
+        self.assertIn('nothing is actually missing', said)
+
+    def test_nothing_is_suggested_when_nothing_matches(self):
+        said = self.explain('install -y something-else',
+                            rpm='no package provides something-else\n',
+                            installed='bash\ncoreutils\n')
+        self.assertIn('cannot be met by name here', said)
+        self.assertNotIn('named like it', said,
+                         'a lookalike was invented')
+
+    def test_a_package_that_was_merely_not_reached_says_so(self):
+        # Available and absent is a different story, and not one to
+        # explain away: their command should have installed it.
+        said = self.explain('install -y tmux',
+                            rpm='no package provides tmux\n',
+                            repoquery='tmux-3.3a-4.an23.x86_64\n')
+        self.assertIn('is in a repository but was not installed', said)
+        self.assertNotIn('nothing is actually missing', said)
+
+    def test_no_package_name_is_written_down_anywhere(self):
+        # The whole requirement: this has to be right on a host and a
+        # tree it was not written for.
+        with open(os.path.join(PROJECT_ROOT, 'lib', 'pkgexplain.sh')) as f:
+            source = f.read()
+        for name in ('redhat-rpm-config', 'system-rpm-config'):
+            self.assertNotIn(name, source, 'a package name was hardcoded')
+        # Their spec is asked what it wants, by rpm's own parser.
+        self.assertIn('rpmspec -q --buildrequires', source)
+
+    def test_it_is_asked_only_after_their_command_fails(self):
+        with open(os.path.join(PROJECT_ROOT, 'anolis', 'an_tone.sh')) as f:
+            shim = f.read()
+        self.assertIn('pkg_explain', shim)
+        guard = shim[:shim.index('pkg_explain')]
+        self.assertIn('rc}" -ne 0', guard,
+                      'it runs whether or not their command failed')
+
+
 class TestHostFitness(unittest.TestCase):
     """Whether this host can test the tree, asked before anything runs.
 

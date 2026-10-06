@@ -210,7 +210,15 @@ if [ -n "\${SUDO_ASKPASS:-}" ] && [ -x "\${SUDO_ASKPASS}" ]; then
   # failure here would turn their clear message into a compile error
   # hundreds of lines later.
   sudo -A "/usr/bin/${tool}" "\$@"
-  exit \$?
+  rc=\$?
+  # yum says "Some packages could not be found" and names none of them,
+  # which put four unexplained lines at the top of every case log.
+  # Only on failure, and only if it can work out something true to say.
+  if [ "\${rc}" -ne 0 ] && [ -r "${PRCI_ROOT}/lib/pkgexplain.sh" ]; then
+    . "${PRCI_ROOT}/lib/pkgexplain.sh"
+    pkg_explain "\$@"
+  fi
+  exit "\${rc}"
 fi
 echo "[prci] root is not reachable from here, so nothing was installed." >&2
 echo "[prci] if a case fails on a missing header, set a sudo password" >&2
