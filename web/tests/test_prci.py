@@ -4181,6 +4181,22 @@ class TestHostFitness(unittest.TestCase):
                         script.index('Running specific test'),
                         'the host is checked after tests have started')
 
+    def test_the_command_line_and_the_page_agree(self):
+        # A page that forbids what the command line allows is worse than
+        # either rule by itself: preparing from a terminal would leave
+        # the series in a state the page then refuses to act on.
+        for name in ('test.sh', 'prepare.sh'):
+            with open(os.path.join(PROJECT_ROOT, 'anolis', name)) as f:
+                body = f.read()
+            self.assertIn('hostcheck_report', body,
+                          '%s never asks whether it can run' % name)
+        with open(os.path.join(PROJECT_ROOT, 'web', 'server.py')) as f:
+            server = f.read()
+        prepare = server[server.index('def api_prepare'):]
+        prepare = prepare[:prepare.index('@app.route', 1)]
+        self.assertIn('fit_distro()', prepare,
+                      'the page offers a prepare the script would refuse')
+
     def test_the_interface_refuses_as_well_as_greys_out(self):
         # A grey button is a courtesy; the refusal has to be the
         # server's, or a stale page starts a run that cannot pass.

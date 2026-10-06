@@ -46,6 +46,13 @@ HEAD_ID_FILE="${WORKDIR}/.head_commit_id"
 . "${SCRIPT_DIR}/../lib/log.sh"
 # shellcheck source=../lib/worktree.sh
 . "${SCRIPT_DIR}/../lib/worktree.sh"
+# Whether this host can build the tree at all.  Asked here as well as in
+# test.sh, and for the same reason the web interface asks it before
+# offering the button: there is no point preparing a series for a machine
+# that cannot go on to test it, and the two answers have to agree or the
+# page forbids what the command line allows.
+# shellcheck source=../lib/hostcheck.sh
+. "${SCRIPT_DIR}/../lib/hostcheck.sh"
 
 : "${LINUX_SRC_PATH:?missing in config}"
 : "${SIGNER_NAME:?missing in config}"
@@ -53,6 +60,15 @@ HEAD_ID_FILE="${WORKDIR}/.head_commit_id"
 : "${ANBZ_ID:?missing in config}"
 : "${NUM_PATCHES:?missing in config}"
 : "${BUILD_THREADS:=4}"
+
+if ! HOSTCHECK_WHY=$(hostcheck_report "${LINUX_SRC_PATH}"); then
+  echo -e "${YELLOW}⚠ Not preparing: this host cannot test this kernel${NC}"
+  echo ""
+  echo "${HOSTCHECK_WHY}"
+  echo ""
+  echo -e "${YELLOW}Your commits are untouched.${NC}"
+  exit 0
+fi
 
 mkdir -p "${PATCHES_DIR}" "${BKP_DIR}" "${LOGS_DIR}"
 
