@@ -38,6 +38,7 @@ PROJECT_ROOT = os.path.dirname(WEB_DIR)
 if WEB_DIR not in sys.path:
     sys.path.insert(0, WEB_DIR)
 
+from prci import hostcheck                                  # noqa: E402
 from prci import jobs                                       # noqa: E402
 from prci import readiness                                  # noqa: E402
 from prci import repo                                       # noqa: E402
@@ -3949,6 +3950,176 @@ class TestCopyingALog(unittest.TestCase):
         self.assertNotIn("toast('ok'", self.copy,
                          'a toast for something the button already shows')
         self.assertIn('logCopied = true', self.copy)
+
+
+class TestHostFitness(unittest.TestCase):
+    """Whether this host can test the tree, asked before anything runs.
+
+    A 5.10 tree cannot be measured by version numbers: it states the
+    tools it needs as minimums and Anolis 23 clears every one of them,
+    which is exactly why their own CI never notices that perf will not
+    compile here.  So the verdict is a probe and the versions are only
+    the explanation -- and both come out of their tree, not out of a
+    table of ours.
+    """
+
+    def tree(self, warnings='EXTRA_WARNINGS := -Wswitch-default\n',
+             doc=None):
+        """A kernel tree with as much of their layout as this needs."""
+        root = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        with open(os.path.join(root, 'Makefile'), 'w') as f:
+            f.write('VERSION = 5\nPATCHLEVEL = 10\nSUBLEVEL = 134\n')
+        if warnings is not None:
+            os.makedirs(os.path.join(root, 'tools', 'scripts'))
+            with open(os.path.join(root, 'tools', 'scripts',
+                                   'Makefile.include'), 'w') as f:
+                f.write(warnings)
+        if doc is not None:
+            os.makedirs(os.path.join(root, 'Documentation', 'process'))
+            with open(os.path.join(root, 'Documentation', 'process',
+                                   'changes.rst'), 'w') as f:
+                f.write(doc)
+        return root
+
+    def report(self, tree, gcc='return 1'):
+        """hostcheck_report's output and verdict, with gcc stubbed.
+
+        The probe is the one thing a test cannot let run for real: on
+        this host it fails, and on whatever host runs these tests next
+        it might not.
+        """
+        script = (
+            '. "%s/lib/hostcheck.sh"\n'
+            'gcc() { if [ "$1" = -dumpfullversion ]; then echo 12.3.0;'
+            '        else echo "/usr/include/x.h:1:1: error: switch'
+            ' missing default case [-Werror=switch-default]" >&2; %s; fi; }\n'
+            'hostcheck_report "%s"\n' % (PROJECT_ROOT, gcc, tree))
+        done = subprocess.run(['bash', '-c', script],
+                              stdout=subprocess.PIPE,
+                              stderr=subprocess.DEVNULL)
+        return done.stdout.decode(), done.returncode
+
+    def test_the_verdict_is_a_probe_and_not_a_version_comparison(self):
+        # The point of the whole exercise: a host that compiles what
+        # their build compiles is fit, whatever its versions say.
+        said, rc = self.report(self.tree(), gcc='return 0')
+        self.assertEqual(rc, 0, 'a host that can compile was refused')
+        self.assertEqual(said.strip(), '',
+                         'a fit host was warned about anyway')
+
+    def test_a_host_that_cannot_compile_their_build_is_refused(self):
+        said, rc = self.report(self.tree())
+        self.assertEqual(rc, 1)
+        self.assertIn('5.10.134', said, 'the tree it is unfit for is unnamed')
+        self.assertIn('error: switch missing default case', said,
+                      'the compiler was not quoted on why')
+
+    def test_the_warnings_come_from_their_file_not_from_us(self):
+        # Their own flag list, read from their own makefile: a list of
+        # ours would go stale the moment they changed theirs.
+        with open(os.path.join(PROJECT_ROOT, 'lib', 'hostcheck.sh')) as f:
+            source = f.read()
+        self.assertIn('tools/scripts/Makefile.include', source)
+        self.assertIn('EXTRA_WARNINGS', source)
+        self.assertIn('ExtUtils::Embed', source,
+                      'the include paths are not found their way')
+
+    def test_a_probe_that_could_not_run_refuses_nothing(self):
+        # No Makefile.include, so there is nothing to probe with.  An
+        # unanswered question is not evidence of a bad host.
+        said, rc = self.report(self.tree(warnings=None))
+        self.assertEqual(rc, 0, 'the suite was refused on no evidence')
+        self.assertEqual(said.strip(), '')
+
+    def test_the_table_is_read_from_their_documentation(self):
+        doc = (
+            '====================== ===============  ==================\n'
+            '        Program        Minimal version   Command to check\n'
+            '====================== ===============  ==================\n'
+            'GNU C                  4.9              gcc --version\n'
+            '====================== ===============  ==================\n')
+        said, rc = self.report(self.tree(doc=doc))
+        self.assertEqual(rc, 1)
+        self.assertIn('GNU C', said, 'their table was not read')
+        self.assertIn('4.9', said, 'what the tree asks for is not shown')
+        self.assertIn('12.3.0', said, 'what the host has is not shown')
+
+    def test_a_tool_the_tree_never_mentions_is_said_to_be_unmentioned(self):
+        # perl is the tool that breaks, and their table does not list
+        # it at all.  A requirement never stated is a requirement
+        # nothing can check, which is the most useful line in the
+        # warning and must not be left blank.
+        said, rc = self.report(self.tree(doc='no table here\n'))
+        self.assertEqual(rc, 1)
+        self.assertIn('not stated by the tree', said)
+
+    def test_the_answer_is_separated_from_the_evidence(self):
+        # The page shows the reason and keeps the table behind "view
+        # more", and splits them on this rather than on our prose.
+        said, _ = self.report(self.tree())
+        self.assertIn('\n---\n', said)
+        answer = hostcheck._split(said, False)
+        self.assertTrue(answer['headline'])
+        # The sentence is one line and carries no compiler output; the
+        # compiler output is what sits behind it.
+        self.assertEqual(answer['summary'].count('\n'), 0)
+        self.assertNotIn('error:', answer['summary'])
+        self.assertIn('error: switch missing default', answer['reason'])
+        self.assertNotIn('---', answer['note'])
+
+    def test_an_unanswerable_question_leaves_the_host_fit(self):
+        self.assertTrue(hostcheck.check(PROJECT_ROOT, kernel=None)['ok'])
+        self.assertTrue(hostcheck.check(PROJECT_ROOT,
+                                        kernel='/nonexistent')['ok'])
+
+    def test_nothing_is_run_while_the_host_is_unfit(self):
+        with open(os.path.join(PROJECT_ROOT, 'anolis', 'test.sh')) as f:
+            script = f.read()
+        self.assertIn('hostcheck_report', script,
+                      'the suite never asks whether it can run')
+        self.assertLess(script.index('hostcheck_report'),
+                        script.index('Running specific test'),
+                        'the host is checked after tests have started')
+
+    def test_the_interface_refuses_as_well_as_greys_out(self):
+        # A grey button is a courtesy; the refusal has to be the
+        # server's, or a stale page starts a run that cannot pass.
+        with open(os.path.join(PROJECT_ROOT, 'web', 'server.py')) as f:
+            server = f.read()
+        self.assertIn('host_unfit', server)
+        self.assertLess(server.index('host = host_fitness(distro)'),
+                        server.index('ready, why = series_readiness(distro)'),
+                        'readiness is answered before fitness')
+        with open(os.path.join(PROJECT_ROOT, 'web', 'templates',
+                               'index.html')) as f:
+            page = f.read()
+        # Everything that starts work on the tree: the three fetches, the
+        # prepare, the whole run and a single test.  Configuration is
+        # deliberately not among them, since repointing the kernel path
+        # is the way out of an unfit host.
+        self.assertEqual(page.count('|| !hostOk'), 5,
+                         'a button that starts work is still live')
+        self.assertIn('View more', page, 'the evidence cannot be opened')
+
+    def test_the_compiler_output_waits_until_it_is_asked_for(self):
+        # A person who has just been told nothing will run needs the
+        # sentence, not fourteen errors from a header they have never
+        # heard of.
+        with open(os.path.join(PROJECT_ROOT, 'web', 'templates',
+                               'index.html')) as f:
+            page = f.read()
+        panel = page[page.index('<div class="unfit"'):]
+        panel = panel[:panel.index('<div class="wrap"')]
+        shown = panel[:panel.index('unfit-more')]
+        self.assertIn('{{ fitness.summary }}', shown,
+                      'the one sentence that matters is not shown')
+        # Printed, not merely mentioned: the toggle tests the same value
+        # to decide whether it has anything to offer.
+        self.assertNotIn('{{ fitness.reason }}', shown,
+                         'compiler output is shown before it is asked for')
+        self.assertIn('{{ fitness.reason }}', panel,
+                      'it cannot be reached at all')
 
 
 if __name__ == '__main__':

@@ -192,7 +192,36 @@ body { transition: background-color var(--t-base), color var(--t-base); }
     position: fixed; inset: -20vmax; z-index: -1;
     pointer-events: none; overflow: hidden;
     contain: strict;
+    /* The whole field leans towards the pointer, by a fraction of what
+       the pointer itself moves.  The blobs keep their own drift: that is
+       a transform on each of them, this is a transform on the layer they
+       are in, so the two compose instead of fighting. */
+    transform: translate3d(var(--lean-x, 0px), var(--lean-y, 0px), 0);
+    will-change: transform;
 }
+
+/* The light under the cursor.  Blurred once and then only ever moved,
+   like the others, so following the pointer costs a composite and not a
+   90px blur per frame. */
+.cursor-light {
+    position: fixed; left: 0; top: 0; z-index: -1;
+    width: 34vmax; height: 34vmax;
+    margin: -17vmax 0 0 -17vmax;
+    pointer-events: none; contain: strict;
+    border-radius: 50%;
+    background: radial-gradient(circle,
+        color-mix(in srgb, var(--accent) 65%, #a855f7) 0%,
+        transparent 68%);
+    filter: blur(70px);
+    opacity: .16;
+    transform: translate3d(var(--px, 50vw), var(--py, 45vh), 0);
+    will-change: transform;
+}
+[data-theme="dark"] .cursor-light { opacity: .26; filter: blur(84px); }
+/* It is ambience, not a cursor: with no pointer on the page there is
+   nothing for it to follow and it should not sit in the middle
+   pretending. */
+.cursor-light.idle { opacity: 0; transition: opacity 1.2s ease-out; }
 /* Turned well down in the light theme.  At full strength the tint came
    through the panels and the whole page read as pastel, which buried
    the one thing the page exists to show: whether a row says PASS or
@@ -292,18 +321,38 @@ header {
 /* Declared once: the log column sticks to just below the header and
    sizes itself against it, and the two drifting apart leaves either a
    gap above the log or a strip of it under the header. */
-:root { --header-h: 60px; }
-.brand { display: flex; align-items: center; gap: 9px; font-weight: 650; font-size: 15px; letter-spacing: -.01em; }
+:root { --header-h: 68px; }
+.brand { display: flex; align-items: center; gap: 11px; font-weight: 680; font-size: 20px; letter-spacing: -.02em; }
+
+/* The wordmark, lit by a highlight that crosses it every few seconds.
+   It is the same idle motion the mark has and for the same reason -- the
+   surface is live -- and it is confined to the brand so that nothing
+   which reports a result ever moves on its own. */
+.brand-name {
+    background-image: linear-gradient(100deg,
+        var(--text) 26%, var(--accent) 44%,
+        #a78bfa 52%, var(--text) 72%);
+    background-size: 260% 100%;
+    -webkit-background-clip: text; background-clip: text;
+    color: transparent;
+    animation: brand-sheen 7s linear infinite;
+    white-space: nowrap;
+}
+@keyframes brand-sheen {
+    from { background-position: 130% 0; }
+    to   { background-position: -60% 0; }
+}
 
 /* The mark from the README banner, inline rather than an <img> so it
    inherits this sheet -- notably the reduced-motion block, which an
    <img>-loaded SVG would answer with its own media query against the
    same preference but could not be reached from here.
 
-   It is the one piece of idle motion on the page: the ring turns, the
-   shield breathes and the tick redraws itself, which says the surface
-   is live without competing with a running build for attention. */
-.mark { width: 26px; height: 26px; display: block; flex: none; }
+   With the wordmark beside it, the brand is the only idle motion on
+   the page: the ring turns, the shield breathes and the tick redraws
+   itself, which says the surface is live without competing with a
+   running build for attention. */
+.mark { width: 42px; height: 42px; display: block; flex: none; }
 .mark .m-ring   { animation: m-spin 14s linear infinite; }
 .mark .m-shield { animation: m-breathe 4s ease-in-out infinite; }
 .mark .m-tick   { stroke-dasharray: 74; animation: m-draw 4s ease-in-out infinite; }
@@ -335,7 +384,47 @@ header {
 }
 .host-name b { font-family: var(--mono); font-size: 11.5px; letter-spacing: -.01em; }
 .host-name .icon { color: var(--accent); }
+/* It opens the numbers beside it, so it has to look pressable: a button
+   element, but sized and coloured like the pill it already was. */
+.host-name {
+    display: flex; align-items: center; gap: 6px;
+    color: inherit; font: inherit; cursor: pointer;
+    transition: border-color var(--t-fast), background var(--t-fast);
+}
+.host-name:hover { border-color: var(--accent); background: var(--glass-3); }
+.host-name .chev { width: 12px; height: 12px; font-size: 12px; color: var(--text-faint); }
 @media (max-width: 1100px) { .host-facts > div:not(.host-name) { display: none; } }
+
+/* A figure with how much of the machine it accounts for behind it.  The
+   bar is the background of the number rather than a separate widget, so
+   a glance costs nothing and the exact value is still right there. */
+.stat {
+    position: relative; isolation: isolate;
+    padding: 4px 10px; border-radius: 999px;
+    border: 1px solid var(--glass-edge);
+    background: var(--glass-1);
+    overflow: hidden;
+}
+.stat::before {
+    content: ''; position: absolute; z-index: -1;
+    inset: 0 auto 0 0; width: var(--fill, 0%);
+    background: var(--stat-fill, var(--glass-3));
+    /* Animated so a rising load reads as rising, not as a number that
+       was one thing and is now another. */
+    transition: width .6s var(--ease, ease-out), background var(--t-base);
+}
+.stat-word {
+    font-size: 10px; text-transform: uppercase; letter-spacing: .6px;
+    font-weight: 700; color: var(--stat-ink, inherit);
+}
+.stat.lv-ok    { --stat-fill: color-mix(in srgb, var(--accent) 22%, transparent); }
+.stat.lv-busy  { --stat-fill: color-mix(in srgb, var(--warn) 30%, transparent);
+                 --stat-ink: var(--warn);
+                 border-color: color-mix(in srgb, var(--warn) 35%, transparent); }
+.stat.lv-high  { --stat-fill: color-mix(in srgb, var(--fail) 32%, transparent);
+                 --stat-ink: var(--fail);
+                 border-color: color-mix(in srgb, var(--fail) 40%, transparent); }
+.stat.lv-high b { color: var(--fail); }
 
 /* Round, not rounded-square: Control Center's small controls are
    circles, and at 34px a circle is also the easier target to hit. */
@@ -543,6 +632,19 @@ header {
 /* ── setup checklist ────────────────────────────────────────────────── */
 
 .step { display: flex; align-items: center; gap: 11px; }
+/* The three fetches, opened out of the row that stands for them.  Set in
+   from the left and against a slightly lifted panel, so it is clear they
+   are the same three and not three more. */
+.substeps {
+    margin-top: 12px; padding: 4px 12px 12px;
+    border-radius: var(--r-md);
+    background: var(--glass-1);
+    border: 1px solid var(--glass-edge);
+}
+.substeps .step { padding-top: 12px; margin-top: 0; }
+.substeps .step + .step { margin-top: 0; }
+.substeps .step-label { font-size: 12.5px; }
+.substeps .step-mark { width: 20px; height: 20px; }
 .step + .step { margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--glass-edge); }
 .step-mark {
     display: grid; place-items: center; flex: none;
@@ -953,7 +1055,11 @@ body.dragging .log-panel { transition: none; }
 /* ── terminal ───────────────────────────────────────────────────────── */
 
 .term-shell { padding: 12px; background: color-mix(in srgb, var(--code-bg) 96%, transparent); }
-.term-host { height: 60vh; min-height: 320px; }
+/* As tall as what is left of the window below it.  60vh was a guess
+   that left a band of empty page under the shell on a tall screen and
+   cut it short on a laptop; the figure is measured instead, in
+   fitTerm(). */
+.term-host { height: var(--term-h, 60vh); min-height: 240px; }
 .term-bar {
     display: flex; align-items: center; gap: 10px;
     padding: 11px 16px; border-bottom: 1px solid var(--glass-edge);
@@ -1006,6 +1112,76 @@ body.dragging .log-panel { transition: none; }
 }
 .banner .icon { font-size: 16px; margin-top: 1px; }
 .banner a { color: inherit; font-weight: 650; }
+
+/* ── the host is not fit to test this tree ──────────────────────────── */
+
+/* Styled as a stop rather than a notice.  It is the one thing on the page
+   when it is there, every control below it is shut, and it has to look
+   like the reason for that -- a thin amber line in a corner would read as
+   something to scroll past. */
+.unfit {
+    margin: 0 20px 18px; padding: 16px 18px;
+    border-radius: var(--r-lg);
+    border: 1px solid color-mix(in srgb, var(--warn) 38%, transparent);
+    border-left: 4px solid var(--warn);
+    background:
+      linear-gradient(135deg,
+        color-mix(in srgb, var(--warn) 12%, transparent),
+        transparent 60%),
+      var(--glass-2);
+    box-shadow: inset 0 1px 0 0 var(--glass-hi), var(--shadow-md);
+    animation: rise .3s both;
+}
+.unfit-head { display: flex; align-items: flex-start; gap: 12px; }
+.unfit-head > div { flex: 1; min-width: 0; }
+.unfit-head > .icon {
+    font-size: 20px; width: 20px; height: 20px;
+    color: var(--warn); flex: none; margin-top: 1px;
+}
+.unfit-title {
+    font-size: 14.5px; font-weight: 680; color: var(--warn);
+    letter-spacing: -.1px;
+}
+.unfit-sub { font-size: 12px; color: var(--text-dim); margin-top: 3px; }
+
+.unfit-reason {
+    margin: 0 0 11px; padding: 12px 14px;
+    border-radius: var(--r-md);
+    background: var(--glass-1);
+    border: 1px solid var(--border);
+    font-family: var(--mono); font-size: 11.5px; line-height: 1.65;
+    color: var(--text-dim);
+    /* Wrapped rather than scrolled: a path like .../perl5/CORE/x.h is
+       long and is the part being pointed at, so it may break but must
+       not be clipped. */
+    white-space: pre-wrap; overflow-wrap: anywhere;
+}
+
+.unfit-more { margin-top: 13px; }
+.unfit-note {
+    margin: 0 0 11px; font-size: 12px; line-height: 1.6;
+    color: var(--text-dim); max-width: 78ch;
+}
+.unfit-table {
+    border-collapse: collapse; font-size: 12px;
+    /* Only as wide as its contents: three short columns stretched across
+       a wide screen put the version a yard from the tool it belongs to. */
+    width: auto; min-width: min(100%, 460px);
+}
+.unfit-table th, .unfit-table td {
+    padding: 6px 16px 6px 0; text-align: left;
+    border-bottom: 1px solid var(--border);
+}
+.unfit-table th {
+    font-size: 10.5px; text-transform: uppercase; letter-spacing: .5px;
+    color: var(--text-faint); font-weight: 600;
+}
+.unfit-table td { color: var(--text-dim); }
+.unfit-table .num { font-family: var(--mono); font-size: 11.5px; }
+/* Every row here passes its minimum; the ones that stand out are the
+   tools the tree never mentions, which is where the trouble is. */
+.unfit-table .row-unstated td { color: var(--warn); }
+.unfit-table .row-unstated td:first-child { font-weight: 650; }
 
 footer { padding: 8px 20px 28px; text-align: center; color: var(--text-faint); font-size: 11.5px; }
 footer a { color: var(--text-dim); text-decoration: none; }
@@ -1116,6 +1292,11 @@ footer a:hover { text-decoration: underline; }
      so Vue never re-renders it and a repaint of the interface cannot
      restart the drift. -->
 <div class="ambient" aria-hidden="true"><i class="a1"></i><i class="a2"></i><i class="a3"></i><i class="a4"></i></div>
+<!-- A fifth light, and the only one that is not on a timer: it follows the
+     pointer, a little behind it, so the glass under the cursor lifts as it
+     passes.  Outside .ambient because that layer is inset by 20vmax and
+     these coordinates are the viewport's. -->
+<div class="cursor-light" aria-hidden="true"></div>
 
 <!-- Inline sprite: Font Awesome was pulled from a CDN, so on a machine
      without internet access every button rendered as an empty box. -->
@@ -1180,30 +1361,40 @@ footer a:hover { text-decoration: underline; }
                 stroke-linecap="round" stroke-linejoin="round"/>
         </g>
       </svg>
-      <span>Pre-PR CI</span>
+      <span class="brand-name">Pre-PR CI</span>
     </div>
 
     <div class="host-facts" v-if="host.hostname">
-      <div class="host-name" :title="'Build machine: ' + host.hostname
-                                     + (host.os ? ' -- ' + host.os : '')
-                                     + (host.kernel ? ' -- ' + host.kernel : '')
-                                     + (host.arch ? ' -- ' + host.arch : '')">
+      <!-- The machine's name is which machine this is, which is worth a
+           glance; how busy it is right now is not, until it is.  So the
+           name carries the switch and the numbers wait behind it. -->
+      <button class="host-name" @click="hostOpen = !hostOpen"
+              :title="'Build machine: ' + host.hostname
+                      + (host.os ? ' -- ' + host.os : '')
+                      + (host.kernel ? ' -- ' + host.kernel : '')
+                      + (host.arch ? ' -- ' + host.arch : '')
+                      + (hostOpen ? '' : ' -- click for load, memory and disk')">
         <svg class="icon"><use href="#i-server"/></svg>
         <b>{{ host.hostname }}</b>
-      </div>
-      <div :title="host.os + ' / ' + host.kernel">
-        <svg class="icon"><use href="#i-cpu"/></svg>
-        <b>{{ host.cpus }}</b> cpus
-      </div>
-      <div v-if="host.load" title="Load average 1m / 5m / 15m">
-        load <b>{{ host.load['1m'] }}</b>
-      </div>
-      <div v-if="host.memory" title="Available memory">
-        mem <b>{{ bytes(host.memory.available) }}</b>
-      </div>
-      <div v-for="d in host.disks" :key="d.path" :title="d.mount + ' -- a kernel build needs tens of GB'">
-        {{ d.label }} <b>{{ bytes(d.free) }}</b> free
-      </div>
+        <svg class="icon chev" :class="{ up: hostOpen }"><use href="#i-chev"/></svg>
+      </button>
+      <template v-if="hostOpen">
+        <!-- A count, not a measurement: nothing fills behind it. -->
+        <div :title="host.os + ' / ' + host.kernel">
+          <svg class="icon"><use href="#i-cpu"/></svg>
+          <b>{{ host.cpus }}</b> cpus
+        </div>
+        <!-- Each of these is a figure and how much of the machine it
+             represents, and the second part is behind the first: a bar
+             says "nearly full" before the number has been read, and the
+             number is still there to say exactly how full. -->
+        <div v-for="s in hostStats" :key="s.key"
+             class="stat" :class="'lv-' + s.level"
+             :style="{ '--fill': s.pct + '%' }" :title="s.title">
+          {{ s.label }} <b>{{ s.value }}</b>{{ s.suffix }}
+          <span class="stat-word" v-if="s.word">{{ s.word }}</span>
+        </div>
+      </template>
     </div>
 
     <button class="icon-btn theme-btn" @click="toggleTheme"
@@ -1211,6 +1402,57 @@ footer a:hover { text-decoration: underline; }
       <svg class="icon"><use :href="theme === 'dark' ? '#i-sun' : '#i-moon'"/></svg>
     </button>
   </header>
+
+  <!-- Above everything, and full width, because it is not about one card:
+       on a host that cannot build the tree every check that compiles it
+       will fail in turn, and each of those failures reads as a verdict on
+       the series.  So it is said once, at the top, and the buttons below
+       stay shut until it is not true. -->
+  <div class="unfit" v-if="status.configured && !hostOk">
+    <div class="unfit-head">
+      <svg class="icon"><use href="#i-warn"/></svg>
+      <div>
+        <div class="unfit-title">{{ fitness.headline }}</div>
+        <!-- One sentence, and the one thing that has to be read: that
+             nothing is going to run, and why in plain words.  The
+             compiler output behind "view more" is for whoever doubts
+             it. -->
+        <div class="unfit-sub">{{ fitness.summary }}</div>
+        <div class="unfit-sub">
+          Nothing will be run, so nothing here is a verdict on your patches.
+        </div>
+      </div>
+      <button class="btn btn-sm" @click="fitnessDetail = !fitnessDetail"
+              v-if="fitness.reason || fitness.table.length">
+        <svg class="icon chev" :class="{ up: fitnessDetail }">
+          <use href="#i-chev"/></svg>
+        {{ fitnessDetail ? 'Show less' : 'View more' }}
+      </button>
+    </div>
+
+    <div class="unfit-more" v-if="fitnessDetail">
+      <!-- Kept as written: these are compiler messages, and the file
+           and line in them are the point. -->
+      <pre class="unfit-reason" v-if="fitness.reason">{{ fitness.reason }}</pre>
+      <p class="unfit-note" v-if="fitness.note">{{ fitness.note }}</p>
+      <table class="unfit-table" v-if="fitness.table.length">
+        <thead>
+          <tr><th>Tool</th><th>This host has</th><th>Tree asks for</th></tr>
+        </thead>
+        <tbody>
+          <!-- The rows worth looking at are the ones the tree says
+               nothing about, which is why they are marked: a minimum
+               that was never stated is one nothing can check. -->
+          <tr v-for="row in fitness.table" :key="row.tool"
+              :class="{ 'row-unstated': row.want.indexOf('not stated') === 0 }">
+            <td>{{ row.tool }}</td>
+            <td class="num">{{ row.have }}</td>
+            <td class="num">{{ row.want }}</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
 
   <div class="wrap" :class="{ 'with-log': logPane }"
        :style="{ '--log-w': logWidth + 'px' }">
@@ -1240,7 +1482,7 @@ footer a:hover { text-decoration: underline; }
              says it. -->
         <transition name="collapse">
         <div class="card-body" v-show="setupOpen">
-          <div class="step" v-for="s in setupSteps" :key="s.key" :class="{ done: s.ready }">
+          <div class="step" v-for="s in configSteps" :key="s.key" :class="{ done: s.ready }">
             <span class="step-mark">
               <svg class="icon" v-if="s.ready"><use href="#i-check"/></svg>
               <i v-else class="dot"></i>
@@ -1250,26 +1492,60 @@ footer a:hover { text-decoration: underline; }
               <div class="step-detail">{{ s.detail }}</div>
             </div>
             <button class="btn btn-sm" :class="{ 'btn-primary': !s.ready }"
-                    @click="s.run()" :disabled="busy && s.key !== 'config'"
-                    :title="s.ready ? `Fetch the latest ${s.label.toLowerCase()}`
-                                    : s.detail">
+                    @click="s.run()" :title="s.detail">
               {{ s.action }}
             </button>
           </div>
 
-          <!-- Everything fetchable in one press. The three fetches are
-               independent and each takes minutes, so doing them one at
-               a time meant coming back to the page twice to start the
-               next. They queue, so pressing this once is enough. -->
-          <button class="btn btn-sm btn-block"
-                  :class="{ 'btn-primary': !setupReady }"
-                  @click="syncEverything()" :disabled="busy"
-                  :title="busy ? 'Something is already running'
-                               : 'Fetch the mirror, the sub-repositories and '
-                                 + 'the openEuler checks, one after another'">
-            <svg class="icon"><use href="#i-refresh"/></svg>
-            {{ setupReady ? 'Update everything' : 'Fetch everything missing' }}
-          </button>
+          <!-- The three fetches as one row.  They are independent, each
+               takes minutes, and the usual answer is "all of them", so
+               one press starts all three and they queue.  Anybody who
+               wants just one opens the row and presses that one. -->
+          <div class="step" :class="{ done: fetchReady }">
+            <span class="step-mark">
+              <svg class="icon" v-if="fetchReady"><use href="#i-check"/></svg>
+              <i v-else class="dot"></i>
+            </span>
+            <div class="step-text">
+              <div class="step-label">Repositories</div>
+              <div class="step-detail">{{ fetchDetail }}</div>
+            </div>
+            <button class="icon-btn head-btn" @click="fetchOpen = !fetchOpen"
+                    :title="fetchOpen ? 'Hide the three of them'
+                                      : 'Update just one of them'">
+              <svg class="icon chev" :class="{ up: fetchOpen }"><use href="#i-chev"/></svg>
+            </button>
+            <button class="btn btn-sm" :class="{ 'btn-primary': !fetchReady }"
+                    @click="syncEverything()" :disabled="busy || !hostOk"
+                    :title="busy ? 'Something is already running'
+                                 : 'Fetch the mirror, the sub-repositories '
+                                   + 'and the openEuler checks, one after '
+                                   + 'another'">
+              {{ fetchReady ? 'Update' : 'Fetch' }}
+            </button>
+          </div>
+
+          <transition name="collapse">
+          <div class="substeps" v-show="fetchOpen">
+            <div class="step" v-for="s in fetchSteps" :key="s.key"
+                 :class="{ done: s.ready }">
+              <span class="step-mark">
+                <svg class="icon" v-if="s.ready"><use href="#i-check"/></svg>
+                <i v-else class="dot"></i>
+              </span>
+              <div class="step-text">
+                <div class="step-label">{{ s.label }}</div>
+                <div class="step-detail">{{ s.detail }}</div>
+              </div>
+              <button class="btn btn-sm" :class="{ 'btn-primary': !s.ready }"
+                      @click="s.run()" :disabled="busy || !hostOk"
+                      :title="s.ready ? `Fetch the latest ${s.label.toLowerCase()}`
+                                      : s.detail">
+                {{ s.action }}
+              </button>
+            </div>
+          </div>
+          </transition>
         </div>
         </transition>
       </div>
@@ -1328,7 +1604,7 @@ footer a:hover { text-decoration: underline; }
                first, and prepare is the one you press once. -->
           <button class="btn btn-block" :class="{ 'btn-primary': !prepared }"
                   @click="startAfterSetup('/api/prepare', 'prepare')"
-                  :disabled="busy || !status.configured"
+                  :disabled="busy || !status.configured || !hostOk"
                   :title="(prepared
                     ? 'Already prepared; running this again does nothing'
                     : 'Add the metadata header, sign-off and any Conflicts: section the CI requires')
@@ -1338,7 +1614,7 @@ footer a:hover { text-decoration: underline; }
           </button>
           <button class="btn btn-block" :class="{ 'btn-primary': prepared }"
                   @click="startAfterSetup('/api/test', 'all tests')"
-                  :disabled="busy || !status.configured || !prepared"
+                  :disabled="busy || !status.configured || !prepared || !hostOk"
                   :title="prepared
                     ? 'Refresh setup, then run every test with its checkbox ticked below'
                     : 'Prepare the patches first'">
@@ -1495,7 +1771,7 @@ footer a:hover { text-decoration: underline; }
                 <svg class="icon"><use href="#i-list"/></svg> Log
               </button>
               <button class="btn btn-sm btn-primary" @click="runTest(t)"
-                      :disabled="busy || !t.enabled || !prepared"
+                      :disabled="busy || !t.enabled || !prepared || !hostOk"
                       :title="!t.enabled ? 'Tick this test to run it'
                               : (!prepared ? 'Prepare the patches first'
                                  : 'Run just this test')">
@@ -1815,6 +2091,11 @@ createApp({
 
       status: { configured: false, distro: null, distros: [], active_jobs: [] },
       host: {},
+      // Shut to begin with: which machine this is matters on arrival,
+      // how loaded it is only once somebody wonders.
+      hostOpen: false,
+      // The three fetches are one row until somebody wants one of them.
+      fetchOpen: false,
       config: null,
       tests: [],
       // Whether the series has been through "Prepare patches". Comes
@@ -1822,6 +2103,11 @@ createApp({
       // cannot offer something the backend will refuse.
       prepared: false,
       preparedReason: '',
+      // Fit until told otherwise: the page must not shut itself down
+      // for the second it takes to hear back.
+      fitness: { ok: true, headline: '', summary: '', reason: '',
+                 note: '', table: [] },
+      fitnessDetail: false,
       jobs: [],
 
       configOpen: false,
@@ -1971,6 +2257,39 @@ createApp({
     // it is applying; a test run names the test, which has to come
     // from the registry because the job itself only counts how many
     // have finished.
+    // Read in several places, and the default matters: an answer that
+    // has not arrived yet is not a bad host.
+    hostOk() {
+      return !this.fitness || this.fitness.ok !== false;
+    },
+    // The header's live figures, each with how much of the machine it
+    // accounts for.  Load is divided by the number of cpus because a
+    // load of 8 is nothing on this host and everything on a laptop, and
+    // memory and disk are shown as what is left but filled by what is
+    // gone -- the bar is meant to grow as the room runs out.
+    hostStats() {
+      const out = [];
+      const h = this.host;
+      if (h.load && h.cpus) {
+        out.push(this.stat('load', 'load', h.load['1m'], '',
+                           100 * h.load['1m'] / h.cpus,
+                           `Load average ${h.load['1m']} / ${h.load['5m']}`
+                           + ` / ${h.load['15m']} across ${h.cpus} cpus`));
+      }
+      if (h.memory && h.memory.total) {
+        out.push(this.stat('mem', 'mem', this.bytes(h.memory.available), '',
+                           100 * (h.memory.total - h.memory.available)
+                               / h.memory.total,
+                           `${this.bytes(h.memory.available)} of `
+                           + `${this.bytes(h.memory.total)} still free`));
+      }
+      for (const d of h.disks || []) {
+        out.push(this.stat(d.path, d.label, this.bytes(d.free), ' free',
+                           d.total ? 100 * (d.total - d.free) / d.total : 0,
+                           `${d.mount} -- a kernel build needs tens of GB`));
+      }
+      return out;
+    },
     stageLabel() {
       const j = this.runningJob;
       if (!j) return '';
@@ -2068,6 +2387,26 @@ createApp({
     },
     setupReady() { return this.setupSteps.every(s => s.ready); },
     setupDone() { return this.setupSteps.filter(s => s.ready).length; },
+
+    // Configuration is the step you take; the other three are things
+    // fetched from elsewhere, which is why they share one row and one
+    // button.  Split by what they are rather than by name, so a fourth
+    // thing to fetch joins the group by existing.
+    configSteps() { return this.setupSteps.filter(s => s.key === 'config'); },
+    fetchSteps() { return this.setupSteps.filter(s => s.key !== 'config'); },
+    fetchReady() { return this.fetchSteps.every(s => s.ready); },
+    // What the row says when it is not expanded, and the only thing
+    // most people will read of it: everything, or exactly what is
+    // missing -- an absent kabi-dw otherwise surfaces much later as a
+    // test failure that looks unrelated.
+    fetchDetail() {
+      const missing = this.fetchSteps.filter(s => !s.ready);
+      if (!missing.length) {
+        return `Mirror, sub-repositories and openEuler checks`
+               + ` -- all ${this.fetchSteps.length} present`;
+      }
+      return `Missing ${missing.map(s => s.label.toLowerCase()).join(', ')}`;
+    },
     wsUrl() {
       const scheme = location.protocol === 'https:' ? 'wss' : 'ws';
       return `${scheme}://${location.host}/ws/terminal`;
@@ -2103,6 +2442,7 @@ createApp({
   },
 
   mounted() {
+    this.followPointer();
     this.theme = localStorage.getItem('prci-theme')
       || (matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
     this.applyTheme();
@@ -2138,7 +2478,13 @@ createApp({
         else if (this.logOpen) this.closeLog();
       }
     });
-    addEventListener('resize', () => { if (this._fit) try { this._fit.fit(); } catch (_) {} });
+    // Coalesced: a drag of the window edge fires this continuously, and
+    // re-measuring the shell per pixel is wasted work.
+    let fitFrame = 0;
+    addEventListener('resize', () => {
+      if (fitFrame) cancelAnimationFrame(fitFrame);
+      fitFrame = requestAnimationFrame(() => { fitFrame = 0; this.fitTerm(); });
+    });
   },
 
   methods: {
@@ -2205,6 +2551,9 @@ createApp({
           this.tests = tests.tests;
           this.prepared = !!tests.prepared;
           this.preparedReason = tests.prepared_reason || '';
+          this.fitness = tests.fitness
+            || { ok: true, headline: '', summary: '', reason: '',
+                 note: '', table: [] };
         }
 
         if (this.logJob) {
@@ -2593,9 +2942,24 @@ createApp({
       this.tab = 'terminal';
       this.$nextTick(() => {
         if (!this._xterm) this.buildTerm();
-        if (this._fit) try { this._fit.fit(); } catch (_) {}
+        this.fitTerm();
         if (!this.term.connected) this.connectTerm();
       });
+    },
+
+    // The shell is given whatever is left of the window under it, and
+    // xterm is told afterwards: it works in whole rows and columns, so
+    // it has to re-measure the box before it can fill it.
+    fitTerm() {
+      const host = this.$refs.termHost;
+      if (host) {
+        // The gap is the footer and the page's own bottom padding, which
+        // the shell should stop above rather than slide under.
+        const top = host.getBoundingClientRect().top;
+        host.style.setProperty(
+          '--term-h', Math.max(240, innerHeight - top - 58) + 'px');
+      }
+      if (this._fit) try { this._fit.fit(); } catch (_) {}
     },
 
     buildTerm() {
@@ -2611,7 +2975,7 @@ createApp({
       try { term.loadAddon(new WebLinksAddon.WebLinksAddon()); } catch (_) {}
 
       term.open(this.$refs.termHost);
-      try { this._fit.fit(); } catch (_) {}
+      this.fitTerm();
 
       term.onData(data => this.sendTerm({ type: 'input', data }));
       term.onResize(({ rows, cols }) => this.sendTerm({ type: 'resize', rows, cols }));
@@ -2764,6 +3128,86 @@ createApp({
 
     pretty(key) {
       return key.toLowerCase().split('_').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+    },
+
+    // The ambient light follows the pointer, a little behind it.
+    //
+    // Behind it on purpose: a glow pinned exactly to the cursor reads as
+    // a second cursor and draws the eye to itself, which is the opposite
+    // of ambience.  Easing towards the pointer instead makes it feel
+    // like something the cursor is pushing through.
+    //
+    // The cost is kept to a composite per frame.  Moves are recorded and
+    // nothing else, the eased position is written to two custom
+    // properties that only feed translate3d, and the loop stops as soon
+    // as it has caught up -- so a still pointer costs nothing at all.
+    followPointer() {
+      const light = document.querySelector('.cursor-light');
+      const field = document.querySelector('.ambient');
+      if (!light || !field) return;
+      // Somebody who has asked for less motion has asked for this too.
+      if (matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+
+      const root = document.documentElement;
+      let toX = innerWidth / 2, toY = innerHeight * 0.45;
+      let atX = toX, atY = toY, frame = 0;
+
+      const step = () => {
+        frame = 0;
+        // A fifth of the remaining distance per frame: close enough to
+        // feel attached, slack enough to trail.
+        atX += (toX - atX) * 0.2;
+        atY += (toY - atY) * 0.2;
+        root.style.setProperty('--px', `${atX.toFixed(1)}px`);
+        root.style.setProperty('--py', `${atY.toFixed(1)}px`);
+        // The field leans the other way, by a fortieth, which is enough
+        // for the four blobs to shift against the one that follows.
+        root.style.setProperty('--lean-x',
+          `${((innerWidth / 2 - atX) / 40).toFixed(1)}px`);
+        root.style.setProperty('--lean-y',
+          `${((innerHeight / 2 - atY) / 40).toFixed(1)}px`);
+        // Half a pixel is past anybody's noticing, and stopping there is
+        // what makes a still pointer free.
+        if (Math.abs(toX - atX) > 0.5 || Math.abs(toY - atY) > 0.5) {
+          frame = requestAnimationFrame(step);
+        }
+      };
+
+      const aim = (event) => {
+        toX = event.clientX;
+        toY = event.clientY;
+        light.classList.remove('idle');
+        if (!frame) frame = requestAnimationFrame(step);
+      };
+
+      addEventListener('pointermove', aim, { passive: true });
+      // A pointer that has left is not somewhere else, it is nowhere.
+      addEventListener('pointerleave', () => light.classList.add('idle'),
+                       { passive: true });
+      // Nothing to animate towards while the tab is in the background,
+      // and a queued frame there would run on return against a pointer
+      // that has since moved.
+      addEventListener('visibilitychange', () => {
+        if (document.hidden && frame) {
+          cancelAnimationFrame(frame);
+          frame = 0;
+        }
+      });
+      step();
+    },
+
+    // One header figure, with a word for it once it is worth a word.
+    // Quiet below two thirds, because a bar that is always amber is a
+    // decoration; the word appears only where the colour alone would
+    // leave somebody guessing what it meant.
+    stat(key, label, value, suffix, pct, title) {
+      pct = Math.max(0, Math.min(100, Math.round(pct || 0)));
+      const level = pct >= 90 ? 'high' : pct >= 66 ? 'busy' : 'ok';
+      return {
+        key, label, value, suffix, pct, title: `${title} (${pct}% used)`,
+        word: level === 'ok' ? '' : (level === 'high' ? 'high' : 'busy'),
+        level,
+      };
     },
 
     bytes(value) {

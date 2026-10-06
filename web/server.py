@@ -39,6 +39,7 @@ PROJECT_ROOT = os.path.dirname(WEB_DIR)
 if WEB_DIR not in sys.path:
     sys.path.insert(0, WEB_DIR)
 
+from prci import hostcheck                                   # noqa: E402
 from prci import readiness                                   # noqa: E402
 from prci import registry                                    # noqa: E402
 from prci import repo                                        # noqa: E402
@@ -88,6 +89,39 @@ def series_readiness(distro):
                            kernel=config.get('LINUX_SRC_PATH'))
 
 
+def host_fitness(distro):
+    """Whether this host can test the tree this distro is pointed at.
+
+    Separate from readiness, which is about the patches: a prepared
+    series on a host that cannot build it is still nothing to run.
+    """
+    config = workspace.read_config(distro) or {}
+    return hostcheck.check(PROJECT_ROOT, kernel=config.get('LINUX_SRC_PATH'))
+
+
+def fit_distro():
+    """Like configured_distro, but also insists the host can build it.
+
+    Anything that works on the tree goes through this: a page that has
+    not polled since the answer changed would otherwise start a run
+    whose every compiling check is bound to fail.
+    """
+    distro, error = configured_distro()
+    if error:
+        return None, error
+    host = host_fitness(distro)
+    if not host['ok']:
+        return None, (jsonify({
+            'success': False,
+            'error': host['headline'],
+            'reason': host['reason'],
+            'note': host['note'],
+            'table': host['table'],
+            'host_unfit': True,
+        }), 409)
+    return distro, None
+
+
 def prepared_distro():
     """Like configured_distro, but also insists the series is prepared.
 
@@ -95,7 +129,9 @@ def prepared_distro():
     preparation has not done yet and reports it against the patches,
     which is worse than not running them: it looks like a verdict.
     """
-    distro, error = configured_distro()
+    # Fitness first: on a host that cannot build the tree, how prepared
+    # the series is does not matter yet.
+    distro, error = fit_distro()
     if error:
         return None, error
     ready, why = series_readiness(distro)
@@ -239,6 +275,9 @@ def api_config_post():
 
     # NUM_PATCHES, the signer and the kernel path all feed the answer.
     readiness.forget(distro)
+    # And the kernel path decides which tree the host is being asked
+    # about, so pointing it somewhere else is a different question.
+    hostcheck.forget()
     return jsonify({'success': True, 'distro': distro, 'warnings': notes})
 
 
@@ -254,8 +293,12 @@ def api_tests():
     enabled = workspace.enabled_tests(distro)
     latest = latest_result_per_test()
     ready, why = series_readiness(distro)
+    host = host_fitness(distro)
     return jsonify({
         'distro': distro,
+        # Not 'host', which the page already uses for the machine's own
+        # facts in the header.  This is a verdict about that machine.
+        'fitness': host,
         # The page greys out every run button on this, so it has to come
         # from the same script the test run itself will consult.
         'prepared': ready,
@@ -280,7 +323,7 @@ def api_tests():
 @app.route('/api/prepare', methods=['POST'])
 @app.route('/api/build', methods=['POST'])
 def api_prepare():
-    distro, error = configured_distro()
+    distro, error = fit_distro()
     if error:
         return error
     # Whatever it does changes the answer, and the page asks again as

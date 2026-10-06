@@ -67,6 +67,10 @@ PROGRESS_TOTALS="${WORKDIR}/.prci/progress"
 # so there is no verdict to protect and no reason to hide any.
 # shellcheck source=../lib/warnings.sh
 . "${WORKDIR}/lib/warnings.sh"
+# Asks whether a case can succeed here before spending a build finding
+# out that it cannot.
+# shellcheck source=../lib/hostcheck.sh
+. "${WORKDIR}/lib/hostcheck.sh"
 
 # Function to list available tests
 list_tests() {
@@ -391,6 +395,22 @@ test_check_dmesg() {
 }
 
 # ---- TEST EXECUTION ----
+
+# Asked before anything is built, and once for the whole suite: whether
+# this host can build the tree at all is a property of the two of them,
+# not of any one check.  A host that cannot will fail the compiling
+# cases one after another, each of them looking like a verdict on the
+# series, so nothing is run until it can.
+if ! HOSTCHECK_WHY=$(hostcheck_report "${LINUX_SRC_PATH}"); then
+  echo -e "${YELLOW}⚠ Not running: this host cannot test this kernel${NC}"
+  echo ""
+  echo "${HOSTCHECK_WHY}"
+  echo ""
+  echo -e "${YELLOW}No checks were run, so nothing here is a verdict on" \
+          "the series.${NC}"
+  exit 0
+fi
+
 # Check if specific test is requested
 SPECIFIC_TEST="${1:-}"
 
