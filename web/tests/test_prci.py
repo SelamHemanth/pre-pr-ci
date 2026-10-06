@@ -3301,5 +3301,338 @@ class TestReadyScripts(unittest.TestCase):
         self.assertIn('expected 5', out)
 
 
+class TestProgressBar(unittest.TestCase):
+    """That a silent build still shows how far along it is.
+
+    Their build cases end in ``make -j $job_num -s``, so between their
+    configure step and their verdict nothing is printed at all -- for
+    allyesconfig the best part of an hour.  The object files appearing
+    on disk are what gets counted instead, and their own markers say
+    which phase is producing them.
+    """
+
+    SCRIPT = os.path.join(PROJECT_ROOT, 'lib', 'progress.py')
+
+    def setUp(self):
+        sys.path.insert(0, os.path.join(PROJECT_ROOT, 'lib'))
+        self.addCleanup(sys.path.remove,
+                        os.path.join(PROJECT_ROOT, 'lib'))
+        import progress
+        self.progress = progress
+        self.at = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.at, True)
+
+    def a_tree(self, objects=5, others=3):
+        tree = os.path.join(self.at, 'tree')
+        deep = os.path.join(tree, 'drivers', 'net')
+        os.makedirs(deep)
+        for n in range(objects):
+            open(os.path.join(deep, 'f%d.o' % n), 'w').close()
+        for n in range(others):
+            open(os.path.join(deep, 'f%d.c' % n), 'w').close()
+        return tree
+
+    def a_run(self, script, *extra):
+        """Run the bar over a little shell script, without a terminal."""
+        runner = os.path.join(self.at, 'runner.sh')
+        with open(runner, 'w') as f:
+            f.write('#!/bin/bash\n' + script)
+        os.chmod(runner, 0o755)
+        done = subprocess.run(
+            ['python3', self.SCRIPT,
+             '--watch', os.path.join(self.at, 'tree'),
+             '--output', os.path.join(self.at, 'case.log'),
+             '--totals', os.path.join(self.at, 'totals'),
+             '--name', 'demo'] + list(extra) + ['--', runner],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        return done.returncode, done.stdout.decode('utf-8', 'replace')
+
+    def remember(self, total):
+        """What a previous successful run of this case built."""
+        os.makedirs(os.path.join(self.at, 'totals'), exist_ok=True)
+        with open(os.path.join(self.at, 'totals', 'demo'), 'w') as f:
+            f.write('%d\n' % total)
+
+    def objects(self, how_many):
+        """A build in progress, that far along."""
+        tree = os.path.join(self.at, 'tree')
+        os.makedirs(tree, exist_ok=True)
+        return 'for i in $(seq 1 %d); do : > "%s/o$i.o"; done\nsleep 6\n' % (
+            how_many, tree)
+
+    # ---- what gets counted ----
+
+    def test_only_object_files_are_counted(self):
+        tree = self.a_tree(objects=5, others=3)
+        self.assertEqual(self.progress.count_objects(tree), 5)
+
+    def test_a_tree_that_does_not_exist_yet_counts_nothing(self):
+        # Their script creates it by cloning into it, so the bar starts
+        # before there is anything to look at.
+        self.assertEqual(self.progress.count_objects(
+            os.path.join(self.at, 'not-yet')), 0)
+        self.assertEqual(self.progress.count_objects(''), 0)
+
+    def test_a_linked_tree_is_not_counted_twice(self):
+        # Their anck_rpm_build does `ln -sf ../${anck_repo} cloud-kernel`
+        # to put the kernel where their build harness expects it, so a
+        # walk that followed links would count every object twice and
+        # the bar would sit at half of what it should be.
+        tree = self.a_tree(objects=5, others=0)
+        os.symlink(tree, os.path.join(self.at, 'tree', 'mirror'))
+        self.assertEqual(self.progress.count_objects(tree), 5)
+
+    # ---- the phase, in their words ----
+
+    def a_phase(self, text):
+        log = os.path.join(self.at, 'phases.log')
+        with open(log, 'w') as f:
+            f.write(text)
+        return self.progress.Phase(log).poll()
+
+    def test_their_markers_become_the_label(self):
+        # The three shapes their anck_build.sh announces steps in.
+        self.assertEqual(self.a_phase('===> Clone kernel repository...\n'),
+                         'Clone kernel repository')
+        self.assertEqual(
+            self.a_phase('== Build Kernel with allyesconfig ==\n'),
+            'Build Kernel with allyesconfig')
+        self.assertEqual(self.a_phase('  -> running their suite on 1.2.3.4\n'),
+                         'running their suite on 1.2.3.4')
+
+    def test_the_latest_marker_wins(self):
+        self.assertEqual(
+            self.a_phase('===> Clone kernel repository...\n'
+                         'Cloning into cloud-kernel...\n'
+                         '===> Install related packages...\n'
+                         '== Check kconfig ==\n'
+                         'PASS\n'),
+            'Check kconfig')
+
+    def test_the_log_is_read_as_it_grows(self):
+        # A kernel build's log is read every fifth of a second for as
+        # long as the build runs, so it is read from where the last read
+        # stopped rather than from the beginning each time.
+        log = os.path.join(self.at, 'growing.log')
+        with open(log, 'w') as f:
+            f.write('===> Clone kernel repository...\n')
+        phase = self.progress.Phase(log)
+        self.assertEqual(phase.poll(), 'Clone kernel repository')
+        with open(log, 'a') as f:
+            f.write('== Build Kernel with allnoconfig ==\n')
+        self.assertEqual(phase.poll(), 'Build Kernel with allnoconfig')
+        # Nothing new, and the answer does not become blank.
+        self.assertEqual(phase.poll(), 'Build Kernel with allnoconfig')
+
+    def test_the_phase_is_read_from_where_their_script_writes_it(self):
+        # Their anck_build.py runs their anck_build.sh with its output
+        # redirected to /tmp/anck_<case>.log, so our own log gets
+        # nothing until the case is over.  Reading the phase from ours
+        # left the label blank for the whole of a run.
+        theirs = os.path.join(self.at, 'theirs.log')
+        rc, out = self.a_run(
+            'echo "===> Clone kernel repository..." > "%s"\nsleep 6\n'
+            % theirs, '--phases', theirs)
+        self.assertEqual(rc, 0)
+        self.assertIn('phase=Clone kernel repository', out)
+
+    def test_their_live_log_is_named_the_way_their_script_names_it(self):
+        # Two of their files agree on this path -- anck_build.py writes
+        # it and run.sh reads the verdict out of it -- so it is theirs
+        # to change, and when they do, this is where it shows up rather
+        # than as a bar with no label.
+        self.assertIn('"/tmp/anck_{}.log".format(config)',
+                      read_file('anolis', 'tone-cli', 'tests',
+                                'anck-pack-and-boot', 'anck_build.py'))
+        self.assertIn('/tmp/anck_${2:-}.log',
+                      read_file('anolis', 'an_tone.sh'))
+        self.assertIn('--case-log', read_file('anolis', 'test.sh'))
+
+    # ---- running the case ----
+
+    def test_the_cases_status_is_the_bars_status(self):
+        # The bar is in front of their verdict, so swallowing a failure
+        # here would turn every failing case into a pass.
+        self.assertEqual(self.a_run('exit 0')[0], 0)
+        self.assertEqual(self.a_run('exit 1')[0], 1)
+        self.assertEqual(self.a_run('exit 5')[0], 5)
+
+    def test_the_cases_output_goes_to_its_log_and_not_the_bar(self):
+        # Their "<case>: pass" is read back out of that file, and
+        # anything of ours in it would be read along with it.
+        rc, out = self.a_run('echo "check_Kconfig: pass"\n'
+                             'echo "====PASS: check_Kconfig"\n')
+        self.assertEqual(rc, 0)
+        self.assertNotIn('====PASS', out)
+        with open(os.path.join(self.at, 'case.log')) as f:
+            log = f.read()
+        self.assertIn('====PASS: check_Kconfig', log)
+        self.assertNotIn('prci-progress', log)
+
+    # ---- the denominator, which is nowhere written down ----
+
+    def test_the_first_run_of_a_case_has_no_percentage(self):
+        # Nothing to measure against yet.  Claiming one would be making
+        # it up, and allyesconfig and allnoconfig differ by four orders
+        # of magnitude.
+        os.makedirs(os.path.join(self.at, 'tree'))
+        rc, out = self.a_run('touch "%s"/tree/a.o\nsleep 6\n' % self.at)
+        self.assertEqual(rc, 0)
+        self.assertIn('pct=-', out)
+
+    def test_a_case_measures_itself_against_its_last_run(self):
+        self.remember(1000)
+        rc, out = self.a_run(self.objects(500))
+        self.assertEqual(rc, 0)
+        self.assertIn('pct=50', out)
+
+    def test_the_previous_runs_objects_are_not_counted_as_this_ones(self):
+        # Their anck_build.sh opens by removing the tree and cloning it
+        # again, so for the first half-minute what is on disk is the
+        # last run's work.  Counted, it opened the bar at 99% and then
+        # dropped it to nothing once their clean-up caught up.
+        self.remember(400)
+        self.a_tree(objects=400, others=0)     # last run, still there
+        tree = os.path.join(self.at, 'tree')
+        rc, out = self.a_run(
+            'sleep 7\n'                        # their clone takes a while
+            'rm -rf "%s"\n'
+            'mkdir -p "%s"\n'
+            'for i in $(seq 1 100); do : > "%s/o$i.o"; done\n'
+            'sleep 7\n' % (tree, tree, tree))
+        self.assertEqual(rc, 0)
+        self.assertNotIn('pct=99', out)
+        self.assertNotIn('pct=100', out)
+        self.assertIn('pct=25', out)
+
+    def test_a_case_that_compiles_nothing_claims_no_percentage(self):
+        # Their check_Kconfig runs their config tooling and no compiler,
+        # leaving eight objects behind.  A bar measured against eight
+        # reads 99% within seconds and stays there for the minute the
+        # check really takes, which is worse than no bar.
+        self.remember(8)
+        rc, out = self.a_run(self.objects(8))
+        self.assertEqual(rc, 0)
+        self.assertIn('pct=-', out)
+        self.assertNotIn('pct=9', out)
+
+    def test_what_a_case_built_is_remembered_for_next_time(self):
+        self.a_tree(objects=7, others=2)
+        rc, _ = self.a_run('true')
+        self.assertEqual(rc, 0)
+        with open(os.path.join(self.at, 'totals', 'demo')) as f:
+            self.assertEqual(f.read().strip(), '7')
+
+    def test_a_case_that_failed_is_not_remembered(self):
+        # A build that stopped early left fewer objects behind than a
+        # whole one; writing that down would make the next run's bar
+        # reach 100% and sit there for the rest of the build.
+        self.remember(9000)
+        self.a_tree(objects=3)
+        self.assertEqual(self.a_run('exit 1')[0], 1)
+        with open(os.path.join(self.at, 'totals', 'demo')) as f:
+            self.assertEqual(f.read().strip(), '9000')
+
+    # ---- the estimate ----
+
+    def test_no_estimate_is_offered_from_the_first_few_samples(self):
+        # Those land while their configure step is still running, where
+        # the rate is nothing like the compile's.  Extrapolated, they
+        # read "eta 34m45s" for a build that had fifty seconds left.
+        rate = self.progress.Rate()
+        rate.add(100.0, 0)
+        rate.add(105.0, 2)
+        self.assertEqual(rate.per_second(), 0.0)
+
+    def test_the_clone_and_the_configure_are_not_counted_as_compiling(self):
+        # Their clone takes half a minute and their configure step a
+        # while after it, all of it producing no objects at all.  Left
+        # in the window those samples halve the rate, which is how a
+        # build a minute from finishing read "eta 25m58s".
+        rate = self.progress.Rate()
+        for step in range(8):                  # cloning: nothing yet
+            rate.add(100.0 + step * 5, 0)
+        for step in range(8):                  # compiling, 10 a second
+            rate.add(140.0 + step * 5, step * 50)
+        self.assertAlmostEqual(rate.per_second(), 10.0, places=5)
+
+    def test_the_estimate_comes_from_the_recent_past(self):
+        # A whole-run average would be held down by the configure step
+        # for the rest of the build.
+        rate = self.progress.Rate()
+        for step in range(40):
+            rate.add(100.0 + step * 5, step * 50)
+        self.assertAlmostEqual(rate.per_second(), 10.0, places=5)
+
+    def test_a_build_that_has_stopped_producing_gets_no_estimate(self):
+        # Linking, or a stall.  Dividing by a rate of zero is the
+        # obvious hazard; claiming it will never finish is the other.
+        rate = self.progress.Rate()
+        for step in range(10):
+            rate.add(100.0 + step * 5, 500)
+        self.assertEqual(rate.per_second(), 0.0)
+
+    # ---- what it draws ----
+
+    def test_the_bar_never_fills_before_their_verdict(self):
+        # The count can legitimately overshoot a remembered total -- a
+        # series that adds a driver builds more than the run before it
+        # -- and a bar reading 100% while the build carries on says the
+        # tool has lost track.
+        self.remember(300)
+        rc, out = self.a_run(self.objects(900))
+        self.assertEqual(rc, 0)
+        self.assertIn('pct=99', out)
+        self.assertNotIn('pct=100', out)
+
+    def test_the_bar_advances_within_a_character(self):
+        # Eighth-blocks at 28 columns give 224 positions rather than 28,
+        # which is the difference between looking stalled during a long
+        # phase and visibly creeping.
+        width = 28
+        seen = set()
+        for permille in range(0, 1000):
+            seen.add(self.progress.bar(permille / 1000.0, width, True))
+        self.assertGreater(len(seen), width * 4)
+        # And it stays one bar wide however full it is, or the line
+        # would jump about as it fills.
+        for fraction in (0.0, 0.015, 0.5, 0.999, 1.0):
+            self.assertEqual(
+                len(self.progress.bar(fraction, width, True)), width)
+
+    def test_a_terminal_that_cannot_draw_blocks_gets_plain_ones(self):
+        plain = self.progress.bar(0.5, 28, False)
+        self.assertEqual(len(plain), 28)
+        self.assertEqual(set(plain), set('= '))
+
+    # ---- and what the web interface makes of it ----
+
+    def test_the_web_interface_reads_the_percentage(self):
+        sys.path.insert(0, os.path.join(PROJECT_ROOT, 'web'))
+        self.addCleanup(sys.path.remove, os.path.join(PROJECT_ROOT, 'web'))
+        from prci.jobs import _PROGRESS_RE
+        found = _PROGRESS_RE.match(
+            '[prci-progress] pct=42 done=12431 total=29000 elapsed=900 '
+            'phase=Build Kernel with allyesconfig')
+        self.assertIsNotNone(found)
+        self.assertEqual(found.group(1), '42')
+        self.assertEqual(found.group(2), '12431')
+        self.assertEqual(found.group(5), 'Build Kernel with allyesconfig')
+        # The first run of a case reports no percentage, and that has to
+        # parse too rather than being mistaken for a build log line.
+        self.assertIsNotNone(_PROGRESS_RE.match(
+            '[prci-progress] pct=- done=0 total=0 elapsed=3 phase=Cloning'))
+
+    def test_what_the_bar_writes_is_not_shown_as_the_build_log(self):
+        # last_line is put in front of the user; "pct=42 done=12431" in
+        # that spot would replace what the build is actually doing.
+        source = read_file('web', 'prci', 'jobs.py')
+        observe = source[source.index('def _observe('):]
+        observe = observe[:observe.index('\n    def ')]
+        self.assertIn('_PROGRESS_RE', observe)
+        self.assertLess(observe.index('_PROGRESS_RE'),
+                        observe.index("job['last_line']"))
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)

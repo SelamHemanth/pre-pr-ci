@@ -690,6 +690,12 @@ an_tone_expect_kver() {
 if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
   case "${1:-}" in
     --sandbox)      shift; _an_tone_sandbox "$@" ;;
+    --scratch)      echo "${AN_TONE_SCRATCH}/${2:-}" ;;
+    # Where their anck_build.py is writing while a case runs.  Their own
+    # run.sh reads the verdict out of the same path; our log only gets
+    # their output once the case is over, so this is the one place to
+    # watch for what they are doing now.
+    --case-log)     echo "/tmp/anck_${2:-}.log" ;;
     --rpm-dir)      an_tone_rpm_dir ;;
     --expect-kver)  an_tone_expect_kver ;;
     --cases)        an_tone_cases ;;

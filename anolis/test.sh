@@ -52,6 +52,35 @@ export VM_IP
 # shellcheck source=../lib/boot_test.sh
 . "${WORKDIR}/lib/boot_test.sh"
 
+#: Draws a bar while a case runs, since their builds are silent.  It
+#: runs the case as its own child and exits with the case's status, so
+#: there is nothing here to start and stop.
+PROGRESS="${WORKDIR}/lib/progress.py"
+
+#: Where each case's object count from its last successful run is kept,
+#: so the next run of it has something to measure against.
+PROGRESS_TOTALS="${WORKDIR}/.prci/progress"
+
+# Run one thing with a bar in front of it.
+#
+# The case's own output goes to its log, which is where their verdict is
+# read from and must stay exactly as their scripts wrote it; the bar
+# goes to our stdout, which is a terminal for `make test` and the job
+# log for the web interface.
+with_progress() {
+  local watch="$1" log="$2" name="$3" phases="$4"
+  shift 4
+
+  if [ -f "${PROGRESS}" ]; then
+    python3 "${PROGRESS}" --watch "${watch}" --output "${log}" \
+            --phases "${phases}" \
+            --totals "${PROGRESS_TOTALS}" --name "${name}" -- "$@"
+    return $?
+  fi
+
+  "$@" > "${log}" 2>&1
+}
+
 # Function to list available tests
 list_tests() {
   echo ""
@@ -192,10 +221,26 @@ warn() {
 run_their_build_case() {
   local theirs="$1" ours="${2:-$1}" stem="${3:-${2:-$1}}"
   local log="${LOGS_DIR}/${stem}.log"
+  local rc=0 scratch
 
   echo "  → Running their ${theirs}..."
-  bash "${SCRIPT_DIR}/an_tone.sh" "${theirs}" > "${log}" 2>&1
-  case $? in
+
+  # Their build cases end in `make -j $job_num -s`, so between their
+  # configure step and their verdict there is nothing on stdout to show
+  # -- for allyesconfig that is the best part of an hour.  The object
+  # files appearing in the directory they build in are the sign of life
+  # instead, and an_tone.sh is asked where that is rather than it being
+  # worked out twice.
+  scratch=$(bash "${SCRIPT_DIR}/an_tone.sh" --scratch "${theirs}" \
+            2>/dev/null)
+
+  # Their anck_build.py writes while the case runs; ours only receives
+  # their output once it is over, so the phase is read from theirs.
+  with_progress "${scratch}" "${log}" "${stem}" \
+                "$(bash "${SCRIPT_DIR}/an_tone.sh" --case-log "${theirs}")" \
+                bash "${SCRIPT_DIR}/an_tone.sh" "${theirs}" || rc=$?
+
+  case ${rc} in
     0) pass "${ours}" ;;
     1) fail "${ours}" "Their ${theirs} failed (see ${log})" ;;
     3) skip "${ours}" "$(tail -n 4 "${log}")" ;;
@@ -258,9 +303,16 @@ test_anck_rpm_build() {
 run_their_vm_case() {
   local case_name="$1" stem="${2:-$1}"
   local log="${LOGS_DIR}/${stem}.log"
+  local rc=0
 
-  bash "${SCRIPT_DIR}/cases/anck_ci_test.sh" "${case_name}" > "${log}" 2>&1
-  case $? in
+  # Nothing to count for these -- their suite builds kabi-dw and reads
+  # dmesg on the VM, not here -- so the bar reports their steps and how
+  # long they have been running.
+  with_progress '' "${log}" "${stem}" "${log}" \
+                bash "${SCRIPT_DIR}/cases/anck_ci_test.sh" "${case_name}" \
+                || rc=$?
+
+  case ${rc} in
     0) pass "${case_name}" ;;
     1) fail "${case_name}" "Their ${case_name} failed (see ${log})" ;;
     3) skip "${case_name}" "$(vm_skip_reason "${log}")" ;;

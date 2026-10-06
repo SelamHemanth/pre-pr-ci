@@ -92,6 +92,16 @@ _PHASE_RE = re.compile(
 #: moving during a compile rather than sitting still for forty minutes.
 _PHASES_PER_PATCH = 3
 
+# lib/progress.py writes this when its stdout is a job log rather than a
+# terminal.  A single test is one step, so counting verdicts gives nothing to
+# show until it has finished -- and the thing it is doing in the meantime is a
+# kernel compile that their scripts run silently.  pct is '-' until the case
+# has a previous run to measure against.
+_PROGRESS_RE = re.compile(
+    r'^\s*\[prci-progress\]\s+pct=(-|\d+)\s+done=(\d+)\s+total=(\d+)\s+'
+    r'elapsed=(\d+)\s+phase=(.*)$'
+)
+
 #: What each kind of job is called on screen.  Individual tests are not
 #: here: their names come from the registry, so the history and the test
 #: list cannot drift apart.
@@ -333,6 +343,22 @@ class JobStore:
         match = _RESULT_RE.match(clean)
         patch = _PATCH_RE.match(clean)
         phase = _PHASE_RE.match(clean)
+        bar = _PROGRESS_RE.match(clean)
+
+        if bar:
+            # Consumed rather than shown: it is the bar's own bookkeeping,
+            # and leaving it in last_line would put "pct=42 done=12431" in
+            # front of the user instead of what the build is doing.
+            with self._lock:
+                job = self._jobs.get(job_id)
+                if not job:
+                    return
+                job['build_progress'] = (None if bar.group(1) == '-'
+                                         else int(bar.group(1)))
+                job['build_objects'] = int(bar.group(2))
+                job['build_phase'] = bar.group(5).strip()[:120]
+            return
+
         with self._lock:
             job = self._jobs.get(job_id)
             if not job:
@@ -395,10 +421,16 @@ class JobStore:
         total = out.get('total_steps') or 0
         done = len(out.get('results') or [])
         step = out.get('step') or 0
+        within = out.get('build_progress')
         if out['status'] in FINISHED_STATES:
             out['progress'] = 100
-        elif done and total:
-            out['progress'] = min(99, int(done * 100 / total))
+        elif total and (done or within is not None):
+            # The cases that have reported a verdict, plus how far into the
+            # one still running.  Without that second part a single test is
+            # one step and the bar had nothing to show for the whole of a
+            # kernel compile, which is most of what the tool does.
+            part = (within / 100.0) if within is not None else 0.0
+            out['progress'] = min(99, int((done + part) * 100 / total))
         elif step and total:
             # Patches completed, plus how far into the current one we are.
             # Capped below 1 so finishing a patch's phases cannot claim the
