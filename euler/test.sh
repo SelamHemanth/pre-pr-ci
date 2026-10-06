@@ -52,6 +52,14 @@ KABI_KERNEL_DIR="${SCRIPT_DIR}/kernel"
 
 # shellcheck source=../lib/torvalds.sh
 . "${WORKDIR}/lib/torvalds.sh"
+
+#: Where each build's object count from its last successful run is kept,
+#: so the next run of it has something to measure against.  Read by
+#: lib/progress.sh, so it is set before sourcing it.
+PROGRESS_TOTALS="${WORKDIR}/.prci/progress"
+
+# shellcheck source=../lib/progress.sh
+. "${WORKDIR}/lib/progress.sh"
 # oe_hulk.sh sources oe_build.sh for the host-side knowledge their
 # scripts are handed by Jenkins; the checks themselves come out of the
 # submodule.
@@ -283,9 +291,20 @@ run_oe_build() {
     return
   fi
 
+  # Their build is `make -j$NR_CPUS 2> build_output.txt 1> /dev/null`,
+  # so for the whole of the compile nothing reaches the console at all
+  # -- their own log_info lines are the only thing that does, and there
+  # are a handful of them.  The objects appearing in the tree they build
+  # in are counted instead, and their stars -- "***** Start to download
+  # kernel of openeuler *****" -- name the phase.
+  progress_watch "${LINUX_SRC_PATH}" "${log}" "${test_name}"
+
   oe_hulk_arch "${arch}" 2>&1 | tee "${log}"
 
-  case "${PIPESTATUS[0]}" in
+  local rc="${PIPESTATUS[0]}"
+  progress_unwatch "${rc}"
+
+  case "${rc}" in
     0) pass "${test_name}" ;;
     # Their job for an architecture their branch has off runs, prints
     # "<arch> is set to false, exit", and exits 0 above the compile --

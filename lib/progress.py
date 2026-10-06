@@ -94,13 +94,20 @@ def unicode_ok():
     return 'utf' in encoding
 
 
-def count_objects(where):
-    """The object files under a tree.
+def count_objects(where, since=0.0):
+    """The object files under a tree that this run is responsible for.
 
     Counted rather than collected: a kernel build leaves tens of
     thousands and none of the names are wanted.  Symbolic links are not
     followed, because their anck_rpm_build links the kernel into the
     build harness and the tree would otherwise be counted twice.
+
+    ``since`` is what makes the figure this run's rather than the
+    tree's.  Anolis's cases re-clone and openEuler's build runs `make
+    distclean`, but neither has done so in the first half-minute, and
+    counting what was already there opened the bar at 99% and then
+    dropped it to nothing.  An object older than the run did not come
+    from it.
     """
     if not where or not os.path.isdir(where):
         return 0
@@ -115,6 +122,9 @@ def count_objects(where):
                         if entry.is_dir(follow_symlinks=False):
                             stack.append(entry.path)
                         elif entry.name.endswith('.o'):
+                            if since and entry.stat(
+                                    follow_symlinks=False).st_mtime < since:
+                                continue
                             found += 1
                     except OSError:
                         continue
@@ -168,6 +178,14 @@ class Phase(object):
                 # steps -- copying the suite over, running it there --
                 # are the only thing there is to report.
                 self.text = line[2:].strip()
+            elif '*****' in line:
+                # openEuler's, whose log_info comes from
+                # openeuler-jenkins and wraps each step in stars:
+                # "[ INFO ] ***** Start to download kernel of openeuler
+                # *****".
+                starred = line.split('*****')
+                if len(starred) >= 3 and starred[1].strip():
+                    self.text = starred[1].strip()
         return self.text
 
 
@@ -311,43 +329,26 @@ class Display(object):
             self.out.flush()
 
 
-def watch(child, args, display):
-    """Draw until the child is done."""
+def watch(running, args, display):
+    """Draw for as long as running() says to."""
     phase = Phase(args.phases or args.output)
     rate = Rate()
     total = read_total(args)
 
-    started = time.time()
+    started = args.since or time.time()
     done = 0
     counted_at = 0.0
 
-    # What the last run of this case left behind.  Their anck_build.sh
-    # opens by removing the tree and cloning it again -- "cloud-kernel
-    # exist, try to remove it..." -- but until it has, the objects on
-    # disk are the previous run's, and counting them put the bar at 99%
-    # for the first half-minute and then dropped it to nothing.
-    stale = count_objects(args.watch)
-    fresh = stale == 0
-
-    while child.poll() is None:
+    while running():
         now = time.time()
         if now - counted_at >= COUNT_EVERY:
-            done = count_objects(args.watch)
+            done = count_objects(args.watch, started)
             counted_at = now
             rate.add(now, done)
 
-        if not fresh and (done < stale or (total and done > total)):
-            # Either their clean-up has run, or this build has already
-            # gone further than the last one did.  Both mean what is on
-            # disk now belongs to this run.
-            fresh = True
-            rate = Rate()
-
-        shown = done if fresh else 0
-
         pct = None
         eta = 0
-        if fresh and total >= MIN_FOR_PERCENT and done > 0:
+        if total >= MIN_FOR_PERCENT and done > 0:
             # Capped below 100: their verdict decides when a case is
             # finished, not a count measured against a remembered total
             # that this run can legitimately overshoot.
@@ -356,12 +357,12 @@ def watch(child, args, display):
             if per_second > 0 and total > done:
                 eta = (total - done) / per_second
 
-        display.paint(pct, shown, total, now - started,
+        display.paint(pct, done, total, now - started,
                       phase.poll(), eta)
         time.sleep(DRAW_EVERY)
 
     display.clear()
-    return done
+    return done, started
 
 
 def read_total(args):
@@ -392,32 +393,8 @@ def write_total(args, count):
         pass
 
 
-def main():
-    parser = argparse.ArgumentParser(
-        description='Run a command and show how far along it is.')
-    parser.add_argument('--watch', default='',
-                        help='tree whose object files are counted')
-    parser.add_argument('--output', default='/dev/null',
-                        help="file the command's own output goes to")
-    parser.add_argument('--phases', default='',
-                        help='file to read the current phase from, when '
-                             'the command writes its progress elsewhere '
-                             'than --output (defaults to --output)')
-    parser.add_argument('--totals', default='',
-                        help='directory of remembered object counts')
-    parser.add_argument('--name', default='',
-                        help='what to remember this run as')
-    parser.add_argument('command', nargs=argparse.REMAINDER)
-    args = parser.parse_args()
-
-    command = args.command
-    if command and command[0] == '--':
-        command = command[1:]
-    if not command:
-        parser.error('nothing to run')
-
-    display = Display(sys.stdout, args.name or command[0])
-
+def run_the_command(args, display, command):
+    """Draw in front of a command, and answer with the command's status."""
     try:
         sink = open(args.output, 'w')
     except OSError as problem:
@@ -445,7 +422,7 @@ def main():
                 pass
 
         try:
-            done = watch(child, args, display)
+            done, started = watch(lambda: child.poll() is None, args, display)
         except KeyboardInterrupt:
             display.clear()
             child.wait()
@@ -457,8 +434,78 @@ def main():
         # Counted once more now it has finished, so the figure that gets
         # remembered is the whole build rather than wherever the last
         # five-second sample happened to land.
-        write_total(args, max(done, count_objects(args.watch)))
+        write_total(args, max(done, count_objects(args.watch, started)))
     return status
+
+
+def just_watch(args, display):
+    """Draw until told to stop, with the work going on elsewhere.
+
+    openEuler's build is a shell function their runner sources rather
+    than a script it can run, so there is no child to put the bar in
+    front of -- it draws alongside instead, and whoever started it says
+    when the build finished and whether to remember the count.
+    """
+    stop = threading.Event()
+
+    for number in (signal.SIGINT, signal.SIGTERM):
+        try:
+            signal.signal(number, lambda *_: stop.set())
+        except (ValueError, OSError):
+            pass
+
+    try:
+        watch(lambda: not stop.is_set(), args, display)
+    except KeyboardInterrupt:
+        pass
+    display.clear()
+    return 0
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description='Run a command and show how far along it is.')
+    parser.add_argument('--watch', default='',
+                        help='tree whose object files are counted')
+    parser.add_argument('--output', default='/dev/null',
+                        help="file the command's own output goes to")
+    parser.add_argument('--phases', default='',
+                        help='file to read the current phase from, when '
+                             'the command writes its progress elsewhere '
+                             'than --output (defaults to --output)')
+    parser.add_argument('--totals', default='',
+                        help='directory of remembered object counts')
+    parser.add_argument('--name', default='',
+                        help='what to remember this run as')
+    parser.add_argument('--watch-only', action='store_true',
+                        help='draw alongside work started elsewhere, '
+                             'until stopped')
+    parser.add_argument('--record', action='store_true',
+                        help='remember what is there now and draw '
+                             'nothing; for use after --watch-only')
+    parser.add_argument('--since', type=float, default=0.0,
+                        help='count only objects built after this time, '
+                             'as seconds since the epoch (defaults to '
+                             'when this starts)')
+    parser.add_argument('command', nargs=argparse.REMAINDER)
+    args = parser.parse_args()
+
+    command = args.command
+    if command and command[0] == '--':
+        command = command[1:]
+
+    if args.record:
+        write_total(args, count_objects(args.watch, args.since))
+        return 0
+
+    if args.watch_only:
+        return just_watch(args, Display(sys.stdout, args.name))
+
+    if not command:
+        parser.error('nothing to run')
+
+    return run_the_command(args, Display(sys.stdout, args.name or command[0]),
+                           command)
 
 
 if __name__ == '__main__':

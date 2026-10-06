@@ -3486,24 +3486,45 @@ class TestProgressBar(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertIn('pct=50', out)
 
+    def stale_objects(self, how_many):
+        """A previous run's work, still in the tree and plainly older."""
+        tree = self.a_tree(objects=how_many, others=0)
+        old = time.time() - 7200
+        for here, _, files in os.walk(tree):
+            for name in files:
+                os.utime(os.path.join(here, name), (old, old))
+        return tree
+
     def test_the_previous_runs_objects_are_not_counted_as_this_ones(self):
         # Their anck_build.sh opens by removing the tree and cloning it
-        # again, so for the first half-minute what is on disk is the
-        # last run's work.  Counted, it opened the bar at 99% and then
-        # dropped it to nothing once their clean-up caught up.
+        # again, and openEuler's build runs `make distclean` -- but
+        # neither has done so in the first half-minute, so what is on
+        # disk until then is the last run's work.  Counted, it opened
+        # the bar at 99% and dropped it to nothing once their clean-up
+        # caught up.  An object older than the run did not come from it.
         self.remember(400)
-        self.a_tree(objects=400, others=0)     # last run, still there
-        tree = os.path.join(self.at, 'tree')
-        rc, out = self.a_run(
-            'sleep 7\n'                        # their clone takes a while
-            'rm -rf "%s"\n'
-            'mkdir -p "%s"\n'
-            'for i in $(seq 1 100); do : > "%s/o$i.o"; done\n'
-            'sleep 7\n' % (tree, tree, tree))
+        self.stale_objects(400)
+        rc, out = self.a_run(self.objects(100))
         self.assertEqual(rc, 0)
         self.assertNotIn('pct=99', out)
         self.assertNotIn('pct=100', out)
         self.assertIn('pct=25', out)
+
+    def test_an_older_object_is_not_this_runs(self):
+        tree = self.stale_objects(6)
+        self.assertEqual(self.progress.count_objects(tree), 6)
+        self.assertEqual(
+            self.progress.count_objects(tree, time.time() - 60), 0)
+
+    def test_what_gets_remembered_is_this_runs_work_only(self):
+        # Otherwise the first run after a tree was left dirty would
+        # remember the two runs added together, and every bar after it
+        # would stop half way.
+        self.stale_objects(300)
+        rc, _ = self.a_run(self.objects(50))
+        self.assertEqual(rc, 0)
+        with open(os.path.join(self.at, 'totals', 'demo')) as f:
+            self.assertEqual(f.read().strip(), '50')
 
     def test_a_case_that_compiles_nothing_claims_no_percentage(self):
         # Their check_Kconfig runs their config tooling and no compiler,
@@ -3517,8 +3538,7 @@ class TestProgressBar(unittest.TestCase):
         self.assertNotIn('pct=9', out)
 
     def test_what_a_case_built_is_remembered_for_next_time(self):
-        self.a_tree(objects=7, others=2)
-        rc, _ = self.a_run('true')
+        rc, _ = self.a_run(self.objects(7))
         self.assertEqual(rc, 0)
         with open(os.path.join(self.at, 'totals', 'demo')) as f:
             self.assertEqual(f.read().strip(), '7')
@@ -3604,6 +3624,95 @@ class TestProgressBar(unittest.TestCase):
         plain = self.progress.bar(0.5, 28, False)
         self.assertEqual(len(plain), 28)
         self.assertEqual(set(plain), set('= '))
+
+    # ---- drawing alongside work this shell is doing itself ----
+
+    def watch_only(self, prepare, seconds=7):
+        """What openEuler's build does: start the bar, work, stop it."""
+        os.makedirs(os.path.join(self.at, 'tree'), exist_ok=True)
+        script = (
+            '. "%s/lib/progress.sh"\n'
+            'PROGRESS_TOTALS="%s/totals"\n'
+            'progress_watch "%s/tree" "%s/log" demo\n'
+            '%s'
+            'sleep %d\n'
+            'progress_unwatch 0\n'
+            % (PROJECT_ROOT, self.at, self.at, self.at, prepare, seconds))
+        done = subprocess.run(['bash', '-c', script],
+                              stdout=subprocess.PIPE,
+                              stderr=subprocess.STDOUT)
+        return done.returncode, done.stdout.decode('utf-8', 'replace')
+
+    def test_a_build_this_shell_runs_itself_still_gets_a_bar(self):
+        # openEuler's build is a shell function their runner sources,
+        # not a script it can run, so there is no child to put the bar
+        # in front of.
+        self.remember(400)
+        rc, out = self.watch_only(
+            'for i in $(seq 1 200); do : > "%s/tree/o$i.o"; done\n'
+            % self.at)
+        self.assertEqual(rc, 0)
+        self.assertIn('pct=50', out)
+
+    def test_stopping_the_bar_remembers_what_was_built(self):
+        rc, out = self.watch_only(
+            'for i in $(seq 1 250); do : > "%s/tree/o$i.o"; done\n'
+            % self.at, seconds=1)
+        self.assertEqual(rc, 0, out)
+        with open(os.path.join(self.at, 'totals', 'demo')) as f:
+            self.assertEqual(f.read().strip(), '250')
+
+    def test_the_bar_does_not_outlive_the_build_it_was_drawing(self):
+        # It is a background process, so a missed kill would leave it
+        # walking a kernel tree every five seconds until the machine
+        # was rebooted.
+        os.makedirs(os.path.join(self.at, 'tree'))
+        before = subprocess.run(['pgrep', '-fc', 'progress.py'],
+                                stdout=subprocess.PIPE).stdout.strip()
+        self.watch_only('', seconds=1)
+        after = subprocess.run(['pgrep', '-fc', 'progress.py'],
+                               stdout=subprocess.PIPE).stdout.strip()
+        self.assertEqual(before, after)
+
+    # ---- openEuler's markers, which are not Anolis's ----
+
+    def test_openeulers_stars_become_the_label(self):
+        # Their log_info comes from openeuler-jenkins and wraps every
+        # step in them.  Their build sends make's stdout to /dev/null
+        # and its stderr to a file, so these lines are the only thing
+        # that reaches the console for the whole of a compile.
+        self.assertEqual(
+            self.a_phase('[2026-10-06 11:20:00] [ INFO ] ***** Start to '
+                         'download kernel of openeuler *****\n'),
+            'Start to download kernel of openeuler')
+
+    def test_a_bare_row_of_stars_is_not_a_label(self):
+        # Their scripts print those as separators.
+        self.assertEqual(self.a_phase('===> Clone kernel repository...\n'
+                                      '*****\n'
+                                      '**********\n'),
+                         'Clone kernel repository')
+
+    def test_both_runners_draw_the_same_bar(self):
+        # The two call it differently because their gates are reached
+        # differently, but neither keeps a copy of how it is started.
+        for distro in ('anolis', 'euler'):
+            source = read_file(distro, 'test.sh')
+            self.assertIn('lib/progress.sh', source, distro)
+            self.assertIn('PROGRESS_TOTALS', source, distro)
+        self.assertIn('with_progress', read_file('anolis', 'test.sh'))
+        self.assertIn('progress_watch', read_file('euler', 'test.sh'))
+        self.assertIn('progress_unwatch', read_file('euler', 'test.sh'))
+
+    def test_openeulers_build_status_survives_the_bar(self):
+        # Their verdict is read from PIPESTATUS, and the bar is started
+        # and stopped around it -- so the status has to be taken before
+        # progress_unwatch runs anything of its own.
+        source = read_file('euler', 'test.sh')
+        build = source[source.index('run_oe_build() {'):]
+        build = build[:build.index('\n}\n')]
+        self.assertLess(build.index('PIPESTATUS'),
+                        build.index('progress_unwatch'))
 
     # ---- and what the web interface makes of it ----
 

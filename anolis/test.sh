@@ -52,34 +52,16 @@ export VM_IP
 # shellcheck source=../lib/boot_test.sh
 . "${WORKDIR}/lib/boot_test.sh"
 
-#: Draws a bar while a case runs, since their builds are silent.  It
-#: runs the case as its own child and exits with the case's status, so
-#: there is nothing here to start and stop.
-PROGRESS="${WORKDIR}/lib/progress.py"
-
 #: Where each case's object count from its last successful run is kept,
-#: so the next run of it has something to measure against.
+#: so the next run of it has something to measure against.  Read by
+#: lib/progress.sh, so it is set before sourcing it.
 PROGRESS_TOTALS="${WORKDIR}/.prci/progress"
 
-# Run one thing with a bar in front of it.
-#
-# The case's own output goes to its log, which is where their verdict is
-# read from and must stay exactly as their scripts wrote it; the bar
-# goes to our stdout, which is a terminal for `make test` and the job
-# log for the web interface.
-with_progress() {
-  local watch="$1" log="$2" name="$3" phases="$4"
-  shift 4
-
-  if [ -f "${PROGRESS}" ]; then
-    python3 "${PROGRESS}" --watch "${watch}" --output "${log}" \
-            --phases "${phases}" \
-            --totals "${PROGRESS_TOTALS}" --name "${name}" -- "$@"
-    return $?
-  fi
-
-  "$@" > "${log}" 2>&1
-}
+# Draws a bar while a case runs, since their builds are silent.  The
+# case's own output still goes only to its log, which is where their
+# verdict is read from and must stay exactly as their scripts wrote it.
+# shellcheck source=../lib/progress.sh
+. "${WORKDIR}/lib/progress.sh"
 
 # Function to list available tests
 list_tests() {
