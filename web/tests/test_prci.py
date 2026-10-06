@@ -3732,6 +3732,23 @@ class TestProgressBar(unittest.TestCase):
         self.assertIsNotNone(_PROGRESS_RE.match(
             '[prci-progress] pct=- done=0 total=0 elapsed=3 phase=Cloning'))
 
+    def test_the_web_interface_shows_what_a_build_is_doing(self):
+        # The data arrived and nothing drew it: a running allyesconfig
+        # showed an indeterminate animation while the backend held the
+        # phase and twenty thousand objects.
+        page = read_file('web', 'templates', 'index.html')
+        self.assertIn('buildStage', page)
+        self.assertIn('build_phase', page)
+        self.assertIn('build_objects', page)
+
+    def test_a_single_test_is_not_announced_as_a_patch(self):
+        # total_steps is 1 for one test and no step number is ever
+        # reported for it, so the counter read "Patch undefined of 1".
+        page = read_file('web', 'templates', 'index.html')
+        counter = page[page.index('stageCounter()'):]
+        counter = counter[:counter.index('},')]
+        self.assertIn('!j.step', counter)
+
     def test_what_the_bar_writes_is_not_shown_as_the_build_log(self):
         # last_line is put in front of the user; "pct=42 done=12431" in
         # that spot would replace what the build is actually doing.

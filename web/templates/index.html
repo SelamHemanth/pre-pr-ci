@@ -1294,6 +1294,15 @@ footer a:hover { text-decoration: underline; }
             <span class="step-now-phase" v-if="runningJob.phase">
               {{ runningJob.phase }}
             </span>
+            <!-- A build case has no patch phases; what it has is the step
+                 their own script says it is on, and the object files it
+                 has produced so far.  Worth showing even when there is no
+                 percentage to go with it: the first run of a case has
+                 nothing to measure against, and allyesconfig is both the
+                 longest of them and the one most likely to be watched. -->
+            <span class="step-now-phase" v-else-if="buildStage">
+              {{ buildStage }}
+            </span>
             <span class="step-now-pct" v-if="runningJob.progress !== null">
               {{ runningJob.progress }}%
             </span>
@@ -1956,9 +1965,23 @@ createApp({
       const test = this.tests.find(t => t.name === this.runningTest);
       return test ? test.title : '';
     },
+    // What a build is doing, for the cases that compile.  Their scripts
+    // run make silently, so the objects landing on disk are the only
+    // measure of it, and the count is shown whether or not there is a
+    // total to turn it into a percentage -- a case that has never
+    // finished here has nothing to measure against, which is precisely
+    // the case somebody is most likely to be watching.
+    buildStage() {
+      const j = this.runningJob;
+      if (!j || !j.build_phase) return '';
+      if (!j.build_objects) return j.build_phase;
+      return `${j.build_phase} · ${j.build_objects.toLocaleString()} objects`;
+    },
     stageCounter() {
       const j = this.runningJob;
-      if (!j || !j.total_steps) return '';
+      // A single test has one step and never reports a step number, so
+      // without the second guard this read "Patch undefined of 1".
+      if (!j || !j.total_steps || !j.step) return '';
       const noun = j.kind === 'test_all' ? 'Test' : 'Patch';
       return `${noun} ${j.step} of ${j.total_steps}`;
     },
