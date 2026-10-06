@@ -96,13 +96,19 @@ $(cat <<'AWK'
 /^[^ \t]+:[0-9]+: [Ww]arning:/ {
   if ($0 ~ /error:/) errors++; else warnings++
   f = $0; sub(/:.*/, "", f)
-  if (norm(f) in ours) { mine[++m] = $0 }
+  # An absolute path is not in the tree being built: it is one of this
+  # host's own headers, which is where most of build_perf's errors are.
+  if (f ~ /^\//) outside++
+  else if (norm(f) in ours) { mine[++m] = $0 }
   next
 }
 # objtool and the linker report against the object, not the source.
 /^[^ \t]+\.o: warning:/ { warnings++ }
+# Their own words for why a warning stopped the build, rather than our
+# guess at it: only perf compiles this way, and it says so itself.
+/all warnings being treated as errors/ { werror = 1 }
 END {
-  printf "%d\n%d\n%d\n", warnings, errors, m
+  printf "%d\n%d\n%d\n%d\n%d\n", warnings, errors, m, outside, werror
   for (i = 1; i <= m; i++) print mine[i]
 }
 AWK
@@ -131,7 +137,8 @@ warnings_keep_only_ours() {
 # Appended to the log the reader already has open, so the answer is
 # where the question was asked.
 warnings_summarise() {
-  local log="$1" repo="${2:-.}" touched counted warnings errors mine what
+  local log="$1" repo="${2:-.}" touched counted what
+  local warnings errors mine outside werror
 
   [ -s "${log}" ] || return 0
   touched=$(warnings_touched_files "${repo}") || return 0
@@ -141,6 +148,8 @@ warnings_summarise() {
   warnings=$(printf '%s\n' "${counted}" | sed -n 1p)
   errors=$(printf '%s\n' "${counted}" | sed -n 2p)
   mine=$(printf '%s\n' "${counted}" | sed -n 3p)
+  outside=$(printf '%s\n' "${counted}" | sed -n 4p)
+  werror=$(printf '%s\n' "${counted}" | sed -n 5p)
   [ $((warnings + errors)) -gt 0 ] 2>/dev/null || return 0
 
   if [ "${warnings}" -eq 0 ]; then
@@ -168,9 +177,23 @@ warnings_summarise() {
       echo "[prci] ${what} in this build, ${mine} of them in a file" \
            "this series"
       echo "[prci] touches:"
-      printf '%s\n' "${counted}" | tail -n +4 | sed 's/^/[prci]   /'
+      printf '%s\n' "${counted}" | tail -n +6 | sed 's/^/[prci]   /'
       echo "[prci] openEuler's CI fails a build for any warning;" \
            "Anolis's does not."
+    fi
+
+    # Where they are matters more than how many when they are not even
+    # in the kernel: build_perf's are mostly in this host's perl
+    # headers, which no patch to the kernel can do anything about.
+    if [ "${outside:-0}" -gt 0 ]; then
+      echo "[prci] ${outside} of them are not in the kernel tree at all," \
+           "but in this"
+      echo "[prci] host's own system headers."
+    fi
+    if [ "${werror:-0}" -eq 1 ]; then
+      echo "[prci] This build treats warnings as errors," \
+           "by its own makefile, so"
+      echo "[prci] a diagnostic the kernel tolerates stops it."
     fi
   } >> "${log}"
 }

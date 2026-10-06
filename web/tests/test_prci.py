@@ -3854,6 +3854,29 @@ class TestCountingWarnings(unittest.TestCase):
         self.assertIn('1 compiler errors', said)
         self.assertNotIn('warnings and', said)
 
+    def test_a_diagnostic_outside_the_tree_is_placed_outside_it(self):
+        # Nine of build_perf's eleven errors are in /usr/lib64/perl5,
+        # which no patch to the kernel can do anything about.  Saying
+        # only that they are "in files no series has been near" buries
+        # the part that answers the question.
+        said = '\n'.join(self.summarised(
+            "/usr/lib64/perl5/CORE/handy.h:125:23: error: cast from "
+            "function call [-Werror=bad-function-cast]\n"
+            "tests/bpf.c:36:17: error: argument 2 null where non-null "
+            "expected [-Werror=nonnull]\n", ['fs/foo.c']))
+        self.assertIn('1 of them are not in the kernel tree at all', said)
+        self.assertIn('2 compiler errors', said)
+
+    def test_werror_is_read_from_their_own_words(self):
+        # Only perf builds this way, and it says so itself, so there is
+        # nothing to know about perf here.
+        werror = ("util/pmu.c:1:1: error: nope [-Werror=unused]\n"
+                  "cc1: all warnings being treated as errors\n")
+        self.assertIn('treats warnings as errors',
+                      '\n'.join(self.summarised(werror, ['fs/foo.c'])))
+        self.assertNotIn('treats warnings as errors',
+                         '\n'.join(self.summarised(self.LOG, ['fs/foo.c'])))
+
     def test_nothing_is_claimed_when_the_series_cannot_be_determined(self):
         said = '\n'.join(self.summarised(self.LOG, []))
         self.assertIn('cannot', said)
