@@ -466,6 +466,9 @@ header {
 }
 .btn-danger { color: var(--fail); border-color: color-mix(in srgb, var(--fail) 45%, transparent); background: var(--glass-2); }
 .btn-danger:hover:not(:disabled) { background: var(--fail-soft); border-color: var(--fail); }
+/* Not an action, an answer: a button wears this for a moment after it
+   has done what it says, so the confirmation is where the click was. */
+.btn-ok { color: var(--pass); border-color: color-mix(in srgb, var(--pass) 45%, transparent); background: var(--glass-2); }
 
 /* Keyboard focus gets the same ring the inputs use.  :focus-visible rather
    than :focus so a mouse click does not leave a ring behind. */
@@ -1131,6 +1134,7 @@ footer a:hover { text-decoration: underline; }
   <symbol id="i-broom" viewBox="0 0 24 24"><path d="m19.4 3.6-1.4-1.4-6.4 6.4 1.4 1.4zM9.8 11.2 7 14l3 3 2.8-2.8zM6 15l-3.5 3.5a2 2 0 1 0 2.8 2.8L8.8 18z"/></symbol>
   <symbol id="i-undo" viewBox="0 0 24 24"><path d="M12.5 8c-2.6 0-5 1-6.9 2.6L2 7v9h9l-3.6-3.6A7.9 7.9 0 0 1 12.5 10c3.5 0 6.5 2.3 7.6 5.5l2.4-.8A10.5 10.5 0 0 0 12.5 8"/></symbol>
   <symbol id="i-download" viewBox="0 0 24 24"><path d="M5 20h14v-2H5zm7-16v9.2L8.4 9.6 7 11l5 5 5-5-1.4-1.4-3.6 3.6V4z"/></symbol>
+  <symbol id="i-copy" viewBox="0 0 24 24"><path d="M9 2h9a2 2 0 0 1 2 2v12h-2V4H9zM5 6h9a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2m0 2v12h9V8z"/></symbol>
   <symbol id="i-sun" viewBox="0 0 24 24"><path d="M12 7a5 5 0 1 0 0 10 5 5 0 0 0 0-10m0-5 2 3h-4zm0 20-2-3h4zM2 12l3-2v4zm20 0-3 2v-4zM4.9 4.9l3.5 1.4-2.1 2.1zm14.2 14.2-3.5-1.4 2.1-2.1zM19.1 4.9l-1.4 3.5-2.1-2.1zM4.9 19.1l1.4-3.5 2.1 2.1z"/></symbol>
   <symbol id="i-moon" viewBox="0 0 24 24"><path d="M12.3 2a9 9 0 1 0 9.7 11.4A7.5 7.5 0 0 1 12.3 2"/></symbol>
   <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M17.6 6.4A8 8 0 1 0 19.7 14h-2.1A6 6 0 1 1 12 6c1.7 0 3.1.7 4.2 1.8L13 11h7V4z"/></symbol>
@@ -1623,6 +1627,12 @@ footer a:hover { text-decoration: underline; }
                 :title="'Show the ' + (logWhich === 'job' ? 'test script' : 'job') + ' log'">
           {{ logWhich === 'job' ? 'Test log' : 'Job log' }}
         </button>
+        <button class="btn btn-sm" :class="{ 'btn-ok': logCopied }" @click="copyLog()"
+                :disabled="logCopying || !logDownloadUrl"
+                title="Copy the whole log to the clipboard">
+          <svg class="icon"><use :href="logCopied ? '#i-check' : '#i-copy'"/></svg>
+          {{ logCopied ? 'Copied' : 'Copy' }}
+        </button>
         <a class="btn btn-sm" :href="logDownloadUrl" title="Save this log to a file">
           <svg class="icon"><use href="#i-download"/></svg> Download
         </a>
@@ -1829,6 +1839,8 @@ createApp({
       logText: '',
       logOffset: 0,
       logFollow: true,
+      logCopying: false,
+      logCopied: false,
 
       term: { connected: false, viewers: 0 },
 
@@ -1842,6 +1854,7 @@ createApp({
       configSchema: [],
 
       _toastSeq: 0,
+      _copiedTimer: null,
       _xterm: null,
       _fit: null,
       _ws: null,
@@ -2425,6 +2438,50 @@ createApp({
 
         if (chunk.text && this.logFollow) this.$nextTick(this.scrollLog);
       } catch (_) { /* the job may have been pruned */ }
+    },
+
+    // The whole log, not the part on screen: the first read of a long
+    // one is tailed to the last 256 KB, so copying logText would hand
+    // over less than the button beside it does, and silently.
+    async copyLog() {
+      if (!this.logDownloadUrl || this.logCopying) return;
+      this.logCopying = true;
+      try {
+        const response = await fetch(this.logDownloadUrl);
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const text = await response.text();
+        await this.toClipboard(text);
+        this.logCopied = true;
+        clearTimeout(this._copiedTimer);
+        this._copiedTimer = setTimeout(() => { this.logCopied = false; }, 2000);
+      } catch (error) {
+        this.toast('bad', 'Could not copy the log', error.message);
+      } finally {
+        this.logCopying = false;
+      }
+    },
+
+    // navigator.clipboard exists only in a secure context, and this is
+    // served over plain HTTP to whoever is not on localhost, so the
+    // older path has to stay: a textarea off-screen, selected, copied.
+    async toClipboard(text) {
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(text);
+        return;
+      }
+      const box = document.createElement('textarea');
+      box.value = text;
+      box.setAttribute('readonly', '');
+      box.style.cssText = 'position:fixed;top:-1000px;opacity:0';
+      document.body.appendChild(box);
+      try {
+        box.select();
+        if (!document.execCommand('copy')) {
+          throw new Error('the browser refused the copy');
+        }
+      } finally {
+        document.body.removeChild(box);
+      }
     },
 
     scrollLog() {

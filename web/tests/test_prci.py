@@ -3760,5 +3760,47 @@ class TestProgressBar(unittest.TestCase):
                         observe.index("job['last_line']"))
 
 
+class TestCopyingALog(unittest.TestCase):
+    """Reading a failure here usually ends in pasting it somewhere else."""
+
+    def setUp(self):
+        self.page = read_file('web', 'templates', 'index.html')
+        body = self.page[self.page.index('async copyLog()'):]
+        self.copy = body[:body.index('\n    scrollLog()')]
+
+    def test_copy_sits_beside_download(self):
+        actions = self.page[self.page.index('<div class="log-actions">'):]
+        actions = actions[:actions.index('</div>')]
+        self.assertIn('copyLog()', actions)
+        self.assertLess(actions.index('copyLog()'),
+                        actions.index('logDownloadUrl'),
+                        'Copy is not beside Download')
+
+    def test_it_copies_the_whole_log_and_not_the_part_on_screen(self):
+        # The first read of a long log is tailed, so the text the viewer
+        # holds is short of the file; copying that would quietly hand
+        # over less than the button next to it does.
+        self.assertIn('logDownloadUrl', self.copy)
+        self.assertNotIn('this.logText', self.copy)
+        self.assertGreater(jobs.INITIAL_TAIL_BYTES, 0,
+                           'nothing tails the first read any more')
+
+    def test_it_still_copies_where_there_is_no_secure_context(self):
+        # Served over plain HTTP to anyone who is not on this host, and
+        # navigator.clipboard does not exist there.
+        clipboard = self.page[self.page.index('async toClipboard('):]
+        clipboard = clipboard[:clipboard.index('\n    scrollLog()')]
+        self.assertIn('window.isSecureContext', clipboard)
+        self.assertIn("document.execCommand('copy')", clipboard)
+        self.assertIn('removeChild', clipboard,
+                      'the textarea it copies through is left in the page')
+
+    def test_a_copy_that_did_not_happen_says_so(self):
+        self.assertIn("toast('bad'", self.copy)
+        self.assertNotIn("toast('ok'", self.copy,
+                         'a toast for something the button already shows')
+        self.assertIn('logCopied = true', self.copy)
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)
