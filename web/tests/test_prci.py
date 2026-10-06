@@ -4159,6 +4159,62 @@ class TestHostFitness(unittest.TestCase):
         self.assertIn('ExtUtils::Embed', source,
                       'the include paths are not found their way')
 
+    def engines(self, tree, line):
+        """Their per-object flags file, as perf's build has it."""
+        at = os.path.join(tree, 'tools', 'perf', 'util', 'scripting-engines')
+        os.makedirs(at, exist_ok=True)
+        with open(os.path.join(at, 'Build'), 'w') as f:
+            f.write(line)
+
+    def test_the_warnings_a_build_switches_back_off_are_read(self):
+        # perf turns a wide set of warnings on for everything, then turns
+        # several back off for the two objects that include an
+        # interpreter's headers.  Reading only the first list condemns
+        # every tree alike, which is no answer at all.
+        tree = self.tree()
+        self.engines(tree, 'perf-$(CONFIG_LIBPERL) += trace-event-perl.o\n'
+                           'CFLAGS_trace-event-perl.o += $(PERL_EMBED_CCOPTS)'
+                           ' -Wno-switch-default -Wno-shadow\n')
+        done = subprocess.run(
+            ['bash', '-c', '. "%s/lib/hostcheck.sh"\n'
+                           '_hostcheck_object_flags "%s" PERL_EMBED_CCOPTS'
+                           % (PROJECT_ROOT, tree)],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        flags = done.stdout.decode()
+        self.assertIn('-Wno-switch-default', flags)
+        self.assertIn('-Wno-shadow', flags)
+        # The macro is an include path, asked for by their own command
+        # rather than passed through as the literal text of a variable.
+        self.assertNotIn('PERL_EMBED_CCOPTS', flags)
+
+    def test_a_tree_that_switches_the_warning_off_is_fit(self):
+        # The regression this is here for: their 6.6 build switches off
+        # the three warnings their 5.10 build does not, and a host that
+        # fails only on those three can build the one and not the other.
+        tree = self.tree()
+        self.engines(tree,
+                     'CFLAGS_trace-event-perl.o += $(PERL_EMBED_CCOPTS)'
+                     ' -Wno-switch-default\n'
+                     'CFLAGS_trace-event-python.o += $(PYTHON_EMBED_CCOPTS)'
+                     ' -Wno-switch-default\n')
+        script = (
+            '. "%s/lib/hostcheck.sh"\n'
+            # Passes when their suppression reached it, fails when it
+            # did not -- which is what the real compiler does.
+            'gcc() { case " $* " in'
+            '  *" -dumpfullversion "*) echo 12.3.0; return 0 ;;'
+            '  *" -Wno-switch-default "*) return 0 ;;'
+            ' esac\n'
+            ' echo "/usr/include/x.h:1:1: error: switch missing default'
+            ' case [-Werror=switch-default]" >&2; return 1; }\n'
+            'hostcheck_report "%s"\n' % (PROJECT_ROOT, tree))
+        done = subprocess.run(['bash', '-c', script],
+                              stdout=subprocess.PIPE,
+                              stderr=subprocess.DEVNULL)
+        self.assertEqual(done.returncode, 0,
+                         'a tree that suppresses the warning was refused')
+        self.assertEqual(done.stdout.decode().strip(), '')
+
     def test_a_probe_that_could_not_run_refuses_nothing(self):
         # No Makefile.include, so there is nothing to probe with.  An
         # unanswered question is not evidence of a bad host.

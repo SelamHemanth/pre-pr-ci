@@ -144,6 +144,36 @@ _hostcheck_their_warnings() {
     | tr '\n' ' '
 }
 
+# And the warnings it switches back off for the file in question.
+#
+# This is the half that was missing, and it is the half that decides the
+# answer.  perf turns on a wide set of warnings for everything it
+# builds and then, for the two objects that include an interpreter's
+# headers, turns several of them off again -- because those headers are
+# not perf's to fix.  Which ones differ by kernel: a 5.10 tree switches
+# off seven of them and a 6.6 tree switches off ten, and the three in
+# between are exactly the three a 5.10 build dies on here.  So a probe
+# that reads only the first list condemns every tree equally, which is
+# no answer at all.
+#
+# The object is found by which include macro its flags use rather than
+# by its name, so this follows them if they move or rename it.
+_hostcheck_object_flags() {
+  local file="$1/tools/perf/util/scripting-engines/Build" macro="$2"
+
+  [ -r "${file}" ] || return 0
+  # Their own line, with the macro references dropped: those are
+  # include paths, which are asked for separately and by the same
+  # commands their Makefile.config uses.
+  awk -v macro="${macro}" '
+    /^CFLAGS_[^ \t]*\.o[ \t]*\+?=/ && index($0, macro) {
+      sub(/^[^=]*=[ \t]*/, "")
+      gsub(/\$\([^)]*\)/, "")
+      print
+    }
+  ' "${file}" | tr '\n' ' '
+}
+
 # Can the scripting engines perf links against be compiled here?
 #
 # Writes the reason it cannot to stdout and returns 1.  Returns 0 both
@@ -180,10 +210,17 @@ hostcheck_perf_scripting() {
   [ "${#probes[@]}" -gt 0 ] || { rm -rf "${at}"; return 0; }
 
   for lang in "${probes[@]}"; do
-    inc="${perl_inc}"
-    [ "${lang}" = python3 ] && inc="${python_inc}"
+    inc="${perl_inc}" macro='PERL_EMBED_CCOPTS'
+    if [ "${lang}" = python3 ]; then
+      inc="${python_inc}" macro='PYTHON_EMBED_CCOPTS'
+    fi
+    # Their global list first and their per-object list after it, in that
+    # order, because that is the order their build puts them in and the
+    # second is what undoes the first.
+    local quiet
+    quiet=$(_hostcheck_object_flags "${tree}" "${macro}")
     # shellcheck disable=SC2086
-    gcc -c -o /dev/null "${at}/${lang%3}.c" -Werror ${flags} ${inc} \
+    gcc -c -o /dev/null "${at}/${lang%3}.c" -Werror ${flags} ${quiet} ${inc} \
         2> "${at}/${lang}.log" && continue
 
     # Every line below is assembled from what just happened, because
