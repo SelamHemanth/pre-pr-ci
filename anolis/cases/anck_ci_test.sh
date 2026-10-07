@@ -40,6 +40,18 @@ set -u
 # and drag the suite down to a warning over it.
 THEIR_CASES='boot_kernel_rpm check_kapi check_dmesg'
 
+# What a kernel prints when it has tripped over itself.  Every string
+# here is the kernel's own: "Call Trace:" from show_trace_log_lvl,
+# "Oops" and "general protection fault" from die(), "WARNING: CPU:"
+# from __warn(), "kernel BUG at" from BUG(), the panic line from
+# panic().
+#
+# Looked for by name rather than by level, because the kernel prints a
+# trace at whatever level the thing that tripped it used: a WARN_ON
+# backtrace comes out at warning level and their check_dmesg, which
+# reads the error levels, never sees it.
+DMESG_TRACES='Call Trace:|kernel BUG at|BUG: |Oops|WARNING: CPU:|general protection fault|[Kk]ernel panic'
+
 # Their suite reports all three in one run, and a row asked about one.
 # The other two still run -- their run() calls all three, and booting
 # once for three answers is the point of doing it that way -- but
@@ -56,6 +68,8 @@ their_lines() {
     {
       if (want != "" && /^====(PASS|FAIL|SKIP|WARN):/ &&
           ($2 in known) && $2 != want) next
+      # Our own tally, counted on the machine and read back here.
+      if (/^prci-dmesg: /) next
       print
       fflush()
     }
@@ -87,6 +101,36 @@ if [ -n "${WANT_CASE}" ]; then
       ;;
   esac
 fi
+
+# Their per-case switches, set from the cases this run will report.
+#
+# Their run() calls all three, and the two that are not boot_kernel_rpm
+# have a switch of their own for the case where nobody is asking.  The
+# set comes from the caller because one run of their suite answers all
+# three rows and the rows share it: deciding from this row alone would
+# have the first of them turn off the work the third needs.
+#
+# Anything already set wins, as everywhere else here.
+# printk's own bookkeeping, which is not the kernel complaining about
+# anything: it prints "<caller>: N callbacks suppressed" when a
+# rate-limited message has been dropped.  Thirty-two of them on a VM
+# that has been up a few hours, all from the audit queue, and a row
+# that is amber for that is a row nobody reads.
+#
+# Added through their BOOT_DMESG_IGNORE, which their comment calls the
+# way to extend the filtering, rather than by editing the list of
+# theirs it is added to.  Anything already set still wins.
+: "${BOOT_DMESG_IGNORE:=callbacks suppressed}"
+
+CASES_WANTED="${THEIR_VM_CASES:-${WANT_CASE:-${THEIR_CASES}}}"
+case " ${CASES_WANTED} " in
+  *' check_kapi '*) ;;
+  *) : "${CHECK_KAPI:=no}" ;;
+esac
+case " ${CASES_WANTED} " in
+  *' check_dmesg '*) ;;
+  *) : "${CHECK_DMESG:=no}" ;;
+esac
 
 # shellcheck source=/dev/null
 . "${WORKDIR:-$(dirname "${ANOLIS_DIR}")}/lib/vm.sh"
@@ -171,10 +215,14 @@ fi
 # gigabytes on the machine, and their check_kapi skips a branch with
 # no kabi baseline anyway, so neither a run of the other two cases nor
 # a branch outside their three pays for them.
+#
+# Their switch is what says so, not this row: the first of three rows
+# to get here is the one that runs their suite for all three, and
+# asking whether *this* row is check_kapi had it leave the vmlinux off
+# the machine and then cache the skip for the row that wanted it.
 if [ "${CHECK_KAPI:-yes}" != 'no' ] &&
    [ -n "${KERNEL_CI_REPO_BRANCH:-}" ] &&
-   [ -n "${EXPECT_KERNEL_VERSION:-}" ] &&
-   { [ -z "${WANT_CASE}" ] || [ "${WANT_CASE}" = 'check_kapi' ]; }; then
+   [ -n "${EXPECT_KERNEL_VERSION:-}" ]; then
   echo "  -> installing their kernel-debuginfo on ${VM_IP}," \
        "which their check_kapi reads"
   if ! boot_stage_debuginfo "${RPM_DIR}" "${EXPECT_KERNEL_VERSION}" \
@@ -207,12 +255,43 @@ vm_ssh "
   export PKG_CI_ABS_RPM_URL='${PKG_CI_ABS_RPM_URL:-}'
   export CHECK_KAPI='${CHECK_KAPI:-yes}'
   export CHECK_DMESG='${CHECK_DMESG:-yes}'
-  export BOOT_DMESG_LEVELS='${BOOT_DMESG_LEVELS:-err}'
+  export BOOT_DMESG_LEVELS='${BOOT_DMESG_LEVELS:-emerg,alert,crit,err}'
   export BOOT_DMESG_IGNORE='${BOOT_DMESG_IGNORE:-}'
   export TONE_BM_SUITE_DIR='${REMOTE_DIR}'
   upload_archives() { :; }
   . '${REMOTE_DIR}/run.sh'
   run
+
+  # The rest of what this row is for, with their function doing the
+  # looking so that their ignore list keeps applying.
+  if [ \"\${CHECK_DMESG}\" != 'no' ]; then
+    echo ''
+    echo '==> dmesg, past the level their check_dmesg fails on'
+
+    traces=\$(dmesg -T 2>/dev/null | grep -E '${DMESG_TRACES}' || true)
+    if [ -n \"\${traces}\" ]; then
+      echo 'Call traces in the running kernel:'
+      printf '%s\n' \"\${traces}\"
+    else
+      echo 'No call traces.'
+    fi
+
+    BOOT_DMESG_LEVELS='warn'
+    warned=\$(check_dmesg 0 2>&1 | awk '
+      /^=+show dmesg errors/        { inside = 1; next }
+      /^====(PASS|FAIL|SKIP|WARN):/ { inside = 0 }
+      inside')
+    if [ -n \"\${warned}\" ]; then
+      echo 'At warning level, after their ignore list:'
+      printf '%s\n' \"\${warned}\"
+    else
+      echo 'Nothing at warning level, after their ignore list.'
+    fi
+
+    printf 'prci-dmesg: traces=%s warnings=%s\n' \
+      \"\$(printf '%s' \"\${traces}\" | grep -c . || true)\" \
+      \"\$(printf '%s' \"\${warned}\" | grep -c . || true)\"
+  fi
 " 2>&1 | tee "${LIVE}" | their_lines "${WANT_CASE}"
 
 vm_ssh "rm -rf ${REMOTE_DIR}" >/dev/null 2>&1 || true
@@ -233,6 +312,46 @@ markers=$(printf '%s\n' "${output}" \
           | awk -v want="${WANT_CASE}" -v names="${THEIR_CASES}" '
   BEGIN { n = split(names, c, " "); for (i = 1; i <= n; i++) known[c[i]] = 1 }
   /^====(PASS|FAIL|SKIP|WARN):/ && ($2 in known) && (want == "" || $2 == want)')
+
+# What their check_dmesg passing does not yet mean.
+#
+# Theirs is one question -- is there anything at the error levels --
+# and this row is three.  A kernel that oopsed or hit a WARN_ON left a
+# call trace, and that is a failure whatever level it was printed at;
+# a kernel that only complained is not a failure but is not a clean
+# boot either, and their four verdicts have a word for that.
+#
+# Only ever upgrades their verdict.  A check_dmesg they failed stays
+# failed, and nothing here can turn a failure into a pass.
+# Only for the row being reported.  One run of their suite answers
+# all three rows out of the one cache, and the boot row saying how
+# many warnings the dmesg row found helps nobody.
+dmesg_tally=''
+case "${markers}" in
+  *': check_dmesg'*)
+    dmesg_tally=$(printf '%s\n' "${output}" | grep '^prci-dmesg: ' | tail -n 1)
+    ;;
+esac
+if [ -n "${dmesg_tally}" ]; then
+  traces=${dmesg_tally#*traces=}; traces=${traces%% *}
+  warnings=${dmesg_tally##*warnings=}
+  verdict=''
+  if [ "${traces:-0}" -gt 0 ] 2>/dev/null; then
+    verdict='FAIL'
+    echo ""
+    echo "  -> ${traces} line(s) of call trace in the boot log, so this" \
+         "is a failure"
+  elif [ "${warnings:-0}" -gt 0 ] 2>/dev/null; then
+    verdict='WARN'
+    echo ""
+    echo "  -> ${warnings} warning line(s) in the boot log, and no call" \
+         "trace, so this is a warning"
+  fi
+  if [ -n "${verdict}" ]; then
+    markers=$(printf '%s\n' "${markers}" \
+              | sed "s/^====PASS: check_dmesg\$/====${verdict}: check_dmesg/")
+  fi
+fi
 
 # Their parse.awk turns their four markers into the words their report
 # shows, so a reader comparing the two sees the same names against the

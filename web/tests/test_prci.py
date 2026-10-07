@@ -4799,17 +4799,21 @@ class TestTheAcceptanceCasesKnowWhichKernel(unittest.TestCase):
         self.assertIn('rc=1', said)
         self.assertNotIn('COPIED', said)
 
-    def test_they_are_sent_only_for_the_case_that_reads_them(self):
+    def test_they_are_sent_only_for_the_run_that_reads_them(self):
+        # The switch, not the row: the first of three rows to get here
+        # runs their suite for all three, so asking whether this row
+        # is the kapi one left the debuginfo off the machine and
+        # cached a skip for the row that wanted it.
         with open(os.path.join(PROJECT_ROOT, 'anolis', 'cases',
                                'anck_ci_test.sh')) as f:
             code = f.read()
         guard = code[:code.index('boot_stage_debuginfo')]
         guard = guard[guard.rindex('if ['):]
         for condition in ('"${CHECK_KAPI:-yes}" != \'no\'',
-                          '"${KERNEL_CI_REPO_BRANCH:-}"',
-                          '"${WANT_CASE}" = \'check_kapi\''):
+                          '"${KERNEL_CI_REPO_BRANCH:-}"'):
             self.assertIn(condition, guard,
                           'sent for runs that will not report the case')
+        self.assertNotIn('WANT_CASE', guard)
         self.assertLess(code.index('boot_stage_debuginfo'),
                         code.index('" 2>&1 | tee'),
                         'their suite runs before the debuginfo is there')
@@ -4833,6 +4837,116 @@ class TestTheAcceptanceCasesKnowWhichKernel(unittest.TestCase):
                 code.count("! -name '*debuginfo*'"),
                 1 if name.endswith('boot_test.sh') else 0,
                 '%s has its own idea of which RPM is the kernel' % name)
+
+
+class TestWhatTheDmesgRowIsAsking(unittest.TestCase):
+    """Their check_dmesg, and the two things it does not distinguish.
+
+    Theirs asks one question -- is there anything at the error levels
+    -- and answers pass or fail.  A kernel that oopsed or hit a WARN_ON
+    left a call trace, and that is a failure whatever level it was
+    printed at; one that only complained is not a failure, but it is
+    not a clean boot either.
+    """
+
+    def setUp(self):
+        self.case = read_file('anolis', 'cases', 'anck_ci_test.sh')
+
+    def test_the_error_levels_are_all_of_them(self):
+        # Theirs defaults to err alone, which is the one level an oops
+        # is not printed at.  Their own comment offers the four.
+        self.assertIn("BOOT_DMESG_LEVELS:-emerg,alert,crit,err", self.case)
+        their_run = read_file('anolis', 'tone-cli', 'tests', 'anck-ci-test',
+                              'run.sh')
+        for level in ('emerg', 'alert', 'crit', 'err'):
+            self.assertIn(level, their_run,
+                          'a level of ours that is not one of theirs')
+
+    def test_a_trace_is_looked_for_by_name_not_by_level(self):
+        # A WARN_ON backtrace comes out at warning level, which is
+        # exactly the one their check_dmesg does not read.
+        traces = self.case[self.case.index('DMESG_TRACES='):]
+        traces = traces[:traces.index('\n')]
+        for printed in ('Call Trace:', 'kernel BUG at', 'Oops',
+                        'WARNING: CPU:', 'general protection fault'):
+            self.assertIn(printed, traces)
+
+    def test_a_trace_fails_and_a_warning_warns(self):
+        verdict = self.case[self.case.index('dmesg_tally='):]
+        verdict = verdict[:verdict.index('\nfi\n')]
+        self.assertLess(verdict.index("verdict='FAIL'"),
+                        verdict.index("verdict='WARN'"),
+                        'a warning outranks a call trace')
+        self.assertIn('"${traces:-0}" -gt 0', verdict)
+        self.assertIn('"${warnings:-0}" -gt 0', verdict)
+
+    def test_it_can_only_upgrade_their_verdict(self):
+        # A check_dmesg they failed stays failed, and nothing here can
+        # turn a failure of theirs into a pass.
+        self.assertIn('s/^====PASS: check_dmesg\\$/====${verdict}: '
+                      'check_dmesg/', self.case)
+
+    def test_their_own_function_does_the_looking(self):
+        # So that the x509, watchdog, TDX and selinux lines their list
+        # filters keep being filtered, at the warning level too.
+        remote = self.case[self.case.index("BOOT_DMESG_LEVELS='warn'"):]
+        remote = remote[:remote.index('prci-dmesg')]
+        self.assertIn('check_dmesg 0', remote,
+                      'the warning level is read by something of ours')
+
+    def test_printks_own_bookkeeping_is_not_a_warning(self):
+        # "N callbacks suppressed" is printk saying it dropped
+        # messages, not the kernel complaining, and there were
+        # thirty-two of them on a VM that had been up a few hours.
+        self.assertIn('BOOT_DMESG_IGNORE:=callbacks suppressed', self.case)
+        their_run = read_file('anolis', 'tone-cli', 'tests', 'anck-ci-test',
+                              'run.sh')
+        self.assertIn('BOOT_DMESG_IGNORE', their_run,
+                      'it is filtered by something other than their knob')
+
+
+class TestOnlyTheCasesAskedForAreRun(unittest.TestCase):
+    """Their run() calls all three; their switches are how not to.
+
+    A row asked about check_dmesg had four minutes of kabi-dw cloning,
+    building and comparing printed under it, because their run() does
+    all three every time.  Their own per-case switches turn the work
+    off, and the set of cases to leave on belongs to the caller: one
+    run of their suite answers all three rows and the rows share it,
+    so deciding from one row would have the first of them turn off the
+    work the third needs.
+    """
+
+    def setUp(self):
+        self.case = read_file('anolis', 'cases', 'anck_ci_test.sh')
+        self.runner = read_file('anolis', 'test.sh')
+
+    def test_the_runner_says_which_cases_it_will_report(self):
+        self.assertIn('export THEIR_VM_CASES', self.runner)
+        single = self.runner[self.runner.index('if [ -n "${SPECIFIC_TEST}" ]'):]
+        single = single[:single.index('\nfi\n')]
+        self.assertIn('THEIR_VM_CASES="${SPECIFIC_TEST}"', single,
+                      'a single-test run still asks for all three')
+        self.assertIn('TEST_CHECK_KAPI', single)
+        self.assertIn('TEST_CHECK_DMESG', single)
+
+    def test_a_case_nobody_asked_about_is_switched_off(self):
+        wanted = self.case[self.case.index('CASES_WANTED='):]
+        wanted = wanted[:wanted.index('# shellcheck')]
+        self.assertIn('CHECK_KAPI:=no', wanted)
+        self.assertIn('CHECK_DMESG:=no', wanted)
+        self.assertIn('THEIR_VM_CASES', wanted,
+                      'the row decides for itself, and the rows share a run')
+
+    def test_the_debuginfo_follows_the_switch_and_not_the_row(self):
+        # The first of three rows to get here runs their suite for all
+        # three.  Asking whether this row is check_kapi left the
+        # vmlinux off the machine and cached the skip for the row that
+        # wanted it.
+        guard = self.case[:self.case.index('boot_stage_debuginfo')]
+        guard = guard[guard.rindex('if ['):]
+        self.assertIn('"${CHECK_KAPI:-yes}" != \'no\'', guard)
+        self.assertNotIn('WANT_CASE', guard)
 
 
 class TestAnolisOwnWorkSignsItself(unittest.TestCase):

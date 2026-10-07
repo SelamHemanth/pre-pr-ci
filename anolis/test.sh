@@ -421,6 +421,25 @@ fi
 # Check if specific test is requested
 SPECIFIC_TEST="${1:-}"
 
+# Which of their three acceptance cases this run is going to report.
+#
+# Their run() calls all three every time, which is the point of it --
+# one boot, three answers -- but a run that is only reporting
+# check_dmesg has no reason to clone kabi-dw and compare every symbol
+# in the kernel, and all of that output appearing under the dmesg row
+# read as though it had been asked for.  Their own per-case switches
+# are how not to do it, and this is what the case sets them from.
+if [ -n "${SPECIFIC_TEST}" ]; then
+  THEIR_VM_CASES="${SPECIFIC_TEST}"
+else
+  THEIR_VM_CASES='boot_kernel_rpm'
+  [ "${TEST_CHECK_KAPI:-yes}" == 'yes' ] &&
+    THEIR_VM_CASES="${THEIR_VM_CASES} check_kapi"
+  [ "${TEST_CHECK_DMESG:-yes}" == 'yes' ] &&
+    THEIR_VM_CASES="${THEIR_VM_CASES} check_dmesg"
+fi
+export THEIR_VM_CASES
+
 if [ -n "$SPECIFIC_TEST" ]; then
   # Run specific test directly
   echo -e "${BLUE}Running specific test: ${SPECIFIC_TEST}${NC}"
