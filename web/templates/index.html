@@ -1922,8 +1922,13 @@ footer a:hover { text-decoration: underline; }
       </div>
     </div>
     <div class="log-body" ref="logBody" @scroll="onLogScroll">
-      <template v-if="logLines.length">
-        <div v-for="(line, i) in logLines" :key="i" :class="line.cls">{{ line.text }}</div>
+      <template v-if="logShowing">
+        <div class="ln-dim" v-if="logDropped">
+          --- {{ logDropped.toLocaleString() }} earlier lines are above what
+          is kept on screen; Copy and Download both give the whole log ---
+        </div>
+        <div v-for="line in logRows" :key="line.n" :class="line.cls">{{ line.text }}</div>
+        <div v-if="logPartial" :class="logPartialClass">{{ logPartial }}</div>
       </template>
       <span v-else class="ln-dim">Waiting for output...</span>
     </div>
@@ -2072,6 +2077,27 @@ const { createApp } = Vue;
 
 const ACTIVE = ['queued', 'running'];
 
+// How much of a log is kept on screen.  A kernel build writes tens of
+// thousands of lines, and a line on screen is an element in the
+// document: hold all of them and the browser spends its second laying
+// out a log nobody is looking at instead of drawing the one they are.
+// Nothing is lost -- Copy and Download both read the file off the
+// server, not this -- and this is more scrollback than the terminal
+// beside it keeps.
+const LOG_ROWS_SHOWN = 4000;
+
+// What a log line is, read off the line itself.  Done once per line as
+// it arrives rather than over the whole log on every poll.
+function logClass(text) {
+  if (/(^|[^A-Za-z])PASS\b/.test(text)) return 'ln-pass';
+  if (/(^|[^A-Za-z])FAIL\b/.test(text)) return 'ln-fail';
+  if (/(^|[^A-Za-z])WARN\b/.test(text)) return 'ln-warn';
+  if (/(^|[^A-Za-z])SKIP\b/.test(text)) return 'ln-skip';
+  if (text.startsWith('$ ')) return 'ln-cmd';
+  if (text.startsWith('[repo-sync]') || text.startsWith('---')) return 'ln-dim';
+  return '';
+}
+
 createApp({
   data() {
     return {
@@ -2122,7 +2148,17 @@ createApp({
       logJob: null,
       logTest: null,
       logWhich: 'job',
-      logText: '',
+      // Lines, not text: a chunk arriving every second used to be
+      // appended to one string and the whole of it split and
+      // colourised again on every poll, which is work proportional to
+      // the log rather than to what just arrived.
+      logRows: [],
+      // The last chunk can stop mid-line.  Held back from the rows so
+      // it is not given a number it would have to change, and shown
+      // below them so output still appears as it is written.
+      logPartial: '',
+      logDropped: 0,
+      logSeq: 0,
       logOffset: 0,
       logFollow: true,
       logCopying: false,
@@ -2411,21 +2447,11 @@ createApp({
       const scheme = location.protocol === 'https:' ? 'wss' : 'ws';
       return `${scheme}://${location.host}/ws/terminal`;
     },
-    // Colourising in the template keeps the log body a plain list of lines,
-    // which is what lets it hold a large build log without re-parsing it.
-    logLines() {
-      if (!this.logText) return [];
-      return this.logText.split('\n').map(text => {
-        let cls = '';
-        if (/(^|[^A-Za-z])PASS\b/.test(text)) cls = 'ln-pass';
-        else if (/(^|[^A-Za-z])FAIL\b/.test(text)) cls = 'ln-fail';
-        else if (/(^|[^A-Za-z])WARN\b/.test(text)) cls = 'ln-warn';
-        else if (/(^|[^A-Za-z])SKIP\b/.test(text)) cls = 'ln-skip';
-        else if (text.startsWith('$ ')) cls = 'ln-cmd';
-        else if (text.startsWith('[repo-sync]') || text.startsWith('---')) cls = 'ln-dim';
-        return { text, cls };
-      });
-    },
+    logShowing() { return this.logRows.length > 0 || this.logPartial !== ''; },
+    // The line still being written has no row of its own yet, so it is
+    // colourised here; the finished ones were done once, as they
+    // arrived.
+    logPartialClass() { return logClass(this.logPartial); },
   },
 
   watch: {
@@ -2748,10 +2774,36 @@ createApp({
       // job log belongs; a test's own log is only ever opened from the
       // Tests tab, which is already somewhere it shows.
       if (this.tab === 'terminal') this.tab = 'jobs';
-      this.logText = '';
-      this.logOffset = 0;
+      this.clearLog();
       this.logFollow = true;
       this.pollLog(true);
+    },
+
+    clearLog() {
+      this.logRows = [];
+      this.logPartial = '';
+      this.logDropped = 0;
+      this.logSeq = 0;
+      this.logOffset = 0;
+    },
+
+    // New bytes become rows, and only the new bytes are looked at.
+    //
+    // Rows are numbered rather than keyed on their position, so that
+    // dropping the head of a long log moves nothing: the browser
+    // removes the rows that went and leaves the rest alone, instead of
+    // renumbering every line still on screen.
+    appendLog(text) {
+      const lines = (this.logPartial + text).split('\n');
+      this.logPartial = lines.pop();
+      for (const line of lines) {
+        this.logRows.push({ n: this.logSeq++, text: line, cls: logClass(line) });
+      }
+      const over = this.logRows.length - LOG_ROWS_SHOWN;
+      if (over > 0) {
+        this.logRows.splice(0, over);
+        this.logDropped += over;
+      }
     },
 
     switchLogSource() {
@@ -2761,8 +2813,7 @@ createApp({
     closeLog() {
       this.logJob = null;
       this.logTest = null;
-      this.logText = '';
-      this.logOffset = 0;
+      this.clearLog();
     },
 
     async pollLog(force) {
@@ -2779,9 +2830,10 @@ createApp({
         if (chunk.truncated && this.logOffset > 0) {
           // The file was replaced under us; start again rather than splicing
           // new bytes onto a stale tail.
-          this.logText = chunk.text;
+          this.clearLog();
+          this.appendLog(chunk.text);
         } else if (chunk.text) {
-          this.logText += chunk.text;
+          this.appendLog(chunk.text);
         }
         this.logOffset = chunk.offset;
 
@@ -2790,8 +2842,9 @@ createApp({
     },
 
     // The whole log, not the part on screen: the first read of a long
-    // one is tailed to the last 256 KB, so copying logText would hand
-    // over less than the button beside it does, and silently.
+    // one is tailed to the last 256 KB and only the last few thousand
+    // lines of that are kept, so copying what the viewer holds would
+    // hand over less than the button beside it does, and silently.
     async copyLog() {
       if (!this.logDownloadUrl || this.logCopying) return;
       this.logCopying = true;

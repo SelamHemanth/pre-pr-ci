@@ -25,14 +25,15 @@ only wanted once the reason has raised the question.
 import os
 import re
 import subprocess
-import time
+
+from . import background
 
 #: Longer than readiness' TTL on purpose.  Nothing about this changes
 #: when the series does; it changes when the host's packages do, which
 #: is not something that happens while a page is open.
 _TTL = 900.0
 
-_cache = {}
+_answers = background.Answer(_TTL)
 
 
 def _stamp(kernel):
@@ -44,12 +45,14 @@ def _stamp(kernel):
         return 0
 
 
-def check(root, kernel=None, force=False):
+def check(root, kernel=None, force=False, wait=True):
     """Return a dict describing whether this host can test ``kernel``.
 
     ``ok`` is True whenever the host is fit *and* whenever the question
     cannot be answered.  An unanswerable probe is not evidence of a bad
-    host, and must not be the reason the whole suite is refused.
+    host, and must not be the reason the whole suite is refused -- which
+    is also what makes it the right thing to hand back while the first
+    probe is still running, for a caller that asked not to wait.
     """
     blank = {'ok': True, 'headline': '', 'summary': '', 'reason': '',
              'note': '', 'table': []}
@@ -60,22 +63,18 @@ def check(root, kernel=None, force=False):
     if not os.path.exists(script):
         return blank
 
-    stamp = (kernel, _stamp(kernel))
-    hit = _cache.get(kernel)
-    if not force and hit and hit[0] == stamp and time.time() - hit[1] < _TTL:
-        return hit[2]
+    def run():
+        try:
+            done = subprocess.run(['bash', script, kernel], cwd=root,
+                                  stdout=subprocess.PIPE,
+                                  stderr=subprocess.STDOUT, timeout=120)
+        except (OSError, subprocess.SubprocessError):
+            return blank
+        return _split(done.stdout.decode('utf-8', 'replace'),
+                      done.returncode == 0)
 
-    try:
-        done = subprocess.run(['bash', script, kernel], cwd=root,
-                              stdout=subprocess.PIPE,
-                              stderr=subprocess.STDOUT, timeout=120)
-    except (OSError, subprocess.SubprocessError):
-        return blank
-
-    answer = _split(done.stdout.decode('utf-8', 'replace'),
-                    done.returncode == 0)
-    _cache[kernel] = (stamp, time.time(), answer)
-    return answer
+    return _answers.get(kernel, (kernel, _stamp(kernel)), run,
+                        wait=wait, force=force, unknown=blank)
 
 
 def _split(text, ok):
@@ -131,7 +130,4 @@ def _table(text):
 
 def forget(kernel=None):
     """Drop the cached answer, after something that could change it."""
-    if kernel is None:
-        _cache.clear()
-    else:
-        _cache.pop(kernel, None)
+    _answers.forget(kernel)

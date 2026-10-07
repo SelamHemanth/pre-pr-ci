@@ -82,21 +82,28 @@ def configured_distro():
     return distro, None
 
 
-def series_readiness(distro):
+# Both of the answers below are scripts that take seconds to run, and
+# the page asks for them every two.  So the polled endpoints read what
+# the last run found and let the next one happen behind them, and only
+# the gates in front of starting a job wait for a definite answer --
+# which is the one place a stale "yes" would actually cost something.
+def series_readiness(distro, wait=False):
     """(ready, why) for a distro, using its configured kernel tree."""
     config = workspace.read_config(distro) or {}
     return readiness.check(PROJECT_ROOT, distro,
-                           kernel=config.get('LINUX_SRC_PATH'))
+                           kernel=config.get('LINUX_SRC_PATH'),
+                           mirror=TORVALDS_REPO, wait=wait)
 
 
-def host_fitness(distro):
+def host_fitness(distro, wait=False):
     """Whether this host can test the tree this distro is pointed at.
 
     Separate from readiness, which is about the patches: a prepared
     series on a host that cannot build it is still nothing to run.
     """
     config = workspace.read_config(distro) or {}
-    return hostcheck.check(PROJECT_ROOT, kernel=config.get('LINUX_SRC_PATH'))
+    return hostcheck.check(PROJECT_ROOT, kernel=config.get('LINUX_SRC_PATH'),
+                           wait=wait)
 
 
 def fit_distro():
@@ -109,7 +116,7 @@ def fit_distro():
     distro, error = configured_distro()
     if error:
         return None, error
-    host = host_fitness(distro)
+    host = host_fitness(distro, wait=True)
     if not host['ok']:
         return None, (jsonify({
             'success': False,
@@ -134,7 +141,7 @@ def prepared_distro():
     distro, error = fit_distro()
     if error:
         return None, error
-    ready, why = series_readiness(distro)
+    ready, why = series_readiness(distro, wait=True)
     if not ready:
         return None, (jsonify({
             'success': False,
@@ -342,6 +349,7 @@ def api_ready():
     ready, why = readiness.check(
         PROJECT_ROOT, distro,
         kernel=(workspace.read_config(distro) or {}).get('LINUX_SRC_PATH'),
+        mirror=TORVALDS_REPO,
         force=request.args.get('force') == '1')
     return jsonify({'success': True, 'prepared': ready, 'reason': why})
 

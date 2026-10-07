@@ -30,6 +30,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import types
 import unittest
@@ -3239,6 +3240,133 @@ class TestReadiness(unittest.TestCase):
             self.assertEqual(len(f.readlines()), 2)
 
 
+class TestNobodyWaitsForTheSlowAnswers(unittest.TestCase):
+    """The two script-backed answers, asked for every two seconds.
+
+    ready.sh takes the better part of a minute on a ten-patch series:
+    it asks the mirror about every backport.  The page polls /api/tests
+    every two seconds, so before this the poll that missed the cache
+    started a run and so did the next sixteen, each on its own core,
+    each forking git at a mirror of Linux -- on the machine the browser
+    is running on.  The interface went to treacle and clicking harder
+    made it worse.
+    """
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.root, ignore_errors=True)
+        os.makedirs(os.path.join(self.root, 'euler'))
+        readiness.forget()
+        self.counter = os.path.join(self.root, 'runs')
+
+    def slow_ready(self, seconds=0.6):
+        path = os.path.join(self.root, 'euler', 'ready.sh')
+        with open(path, 'w') as f:
+            f.write('#!/usr/bin/env bash\n'
+                    'echo x >> "%s"\n'
+                    'sleep %s\n'
+                    'echo "all 3 commit(s) are ready to test"\n'
+                    % (self.counter, seconds))
+        os.chmod(path, 0o755)
+
+    def runs(self):
+        try:
+            with open(self.counter) as f:
+                return len(f.readlines())
+        except OSError:
+            return 0
+
+    def settle(self, seconds=5.0):
+        """Wait for the background run, without asking again."""
+        until = time.time() + seconds
+        while time.time() < until:
+            if self.runs() and readiness.check(
+                    self.root, 'euler', wait=False)[0]:
+                return
+            time.sleep(0.05)
+
+    def test_a_poll_is_not_held_up_by_the_script(self):
+        self.slow_ready(2.0)
+        started = time.time()
+        readiness.check(self.root, 'euler', wait=False)
+        self.assertLess(time.time() - started, 0.5,
+                        'the page waits for ready.sh')
+        self.settle()
+
+    def test_polling_while_it_runs_does_not_start_another(self):
+        self.slow_ready()
+        for _ in range(20):
+            readiness.check(self.root, 'euler', wait=False)
+            time.sleep(0.02)
+        self.settle()
+        self.assertEqual(self.runs(), 1, 'one run per poll that missed')
+
+    def test_waiting_callers_share_the_one_run(self):
+        # The gate in front of starting a job does wait -- but it waits
+        # for the run that is already going, rather than adding to it.
+        self.slow_ready()
+        answers, threads = [], []
+        for _ in range(5):
+            t = threading.Thread(
+                target=lambda: answers.append(
+                    readiness.check(self.root, 'euler')))
+            threads.append(t)
+            t.start()
+        for t in threads:
+            t.join(30)
+        self.assertEqual(self.runs(), 1)
+        self.assertTrue(all(a[0] for a in answers), answers)
+
+    def test_an_answer_nobody_has_yet_is_not_a_yes(self):
+        # It opens no gate, and it does not blame the series for a
+        # question that has not been asked yet.
+        self.slow_ready()
+        ready, why = readiness.check(self.root, 'euler', wait=False)
+        self.assertFalse(ready)
+        self.assertIn('still working out', why)
+        self.settle()
+        self.assertTrue(readiness.check(self.root, 'euler', wait=False)[0],
+                        'the next poll does not pick the answer up')
+
+    def test_a_probe_in_flight_does_not_accuse_the_host(self):
+        # hostcheck's unknown is the other way round -- an unanswered
+        # probe must not raise the banner that blocks the whole suite.
+        blank = hostcheck.check(self.root, kernel=None, wait=False)
+        self.assertTrue(blank['ok'])
+        self.assertEqual(blank['headline'], '')
+
+    def test_a_fetched_mirror_is_asked_about_again(self):
+        # The one input to the answer that is not in the commits: a
+        # commit the mirror had not heard of is one it can confirm now.
+        mirror = os.path.join(self.root, 'mirror')
+        os.makedirs(mirror)
+        fetched = os.path.join(mirror, 'FETCH_HEAD')
+        open(fetched, 'w').close()
+        self.slow_ready(0.1)
+
+        readiness.check(self.root, 'euler', mirror=mirror)
+        readiness.check(self.root, 'euler', mirror=mirror)
+        self.assertEqual(self.runs(), 1)
+
+        os.utime(fetched, (time.time() + 10, time.time() + 10))
+        readiness.check(self.root, 'euler', mirror=mirror)
+        self.assertEqual(self.runs(), 2)
+
+    def test_the_polled_endpoint_reads_and_the_gate_waits(self):
+        with open(os.path.join(PROJECT_ROOT, 'web', 'server.py')) as f:
+            server = f.read()
+        tests = server[server.index('def api_tests'):]
+        tests = tests[:tests.index('\n@app.route', 1)]
+        self.assertIn('series_readiness(distro)', tests)
+        self.assertNotIn('wait=True', tests,
+                         'the two-second poll waits for a script')
+        for name in ('def fit_distro', 'def prepared_distro'):
+            gate = server[server.index(name):]
+            gate = gate[:gate.index('\ndef ', 1)]
+            self.assertIn('wait=True', gate,
+                          '%s would start a run on a stale answer' % name[4:])
+
+
 class TestReadyScripts(unittest.TestCase):
     """The shipped ready.sh scripts, against a throwaway tree."""
 
@@ -3911,6 +4039,95 @@ class TestCountingWarnings(unittest.TestCase):
                         'the count lands after the verdict is reported')
 
 
+class TestALogIsNotRebuiltEverySecond(unittest.TestCase):
+    """What the log viewer does with a chunk that just arrived.
+
+    It used to hold the log as one string, and a computed property
+    split the whole of it and colourised every line again on each
+    poll -- a second's work proportional to the log rather than to
+    what arrived, with one element in the document per line of it.
+    A kernel build writes tens of thousands, and the browser spent
+    its second laying out the part nobody was looking at.
+    """
+
+    def setUp(self):
+        self.page = read_file('web', 'templates', 'index.html')
+
+    def method(self, name):
+        body = self.page[self.page.index('    %s(' % name):]
+        return body[:body.index('\n    },') + 6]
+
+    def test_only_what_arrived_is_looked_at(self):
+        self.assertFalse('logText' in self.page,
+                         'the whole log is still held as one string')
+        self.assertIn('appendLog(chunk.text)', self.method('async pollLog'))
+        append = self.method('appendLog')
+        self.assertIn('this.logPartial + text', append,
+                      'a chunk that stops mid-line loses the rest of it')
+        self.assertIn('logClass(line)', append,
+                      'lines are colourised somewhere other than on arrival')
+
+    def test_rows_are_known_by_number_and_not_by_position(self):
+        # Dropping the head of a long log has to move nothing: keyed on
+        # position, every line still on screen would be renumbered and
+        # the browser would rewrite all of them.
+        body = self.page[self.page.index('<div class="log-body"'):]
+        body = body[:body.index('</div>', body.index('v-else'))]
+        self.assertIn('v-for="line in logRows" :key="line.n"', body)
+        self.assertNotIn(':key="i"', body)
+
+    def test_a_log_too_long_to_show_says_so(self):
+        self.assertIn('const LOG_ROWS_SHOWN', self.page)
+        self.assertIn('logDropped', self.page)
+        shown = self.page[self.page.index('<div class="ln-dim" v-if="logDropped">'):]
+        shown = shown[:shown.index('</div>')]
+        for word in ('Copy', 'Download', 'whole log'):
+            self.assertIn(word, shown,
+                          'it does not say where the rest of it is')
+
+    def test_what_it_does_with_a_chunk(self):
+        node = shutil.which('node') or shutil.which('nodejs')
+        if not node:
+            self.skipTest('no JavaScript engine to run the page code in')
+
+        harness = '\n'.join([
+            self.page[self.page.index('function logClass'):][
+                :self.page[self.page.index('function logClass'):].index('\n}') + 2],
+            'const LOG_ROWS_SHOWN = 4000;',
+            'const view = { logRows: [], logPartial: "", logDropped: 0,',
+            '  logSeq: 0,',
+            self.method('appendLog').rstrip().rstrip(',') + ',',
+            '};',
+            # A chunk that stops mid-line, then the rest of that line.
+            'view.appendLog("one\\ntwo\\nthr");',
+            'view.appendLog("ee\\n");',
+            # More than it keeps, to see the head go.
+            'let big = ""; for (let i = 0; i < 6000; i++) big += "x" + i + "\\n";',
+            'view.appendLog(big);',
+            'view.appendLog("PASS: done\\n");',
+            'console.log(JSON.stringify({',
+            '  third: view.logRows[2] && view.logRows[2].text,',
+            '  rows: view.logRows.length, dropped: view.logDropped,',
+            '  first: view.logRows[0].n,',
+            '  last: view.logRows[view.logRows.length - 1].cls}));',
+        ])
+        path = os.path.join(tempfile.mkdtemp(), 'harness.js')
+        self.addCleanup(shutil.rmtree, os.path.dirname(path),
+                        ignore_errors=True)
+        with open(path, 'w') as f:
+            f.write(harness)
+        said = subprocess.run([node, path], stdout=subprocess.PIPE,
+                              stderr=subprocess.STDOUT)
+        out = json.loads(said.stdout.decode().strip().splitlines()[-1])
+
+        self.assertEqual(out['rows'], 4000, 'the log is not capped')
+        self.assertEqual(out['rows'] + out['dropped'], 6004)
+        # Numbers carry on past what was dropped, which is the whole
+        # point of them.
+        self.assertEqual(out['first'], out['dropped'])
+        self.assertEqual(out['last'], 'ln-pass')
+
+
 class TestCopyingALog(unittest.TestCase):
     """Reading a failure here usually ends in pasting it somewhere else."""
 
@@ -3933,6 +4150,7 @@ class TestCopyingALog(unittest.TestCase):
         # over less than the button next to it does.
         self.assertIn('logDownloadUrl', self.copy)
         self.assertNotIn('this.logText', self.copy)
+        self.assertNotIn('this.logRows', self.copy)
         self.assertGreater(jobs.INITIAL_TAIL_BYTES, 0,
                            'nothing tails the first read any more')
 
@@ -4295,8 +4513,13 @@ class TestHostFitness(unittest.TestCase):
         with open(os.path.join(PROJECT_ROOT, 'web', 'server.py')) as f:
             server = f.read()
         self.assertIn('host_unfit', server)
-        self.assertLess(server.index('host = host_fitness(distro)'),
-                        server.index('ready, why = series_readiness(distro)'),
+        # Read out of the gate itself rather than off the file, which
+        # said as much about where the polled endpoint happens to ask
+        # its two questions as about the order that matters.
+        gate = server[server.index('def prepared_distro'):]
+        gate = gate[:gate.index('\ndef ', 1)]
+        self.assertLess(gate.index('fit_distro()'),
+                        gate.index('series_readiness('),
                         'readiness is answered before fitness')
         with open(os.path.join(PROJECT_ROOT, 'web', 'templates',
                                'index.html')) as f:
