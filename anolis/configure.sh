@@ -228,21 +228,30 @@ if ! torvalds_sync; then
 fi
 
 # General Configuration
+#
+# Every default below is something already true on this machine: the
+# answer given last time, or -- for the sign-off -- the identity git
+# would put on the commit itself.  Nothing is offered that this tool
+# invented, because a value invented here is the same wrong value on
+# every machine that runs it.
 echo "=== General Configuration ==="
-read -r -p "Linux source code path: " linux_src
-LINUX_SRC_PATH="${linux_src:-/home/amd/linux}"
+LINUX_SRC_PATH=$(config_ask "Linux source code path" \
+                 "$(config_last "${CONFIG_FILE}" LINUX_SRC_PATH)")
 
-read -r -p "Signed-off-by name: " signer_name
-SIGNER_NAME="${signer_name:-Hemanth Selam}"
+was=$(config_last "${CONFIG_FILE}" SIGNER_NAME)
+[ -n "${was}" ] || was=$(git config user.name 2>/dev/null || true)
+SIGNER_NAME=$(config_ask "Signed-off-by name" "${was}")
 
-read -r -p "Signed-off-by email: " signer_email
-SIGNER_EMAIL="${signer_email:-Hemanth.Selam@amd.com}"
+was=$(config_last "${CONFIG_FILE}" SIGNER_EMAIL)
+[ -n "${was}" ] || was=$(git config user.email 2>/dev/null || true)
+SIGNER_EMAIL=$(config_ask "Signed-off-by email" "${was}")
 
-read -r -p "Anolis Bugzilla ID: " anbz_id
-ANBZ_ID="${anbz_id:-12345}"
+ANBZ_ID=$(config_ask "Anolis Bugzilla ID" \
+          "$(config_last "${CONFIG_FILE}" ANBZ_ID)")
 
-read -r -p "Number of patches to apply: " num_patches
-NUM_PATCHES="${num_patches:-0}"
+NUM_PATCHES=$(config_ask "Number of patches to apply" \
+              "$(config_last "${CONFIG_FILE}" NUM_PATCHES)")
+NUM_PATCHES="${NUM_PATCHES:-0}"
 
 # Build Configuration
 echo ""

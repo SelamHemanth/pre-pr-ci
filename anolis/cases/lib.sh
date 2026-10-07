@@ -147,19 +147,46 @@ verdict_from_their_output() {
   return "${CASE_ERROR}"
 }
 
-# The branch of theirs that matches the kernel under test.  Their
-# kabi-whitelist ships one baseline per branch and their
-# branch_supported() takes only these three, so a kernel on any other
-# branch has no baseline to be compared against and their own gate
-# skips it.
+# The branches their CI runs on, read out of the function that decides
+# it.  Their kabi-whitelist ships one baseline per branch, and a kernel
+# on any other branch has no baseline to be compared against, so their
+# own gate skips it.
+#
+# Read rather than restated.  The list used to be copied into the case
+# below, which meant their adding a branch was a change we had to
+# notice and make by hand; the names are theirs either way, and this
+# way they stay theirs.
+their_ci_branches() {
+  local run="${TONE_CLI_DIR}/tests/anck-ci-test/run.sh"
+
+  [ -r "${run}" ] || return 1
+  awk '
+    /^branch_supported\(\)/ { inside = 1 }
+    inside && /^}/          { exit }
+    inside {
+      while (match($0, /"[^"]+"/)) {
+        print substr($0, RSTART + 1, RLENGTH - 2)
+        $0 = substr($0, RSTART + RLENGTH)
+      }
+    }
+  ' "${run}" | grep -v '^\$' | sort -u
+}
+
+# The one of them that matches the kernel under test.  Compared on the
+# version at the end of the branch name, which is how their own
+# anck_build.sh decides too: it greps the branch string for the
+# version and nothing more.
 their_branch_for_kernel() {
-  local kernel="$1" version patchlevel
+  local kernel="$1" version patchlevel branch
   version=$(make -C "${kernel}" -s kernelversion 2>/dev/null) || return 1
   patchlevel=${version%%-*}
-  case "${patchlevel}" in
-    5.10*) echo 'devel-5.10' ;;
-    6.6*)  echo 'devel-6.6' ;;
-    7.0*)  echo 'devel-7.0' ;;
-    *)     return 1 ;;
-  esac
+
+  while read -r branch; do
+    [ -n "${branch}" ] || continue
+    case "${patchlevel}" in
+      "${branch##*-}"|"${branch##*-}".*) echo "${branch}"; return 0 ;;
+    esac
+  done < <(their_ci_branches)
+
+  return 1
 }

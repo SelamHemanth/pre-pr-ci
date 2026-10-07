@@ -91,6 +91,14 @@ anck_rpm_build:rpmbuild
 build_perf:perf
 '
 
+# The branch their run.sh refuses to run check_Kconfig on, taken from
+# the line that refuses it.  Empty if they ever drop the gate, which
+# is then exactly what happens here too.
+_an_tone_kconfig_gate() {
+  sed -n 's/.*KERNEL_CI_REPO_BRANCH"* *== *"\([^"]*\)".*check_Kconfig.*/\1/p' \
+      "${TONE_SUITE}/run.sh" 2>/dev/null | head -1
+}
+
 # The keyword their anck_build.py selects a case by, or nothing if the
 # name is not one of theirs.
 _an_tone_keyword() {
@@ -196,8 +204,22 @@ _an_tone_bin() {
 
   mkdir -p "${dir}" || return 1
 
-  local tool
+  local tool real
   for tool in yum yum-builddep dnf; do
+    # The real one, found rather than assumed.  A shim that execs a
+    # path we wrote down stops working on the first host that keeps
+    # its package manager anywhere else, and a host that has no yum
+    # at all gets no shim: their script then fails exactly as it would
+    # there, which is the answer, rather than on a path of ours.
+    # Looked up with this directory taken out, so the shim cannot
+    # find itself once the suite has put it in front of PATH.
+    real=$(
+      PATH=$(printf '%s' "${PATH}" | tr ':' '\n' \
+             | grep -vxF -- "${dir}" | paste -sd: -)
+      command -v "${tool}" 2>/dev/null
+    )
+    [ -n "${real}" ] || continue
+
     cat > "${dir}/${tool}" <<EOF
 #!/bin/bash
 # Their script expects to be root.  Hand it through, and say so, so the
@@ -209,7 +231,7 @@ if [ -n "\${SUDO_ASKPASS:-}" ] && [ -x "\${SUDO_ASKPASS}" ]; then
   # "Failed to install perf dependencies" and stops -- so swallowing a
   # failure here would turn their clear message into a compile error
   # hundreds of lines later.
-  sudo -A "/usr/bin/${tool}" "\$@"
+  sudo -A "${real}" "\$@"
   rc=\$?
   # yum says "Some packages could not be found" and names none of them,
   # which put four unexplained lines at the top of every case log.
@@ -457,7 +479,9 @@ _an_tone_ck_branch() {
              [ "${ID:-}" = 'anolis' ] && echo "${VERSION_ID%%.*}" )
   [ -n "${release}" ] || return 0
 
-  series=${branch#devel-}
+  # The version at the end of their branch name, taken off whatever
+  # prefix they use rather than one spelled out here.
+  series=${branch##*-}
   candidate="an${release}-${series}"
 
   if ! git ls-remote --heads "${_AN_TONE_CK_REPO}" \
@@ -533,7 +557,9 @@ _an_tone_prepare() {
   if ! branch=$(their_branch_for_kernel "${kernel}"); then
     echo "an_tone: $(make -C "${kernel}" -s kernelversion 2>/dev/null)" \
          "is not one of their CI branches" >&2
-    echo "  their anck_build.sh takes 4.19, 5.10, 6.1, 6.6 and 7.0" >&2
+    # Named from their own branch_supported(), so this cannot drift
+    # into telling the user about branches they no longer run.
+    echo "  their CI runs on: $(their_ci_branches | paste -sd' ' -)" >&2
     return 1
   fi
 
@@ -612,8 +638,12 @@ an_tone_case() {
   local out rc=0
   out=$(
     # Their branch gate, which their run.sh applies before reading the
-    # log: on devel-4.19 their dist-configs-check does not exist.
-    if [ "${KERNEL_CI_REPO_BRANCH}" = 'devel-4.19' ] && \
+    # log: on one branch their dist-configs-check does not exist, so
+    # the case is skipped rather than failed.  Which branch is read
+    # off the line that applies it, so their moving the gate does not
+    # leave ours holding the old one.
+    if [ -n "$(_an_tone_kconfig_gate)" ] && \
+       [ "${KERNEL_CI_REPO_BRANCH}" = "$(_an_tone_kconfig_gate)" ] && \
        [ "${want}" = 'check_Kconfig' ]; then
       skip "${want}"
       exit 0

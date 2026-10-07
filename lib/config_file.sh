@@ -14,6 +14,7 @@
 # Source this file; it defines functions and runs nothing on its own.
 #
 #   config_set <file> <key> <value>
+#   config_ask <prompt> [default]
 #
 
 # Replace KEY's assignment in a .configure file, keeping its position, or
@@ -52,4 +53,52 @@ config_set() {
 	fi
 
 	mv -f "${tmp}" "${file}"
+}
+
+# Ask for one value, offering a default and showing what pressing
+# Enter will do.
+#
+# The default is the caller's to supply, and it has to be something
+# this host or this user already said -- the last answer, or git's idea
+# of who is committing -- never a value written into this tool.  A
+# value written here is the same wrong answer for everyone who runs it:
+# the name and address this used to fall back on were one person's, and
+# a source path of theirs was offered to every other machine as if it
+# existed.
+#
+# read -p writes its prompt to standard error, so this works inside a
+# command substitution.
+config_ask() {
+	local prompt="$1" fallback="${2:-}" answer
+
+	# End of input is an answer too -- it means "whatever you have" --
+	# and the callers run under "set -e", where letting read's failure
+	# out would end the configuration instead of accepting the default.
+	if [ -n "${fallback}" ]; then
+		read -r -p "${prompt} [${fallback}]: " answer || answer=''
+	else
+		read -r -p "${prompt}: " answer || answer=''
+	fi
+	printf '%s' "${answer:-${fallback}}"
+}
+
+# What this tool last recorded for a key, if anything.
+#
+# Read rather than sourced: the file carries passwords and arbitrary
+# shell, and the caller wants one value out of it, not everything in it
+# executed at prompt time.
+config_last() {
+	local file="$1" key="$2"
+
+	[ -r "${file}" ] || return 0
+	KEY="${key}" awk '
+		BEGIN { key = ENVIRON["KEY"] }
+		substr($0, 1, length(key) + 1) == key "=" {
+			value = substr($0, length(key) + 2)
+		}
+		END {
+			gsub(/^['"'"'"]|['"'"'"]$/, "", value)
+			print value
+		}
+	' "${file}"
 }

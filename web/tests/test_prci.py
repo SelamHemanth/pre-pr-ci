@@ -4349,18 +4349,24 @@ class TestTheServiceSeesWhatATerminalSees(unittest.TestCase):
             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
         return done.stdout.decode().strip()
 
-    def narrow(self):
-        """A PATH with the login shell's extra directories taken out.
+    def full(self):
+        """Every directory a login shell here has."""
+        said = self.under(os.environ.get('PATH', os.defpath),
+                          'hostpath_ensure; printf %s "$PATH"')
+        return [d for d in said.split(':') if d]
 
-        Taken from the login shell rather than written down, so this
-        says "narrower than a terminal's" on any host and not just on
-        one that keeps its tools where this one does.
+    def narrow(self):
+        """That PATH with its last few directories taken away.
+
+        A service manager's PATH is some subset of a terminal's, and
+        which subset is the unit's business.  Any proper subset makes
+        the same point, so one is cut rather than named -- this says
+        "narrower than a terminal's" on a host that keeps its tools
+        nowhere near where this one does.
         """
-        full = self.under(os.environ.get('PATH', '/usr/bin:/bin'),
-                          'hostpath_ensure; printf %s "$PATH"').split(':')
-        keep = [d for d in full if d.endswith(('/bin',))
-                and not d.endswith('sbin')]
-        return ':'.join(keep) or '/usr/bin:/bin'
+        full = self.full()
+        self.assertGreater(len(full), 1, 'nothing here to narrow')
+        return ':'.join(full[:-1])
 
     def test_a_directory_only_a_login_shell_has_is_added(self):
         narrow = self.narrow()
@@ -4380,27 +4386,32 @@ class TestTheServiceSeesWhatATerminalSees(unittest.TestCase):
         self.assertTrue(after.startswith('/prci-shims:'),
                         'a shim directory lost its place at the front')
 
-    def test_asking_twice_costs_one_login_shell(self):
-        # hostcheck asks once per tool in their table, and a login
-        # shell each time would cost more than the whole question.
-        said = self.under(
-            self.narrow(),
-            'hostpath_ensure; hostpath_ensure; hostpath_ensure\n'
-            'printf %s "$PATH"')
-        self.assertEqual(said.count('/usr/local/bin'), 1,
-                         'a repeated call appended the same entry again')
+    def test_asking_twice_adds_nothing_the_second_time(self):
+        # hostcheck asks once per tool in their table, so a call that
+        # is not idempotent grows PATH until something gives.  Asked
+        # as "the same answer", not "no repeats": a login shell here
+        # may well hand out a PATH with a directory twice in it
+        # already, and that is the host's business, not ours.
+        narrow = self.narrow()
+        once = self.under(narrow, 'hostpath_ensure; printf %s "$PATH"')
+        thrice = self.under(narrow, 'hostpath_ensure; hostpath_ensure\n'
+                                    'hostpath_ensure; printf %s "$PATH"')
+        self.assertEqual(once, thrice,
+                         'a repeated call kept adding to PATH')
 
     def test_no_directory_is_named_in_the_helper(self):
         # The whole point: where a distro keeps its tools is the
-        # distro's business, and a list here is a list that is wrong
-        # on the next one.
+        # distro's business, and a list here is a list that is wrong on
+        # the next one.  Any absolute path at all is caught, not three
+        # we happened to think of.
         with open(os.path.join(PROJECT_ROOT, 'lib', 'hostpath.sh')) as f:
             source = f.read()
         code = '\n'.join(line for line in source.splitlines()
                          if not line.lstrip().startswith('#'))
-        for guess in ('/usr/sbin', '/sbin', '/usr/local/sbin'):
-            self.assertNotIn(guess, code,
-                             'a directory was guessed instead of asked for')
+        named = re.findall(r'/[\w./-]*s?bin\b', code)
+        self.assertEqual(named, [],
+                         'a directory was guessed instead of asked for: %s'
+                         % named)
 
     def test_the_suites_that_run_their_scripts_ask_for_it(self):
         for script in ('anolis/test.sh', 'euler/test.sh',
@@ -4415,6 +4426,160 @@ class TestTheServiceSeesWhatATerminalSees(unittest.TestCase):
             source = f.read()
         self.assertIn('Environment="PATH=$SERVICE_PATH"', source)
         self.assertIn('su - "$ACTUAL_USER"', source)
+
+
+class TestNothingIsWrittenDownThatCanBeAsked(unittest.TestCase):
+    """Values this tool used to invent, and now finds out.
+
+    A default written into the tool is the same answer on every machine
+    that runs it, and on all but one of them it is wrong -- quietly, in
+    a sign-off or a source path, where nobody reads it back.  The
+    configure scripts offered one person's name, one person's address
+    and one person's kernel path; the Anolis yum shim exec'd a package
+    manager at a path nobody had checked.
+    """
+
+    def sh(self, script, stdin=''):
+        done = subprocess.run(
+            ['bash', '-c', 'set -eu\n. "%s/lib/config_file.sh"\n%s'
+             % (PROJECT_ROOT, script)],
+            input=stdin.encode(), cwd=PROJECT_ROOT,
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        return done.stdout.decode()
+
+    def configured(self, body):
+        path = os.path.join(tempfile.mkdtemp(), '.configure')
+        self.addCleanup(shutil.rmtree, os.path.dirname(path),
+                        ignore_errors=True)
+        with open(path, 'w') as f:
+            f.write(body)
+        return path
+
+    def test_the_last_answer_is_what_is_offered_back(self):
+        conf = self.configured('SIGNER_NAME=somebody\nNUM_PATCHES=7\n')
+        self.assertEqual(
+            self.sh('config_last "%s" SIGNER_NAME' % conf), 'somebody\n')
+        self.assertEqual(
+            self.sh('config_last "%s" NUM_PATCHES' % conf), '7\n')
+
+    def test_a_key_that_was_never_answered_offers_nothing(self):
+        conf = self.configured('SIGNER_NAME=somebody\n')
+        self.assertEqual(
+            self.sh('config_last "%s" ANBZ_ID' % conf).strip(), '',
+            'a value was invented for a question never answered')
+
+    def test_the_offered_default_is_taken_when_nothing_is_typed(self):
+        self.assertEqual(self.sh('config_ask Pick found-this'),
+                         'found-this')
+
+    def test_what_is_typed_wins_over_what_was_found(self):
+        self.assertEqual(self.sh('config_ask Pick found-this', 'typed\n'),
+                         'typed')
+
+    def test_end_of_input_does_not_end_the_configuration(self):
+        # The scripts run under "set -e", so read's failure at EOF used
+        # to take the whole run with it.
+        self.assertEqual(
+            self.sh('config_ask Pick found-this\nprintf ";still here"'),
+            'found-this;still here')
+
+    def test_no_identity_or_path_is_written_into_the_configure_scripts(self):
+        for script in ('anolis/configure.sh', 'euler/configure.sh'):
+            with open(os.path.join(PROJECT_ROOT, script)) as f:
+                code = '\n'.join(line for line in f.read().splitlines()
+                                 if not line.lstrip().startswith('#'))
+            self.assertEqual(
+                re.findall(r'[\w.+-]+@[\w.-]+\.\w+', code), [],
+                '%s offers somebody\'s address to everybody' % script)
+            self.assertEqual(
+                re.findall(r':-/\w', code), [],
+                '%s falls back to a path of its own' % script)
+
+    def test_the_sign_off_falls_back_to_the_one_git_would_write(self):
+        # Not a name of ours: the kernel's own "git commit -s" builds
+        # its trailer from these two settings, so anything else would
+        # disagree with the sign-off git itself would have added.
+        for script in ('anolis/configure.sh', 'euler/configure.sh'):
+            with open(os.path.join(PROJECT_ROOT, script)) as f:
+                code = f.read()
+            self.assertIn('git config user.name', code)
+            self.assertIn('git config user.email', code)
+
+    def test_the_package_manager_shim_execs_one_that_was_found(self):
+        with open(os.path.join(PROJECT_ROOT, 'anolis', 'an_tone.sh')) as f:
+            code = '\n'.join(line for line in f.read().splitlines()
+                             if not line.lstrip().startswith('#'))
+        shim = code[code.index('_an_tone_bin()'):]
+        shim = shim[:shim.index('\n}')]
+        self.assertEqual(
+            re.findall(r'/\w+/bin/', shim), [],
+            'the shim execs a package manager at a path nobody checked')
+        self.assertIn('command -v', shim)
+
+    def test_the_shim_execs_whichever_one_this_host_actually_has(self):
+        # Proved by moving it: a yum put somewhere no distro keeps one
+        # is the yum the shim must hand to, and the old /usr/bin
+        # spelling could not have found it.
+        out = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, out, ignore_errors=True)
+        odd = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, odd, ignore_errors=True)
+        with open(os.path.join(odd, 'yum'), 'w') as f:
+            f.write('#!/bin/sh\n')
+        os.chmod(os.path.join(odd, 'yum'), 0o755)
+
+        env = dict(os.environ, PATH=odd + ':' + os.environ.get('PATH', ''))
+        subprocess.run(
+            ['bash', '-c',
+             'set -u\nPRCI_ROOT="%s"\n. "%s/anolis/an_tone.sh"\n'
+             '_an_tone_bin "%s"' % (PROJECT_ROOT, PROJECT_ROOT, out)],
+            env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+        with open(os.path.join(out, 'yum')) as f:
+            self.assertIn(os.path.join(odd, 'yum'), f.read(),
+                          'the shim did not exec the one it found')
+
+    def test_the_branches_come_from_their_branch_supported(self):
+        # Theirs either way -- but copied, their adding one was a
+        # change somebody here had to notice and make by hand.
+        run = os.path.join(PROJECT_ROOT, 'anolis', 'tone-cli', 'tests',
+                           'anck-ci-test', 'run.sh')
+        if not os.path.exists(run):
+            self.skipTest('their submodule is not checked out')
+        with open(run) as f:
+            body = f.read()
+        body = body[body.index('branch_supported()'):]
+        theirs = sorted({s for s in re.findall(r'"([^"]*)"',
+                                               body[:body.index('\n}')])
+                         if s and not s.startswith('$')})
+
+        done = subprocess.run(
+            ['bash', '-c', '. "%s/anolis/cases/lib.sh"\ntheir_ci_branches'
+             % PROJECT_ROOT],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        ours = sorted(done.stdout.decode().split())
+
+        self.assertEqual(ours, theirs,
+                         'our idea of their branches is our own')
+
+    def test_the_branch_list_is_not_restated_in_our_code(self):
+        for script in ('anolis/cases/lib.sh', 'anolis/an_tone.sh'):
+            with open(os.path.join(PROJECT_ROOT, script)) as f:
+                code = '\n'.join(line for line in f.read().splitlines()
+                                 if not line.lstrip().startswith('#'))
+            self.assertEqual(
+                re.findall(r'devel-[\d.]+', code), [],
+                '%s names a branch of theirs instead of reading it'
+                % script)
+
+    def test_a_package_manager_this_host_lacks_gets_no_shim(self):
+        # Their script should then fail the way it would on a host
+        # without one, rather than on a path of ours that is not there.
+        with open(os.path.join(PROJECT_ROOT, 'anolis', 'an_tone.sh')) as f:
+            code = f.read()
+        shim = code[code.index('_an_tone_bin()'):]
+        self.assertIn('[ -n "${real}" ] || continue',
+                      shim[:shim.index('\n}')])
 
 
 if __name__ == '__main__':

@@ -152,10 +152,21 @@ create_service_file() {
                    'printf "__path__%s\\n" "$PATH"' 2>/dev/null \
                    | sed -n 's/^__path__//p' | tail -n 1)
     [ -n "$SERVICE_PATH" ] || SERVICE_PATH="$PATH"
-    case ":$SERVICE_PATH:" in
-        *":$USER_HOME/.local/bin:"*) ;;
-        *) SERVICE_PATH="$USER_HOME/.local/bin:$SERVICE_PATH" ;;
-    esac
+
+    # install_dependencies above puts flask where pip's --user puts it,
+    # and only Python knows where that is -- it moves with the
+    # interpreter version and differs on a distro that patches it.  So
+    # it is asked, not assembled out of the home directory.
+    local user_bin
+    user_bin=$(su - "$ACTUAL_USER" -c \
+               "$PYTHON_PATH -c 'import os, site;
+print(os.path.join(site.USER_BASE, \"bin\"))'" 2>/dev/null | tail -n 1)
+    if [ -n "$user_bin" ]; then
+        case ":$SERVICE_PATH:" in
+            *":$user_bin:"*) ;;
+            *) SERVICE_PATH="$user_bin:$SERVICE_PATH" ;;
+        esac
+    fi
     
     # Create service file
     cat > "$SERVICE_FILE" << EOF
