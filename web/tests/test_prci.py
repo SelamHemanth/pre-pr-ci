@@ -20,6 +20,7 @@ renamed in test.sh and not here, a test becomes unstartable or its output
 becomes invisible.  That had already happened to euler's check_kabi.
 """
 
+import json
 import ast
 import os
 import re
@@ -4037,6 +4038,240 @@ class TestCountingWarnings(unittest.TestCase):
         self.assertLess(runner.index('warnings_summarise'),
                         runner.index('case ${rc} in'),
                         'the count lands after the verdict is reported')
+
+
+class TestTheRowAnswersTheClick(unittest.TestCase):
+    """What the Tests row does between the press and the first poll.
+
+    Nothing, is what it did.  The badges are driven by the job list,
+    the job takes a moment to start, and the next poll was up to two
+    seconds after that -- so the row went on showing the previous
+    run's verdict, which reads as a button that did not work.
+    Reloading during those seconds showed the same thing, and a
+    single test queued behind another job showed nothing for as long
+    as that one took.
+    """
+
+    def setUp(self):
+        self.page = read_file('web', 'templates', 'index.html')
+
+    def method(self, name):
+        body = self.page[self.page.index('    %s(' % name):]
+        return body[:body.index('\n    },') + 6]
+
+    def test_the_press_marks_the_row_itself(self):
+        run = self.method('async runTest')
+        self.assertIn('this.starting = test.name', run)
+        self.assertLess(run.index('this.starting = test.name'),
+                        run.index('await this.post'),
+                        'the row waits on the server before it says anything')
+        self.assertIn("this.starting = null", run,
+                      'a refusal leaves the row claiming to be starting')
+
+    def test_the_mark_is_shown(self):
+        row = self.page[self.page.index('<div class="test-row"'):]
+        row = row[:row.index('</div>', row.index('btn-primary'))]
+        self.assertIn('t.name === starting', row)
+
+    def test_a_single_test_waiting_its_turn_says_so(self):
+        # It said nothing at all until the job reached the front of
+        # the queue, which behind a kernel build is forty minutes.
+        queued = self.method('queuedTests')
+        self.assertIn("j.kind === 'test'", queued)
+        self.assertIn("j.status === 'queued'", queued)
+
+    def test_the_mark_comes_off_by_itself(self):
+        drop = self.method('dropStartingMark')
+        self.assertIn('this.activeJobs.some', drop)
+        self.assertIn('this.startingAfter', drop,
+                      'a run over before the first poll strands the mark')
+        self.assertIn('this.dropStartingMark()', self.method('async _refresh'))
+
+    def test_pressing_run_empties_the_window(self):
+        run = self.method('async runTest')
+        self.assertIn('this.openLogFor(test, true)', run)
+        reset = self.method('resetLogBuffer')
+        self.assertIn('this.clearLog()', reset)
+        self.assertIn('if (fresh) this.logOffset = -1', reset)
+        self.assertLess(reset.index('this.clearLog()'),
+                        reset.index('this.logOffset = -1'),
+                        'clearLog puts the offset back to the start again')
+
+    def test_the_emptied_window_is_not_refilled_from_the_last_run(self):
+        # All the file holds until the new run writes is the old run's
+        # output, so reading from nought would put straight back what
+        # the press just took away.
+        store = read_file('web', 'prci', 'jobs.py')
+        body = store[store.index('def read_file'):]
+        body = body[:body.index('\n    def ', 10)]
+        self.assertIn('if offset == -1:', body)
+        seek = body[body.index('if offset == -1:'):]
+        seek = seek[:seek.index('\n\n')]
+        self.assertIn("'text': ''", seek)
+        self.assertIn("'offset': size", seek)
+
+    def test_what_the_row_shows_at_each_step(self):
+        node = shutil.which('node') or shutil.which('nodejs')
+        if not node:
+            self.skipTest('no JavaScript engine to run the page code in')
+
+        harness = '''
+const vm = {
+  starting: null, startingAfter: undefined,
+  tests: [{ name: 't', last_result: { job_id: 'old', verdict: 'Pass' } }],
+  status: { active_jobs: [] },
+  logRows: ['from the run before'], logOffset: 0, tab: 'tests',
+  get activeJobs() { return this.status.active_jobs || []; },
+  get runningJob() {
+    return this.activeJobs.find(j => j.status === 'running') || null; },
+  get runningTest() {
+    const j = this.runningJob;
+    return j && j.kind === 'test' ? j.test_name : null; },
+  toast() {}, post: async () => ({}), refresh: async () => {},
+  clearLog() { this.logRows = []; this.logOffset = 0; },
+  pollLog() {},
+  openLogFor(test, fresh) {
+    this.logTest = test; this.clearLog();
+    if (fresh) this.logOffset = -1; this.pollLog(true); },
+};
+vm.runTest = RUN_TEST;
+vm.dropStartingMark = DROP_MARK;
+Object.defineProperty(vm, 'queuedTests', { get: QUEUED });
+
+const row = () =>
+  vm.runningTest === 't' ? 'running'
+  : vm.starting === 't' ? 'starting'
+  : vm.queuedTests.has('t') ? 'waiting'
+  : (vm.tests[0].last_result || {}).verdict;
+
+const seen = {};
+(async () => {
+  await vm.runTest(vm.tests[0]);
+  seen.clicked = row();
+  seen.logEmptied = vm.logRows.length === 0 && vm.logOffset === -1;
+
+  vm.status.active_jobs = [{kind:'test', test_name:'t', status:'queued'}];
+  vm.dropStartingMark(); seen.queued = row();
+
+  vm.status.active_jobs = [{kind:'test', test_name:'t', status:'running'}];
+  vm.dropStartingMark(); seen.running = row();
+
+  vm.status.active_jobs = [];
+  vm.tests[0].last_result = { job_id: 'new', verdict: 'Warning' };
+  vm.dropStartingMark(); seen.done = row();
+
+  // Over before any poll saw it: the mark must still come off.
+  vm.starting = 't'; vm.startingAfter = 'new';
+  vm.tests[0].last_result = { job_id: 'newer', verdict: 'Pass' };
+  vm.dropStartingMark(); seen.blinkAndMissIt = row();
+
+  console.log(JSON.stringify(seen));
+})();
+'''
+        for token, name, head in (
+                ('RUN_TEST', 'async runTest', 'async function (test) '),
+                ('DROP_MARK', 'dropStartingMark', 'function () '),
+                ('QUEUED', 'queuedTests', 'function () ')):
+            body = self.method(name)
+            body = head + body[body.index('{'):].rstrip().rstrip(',')
+            harness = harness.replace(token, body)
+
+        with tempfile.NamedTemporaryFile('w', suffix='.mjs',
+                                         delete=False) as handle:
+            handle.write(harness)
+            path = handle.name
+        try:
+            out = subprocess.run([node, path], capture_output=True, text=True,
+                                 timeout=60)
+        finally:
+            os.unlink(path)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        seen = json.loads(out.stdout)
+
+        self.assertEqual(seen['clicked'], 'starting',
+                         'the row says nothing when it is pressed')
+        self.assertTrue(seen['logEmptied'],
+                        'the last run is still on screen under the new one')
+        self.assertEqual(seen['queued'], 'waiting')
+        self.assertEqual(seen['running'], 'running')
+        self.assertEqual(seen['done'], 'Warning')
+        self.assertEqual(seen['blinkAndMissIt'], 'Pass',
+                         'a run over before the first poll leaves the row '
+                         'saying starting for ever')
+
+
+class TestOnePollNotThree(unittest.TestCase):
+    """How many sockets a second the page costs when it is idle.
+
+    Werkzeug closes the connection after every response, so three
+    reads on a timer were three handshakes and three server threads
+    every two seconds to learn one thing.  None of the three depends
+    on another.
+    """
+
+    def setUp(self):
+        self.page = read_file('web', 'templates', 'index.html')
+        self.server = read_file('web', 'server.py')
+
+    def test_the_timer_asks_once(self):
+        body = self.page[self.page.index('    async _refresh('):]
+        body = body[:body.index('\n    },') + 6]
+        self.assertIn("this.api('/api/poll", body)
+        for gone in ("this.api('/api/status')", "this.api('/api/jobs"):
+            self.assertNotIn(gone, body, 'still asked for separately')
+
+    def test_the_one_answer_holds_all_three(self):
+        body = self.server[self.server.index('def api_poll('):]
+        body = body[:body.index('\n@app.route')]
+        for part in ('status_payload()', "'jobs'", 'tests_payload('):
+            self.assertIn(part, body)
+
+    def test_the_separate_ones_still_work(self):
+        # Other callers use them, and so does anything scripted
+        # against the server.
+        for route in ("@app.route('/api/status')", "@app.route('/api/tests')",
+                      "@app.route('/api/jobs')"):
+            self.assertIn(route, self.server)
+
+    def test_a_poll_does_not_overtake_the_one_before_it(self):
+        # Two in flight land in whatever order they land in, and the
+        # loser writes the older answer over the newer one -- a row
+        # going back to the verdict it had before the run finished.
+        body = self.page[self.page.index('    async refresh('):]
+        body = body[:body.index('\n    },') + 6]
+        self.assertIn('if (this._refreshing) return this._refreshing', body)
+        self.assertIn('finally', body, 'a failed poll blocks every one after')
+
+    def test_a_log_read_does_not_overtake_either(self):
+        # Both would start from the offset neither has moved yet,
+        # fetch the same bytes and both append them.
+        body = self.page[self.page.index('    async pollLog('):]
+        body = body[:body.index('\n    },') + 6]
+        self.assertIn('if (this._readingLog) return', body)
+        self.assertIn('this._readingLog = false', body)
+        self.assertIn('this.logUrl !== from', body,
+                      'a chunk of one log can be appended to another')
+
+
+class TestNothingHereIsWorthKeeping(unittest.TestCase):
+    """Why the page sometimes showed a stale answer after a reload.
+
+    None of these responses carried any freshness -- no Cache-Control,
+    no Expires, no Last-Modified -- and a response like that is one a
+    browser may cache by its own guess (RFC 9111 4.2.2).
+    """
+
+    def test_no_api_answer_may_be_stored(self):
+        server = read_file('web', 'server.py')
+        body = server[server.index('def _never_store_an_answer('):]
+        body = body[:body.index('\n@app.route')]
+        self.assertIn("request.path.startswith('/api/')", body)
+        self.assertIn('no-store', body)
+
+    def test_it_is_on_every_answer_and_not_a_chosen_few(self):
+        server = read_file('web', 'server.py')
+        self.assertIn('@app.after_request', server,
+                      'set per route, the next route added will not have it')
 
 
 class TestALogIsNotRebuiltEverySecond(unittest.TestCase):

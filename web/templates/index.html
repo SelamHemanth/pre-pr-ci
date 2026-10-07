@@ -1753,6 +1753,10 @@ footer a:hover { text-decoration: underline; }
                     title="Running now">
                 <i class="dot pulse"></i>running
               </span>
+              <span v-else-if="t.name === starting" class="badge badge-run"
+                    title="Asked for; waiting for it to pick up">
+                <i class="dot pulse"></i>starting
+              </span>
               <span v-else-if="queuedTests.has(t.name)" class="badge badge-neutral"
                     title="Waiting for the tests above it">waiting</span>
               <span v-else-if="!t.enabled" class="badge badge-neutral">disabled</span>
@@ -2109,6 +2113,13 @@ createApp({
       setupOpen: true,
       configSummaryOpen: true,
       sawStatus: false,
+
+      // The test whose Run button was just pressed, until the server
+      // has a job to show for it.  Held here because the badges are
+      // driven by the job list, which cannot know about a click until
+      // the next poll -- and a row that does not change when pressed
+      // reads as a button that does not work.
+      starting: null,
       // Width of the log column in pixels, remembered between visits.
       // Clamped on load rather than trusted: a width saved on a wide
       // monitor would leave no list beside it on a laptop.
@@ -2243,9 +2254,16 @@ createApp({
       if (this.logTest) return this.logTest.title;
       return this.logJob ? this.logJob.label : '';
     },
-    // A test's log is live while that test is the one running.
+    // A test's log is live while that test is the one running -- and
+    // from the moment its Run button is pressed, so the window that
+    // the press emptied is being read from rather than left blank
+    // until the job happens to reach the front of the queue.
     logLive() {
-      if (this.logTest) return this.logTest.name === this.runningTest;
+      if (this.logTest) {
+        return this.logTest.name === this.runningTest
+            || this.logTest.name === this.starting
+            || this.queuedTests.has(this.logTest.name);
+      }
       return this.logJob ? this.isActive(this.logJob) : false;
     },
     logStatus() {
@@ -2275,14 +2293,26 @@ createApp({
     },
 
     // Enabled, not finished, and not the one running: still to come.
+    //
+    // Single-test jobs are in here too.  They were not, on the
+    // reasoning that one test is either running or it is not -- but a
+    // job sits queued until the worker picks it up, and behind
+    // anything already going it can sit there for as long as that
+    // takes.  The row said nothing at all for the whole of it.
     queuedTests() {
+      const waiting = new Set(this.activeJobs
+        .filter(j => j.kind === 'test' && j.status === 'queued' && j.test_name)
+        .map(j => j.test_name));
+
       const job = this.runningJob;
-      if (!job || job.kind !== 'test_all') return new Set();
-      const done = new Set((job.results || []).map(r => r.test));
-      return new Set(this.tests
-        .filter(t => t.enabled && !done.has(t.name)
-                     && t.name !== this.runningTest)
-        .map(t => t.name));
+      if (job && job.kind === 'test_all') {
+        const done = new Set((job.results || []).map(r => r.test));
+        for (const t of this.tests) {
+          if (t.enabled && !done.has(t.name)) waiting.add(t.name);
+        }
+      }
+      waiting.delete(this.runningTest);
+      return waiting;
     },
 
     activeJobs() { return (this.status.active_jobs || []); },
@@ -2558,26 +2588,43 @@ createApp({
 
     /* ── polling ────────────────────────────────────────────────────── */
 
+    // One at a time, and the three reads together rather than in turn.
+    //
+    // They were awaited one after another, so a refresh cost three
+    // round trips end to end, and the two-second timer started
+    // another before a slow one had finished.  Two in flight at once
+    // land in whatever order they land in, and the loser overwrites
+    // the newer answer with the older one -- which is a row going
+    // back to the verdict it had before the run that just finished.
     async refresh() {
+      if (this._refreshing) return this._refreshing;
+      this._refreshing = this._refresh().finally(() => {
+        this._refreshing = null;
+      });
+      return this._refreshing;
+    },
+
+    async _refresh() {
       try {
         const wasConfigured = this.status.configured;
         const previous = new Map(this.jobs.map(j => [j.id, j.status]));
 
-        this.status = await this.api('/api/status');
+        // One request for all three. None of them depends on another,
+        // and the server closes the connection after every one, so
+        // three of them cost three handshakes to learn one thing.
+        const poll = await this.api('/api/poll?limit=40');
 
+        this.status = poll.status;
         this.sawStatus = true;
-
-        const jobs = await this.api('/api/jobs?limit=40');
-        this.jobs = jobs.jobs;
+        this.jobs = poll.jobs;
         this.announceFinished(previous);
 
-        if (this.status.configured) {
+        if (poll.tests) {
           if (!wasConfigured || !this.tests.length) await this.loadConfig();
-          const tests = await this.api('/api/tests');
-          this.tests = tests.tests;
-          this.prepared = !!tests.prepared;
-          this.preparedReason = tests.prepared_reason || '';
-          this.fitness = tests.fitness
+          this.tests = poll.tests.tests;
+          this.prepared = !!poll.tests.prepared;
+          this.preparedReason = poll.tests.prepared_reason || '';
+          this.fitness = poll.tests.fitness
             || { ok: true, headline: '', summary: '', reason: '',
                  note: '', table: [] };
         }
@@ -2592,11 +2639,31 @@ createApp({
           const fresh = this.tests.find(t => t.name === this.logTest.name);
           if (fresh) this.logTest = fresh;
         }
+
+        this.dropStartingMark();
       } catch (error) {
         // A single failed poll is not worth a notification; the page simply
         // keeps the values it already has.
         console.warn('poll failed', error);
       }
+    },
+
+    // The click's mark is only there to cover the gap before the
+    // server has anything to say, so it comes off the moment it does:
+    // either there is a job for that test now, or the run was short
+    // enough to have finished and left a verdict that was not there
+    // when the button was pressed.
+    dropStartingMark() {
+      if (!this.starting) return;
+
+      if (this.activeJobs.some(j => j.test_name === this.starting)) {
+        this.starting = null;
+        return;
+      }
+
+      const test = this.tests.find(t => t.name === this.starting);
+      const job = test && test.last_result && test.last_result.job_id;
+      if (job && job !== this.startingAfter) this.starting = null;
     },
 
     announceFinished(previous) {
@@ -2700,12 +2767,35 @@ createApp({
     // covering half the page to show a queued job with nothing in it
     // yet had to be dismissed every time.  The row's own log button is
     // there when it is wanted, and running everything never did this.
+    // Answering the click, rather than waiting to be told about it.
+    //
+    // Nothing on the row changed when it was pressed: the badge is
+    // driven by the job list, the job takes a moment to start, and
+    // the next poll was up to two seconds away.  For those two
+    // seconds the row still showed the previous run's verdict, which
+    // reads as "the click did nothing" -- and reloading the page
+    // during them showed the same thing again.
+    //
+    // So the row is marked here, from the click, and the poll takes
+    // over as soon as it has something of its own to say.  A refusal
+    // puts it back.
     async runTest(test) {
+      this.starting = test.name;
+      // Which verdict was on the row when it was pressed, so a run
+      // that finishes between two polls can still be told apart from
+      // the one before it.
+      this.startingAfter = test.last_result ? test.last_result.job_id : null;
+      // A new run, not more of the last one: the window is emptied
+      // now rather than when the first line of output turns up.  The
+      // file on disk is untouched; this is only what is on screen.
+      this.openLogFor(test, true);
+
       try {
         await this.post(`/api/test/${encodeURIComponent(test.name)}`);
         this.toast('ok', `Queued ${test.name}`);
         await this.refresh();
       } catch (error) {
+        this.starting = null;
         this.toast('bad', `Could not start ${test.name}`, error.message);
       }
     },
@@ -2760,14 +2850,17 @@ createApp({
     // During a full run the job log holds every test's output run
     // together, so opening that in answer to "show me this test" was
     // showing thirteen tests.
-    openLogFor(test) {
+    // ``fresh`` is for a run just asked for: the window is emptied and
+    // reading starts at the end of the file as it stands, so the last
+    // run's output does not come straight back to fill the gap.
+    openLogFor(test, fresh) {
       this.logTest = test;
       this.logJob = null;
       this.logWhich = 'test';
-      this.resetLogBuffer();
+      this.resetLogBuffer(fresh);
     },
 
-    resetLogBuffer() {
+    resetLogBuffer(fresh) {
       // The log has no column on the terminal tab, so opening one from
       // the left rail while the shell is up has to move off it first,
       // or the press would do nothing you can see.  History is where a
@@ -2776,6 +2869,7 @@ createApp({
       if (this.tab === 'terminal') this.tab = 'jobs';
       this.clearLog();
       this.logFollow = true;
+      if (fresh) this.logOffset = -1;
       this.pollLog(true);
     },
 
@@ -2816,16 +2910,27 @@ createApp({
       this.clearLog();
     },
 
+    // One read at a time.  Two overlapping ones both start from the
+    // offset neither has moved yet, so they fetch the same bytes and
+    // both append them: the log shows every line twice.
     async pollLog(force) {
       if (!this.logUrl) return;
       // Once whatever produces the log has stopped, there is nothing
       // more to append.
       if (!force && !this.logLive && this.logOffset > 0) return;
+      if (this._readingLog) return;
+      this._readingLog = true;
 
       try {
         const query = this.logQuery;
+        const from = this.logUrl;
         const chunk = await this.api(
-          `${this.logUrl}?${query ? query + '&' : ''}offset=${this.logOffset}`);
+          `${from}?${query ? query + '&' : ''}offset=${this.logOffset}`);
+
+        // Opened something else while this was in the air: these are
+        // another log's bytes and appending them here would splice
+        // one run's output into another's.
+        if (this.logUrl !== from) return;
 
         if (chunk.truncated && this.logOffset > 0) {
           // The file was replaced under us; start again rather than splicing
@@ -2838,7 +2943,10 @@ createApp({
         this.logOffset = chunk.offset;
 
         if (chunk.text && this.logFollow) this.$nextTick(this.scrollLog);
-      } catch (_) { /* the job may have been pruned */ }
+      } catch (_) { /* the job may have been pruned */
+      } finally {
+        this._readingLog = false;
+      }
     },
 
     // The whole log, not the part on screen: the first read of a long

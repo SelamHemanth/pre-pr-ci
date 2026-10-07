@@ -540,6 +540,16 @@ class JobStore:
             return {'text': note, 'offset': 0, 'size': 0,
                     'truncated': False, 'missing': True}
 
+        # -1 asks only where the end is, and is what pressing Run uses.
+        # That press empties the window to show the new run starting,
+        # and filling it straight back up with the last run's output --
+        # which is all the file holds until the new one writes -- is the
+        # opposite of what it meant.  Reading from here shows the new
+        # run's first line as its first line.
+        if offset == -1:
+            return {'text': '', 'offset': size, 'size': size,
+                    'truncated': False, 'missing': False}
+
         truncated = False
         if offset is None:
             offset = max(0, size - INITIAL_TAIL_BYTES)

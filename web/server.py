@@ -63,6 +63,25 @@ app.config['SOCK_SERVER_OPTIONS'] = {'ping_interval': 25}
 sock = Sock(app)
 
 
+@app.after_request
+def _never_store_an_answer(response):
+    """Nothing here is worth keeping, and a kept one is wrong.
+
+    None of these carried any freshness at all -- no Cache-Control, no
+    Expires, no Last-Modified -- and a response like that is one a
+    browser is allowed to cache by its own guess (RFC 9111 4.2.2).
+    When it guessed, the page showed a job that had already started as
+    not started yet, and reloading sometimes got the guess again
+    rather than the server.
+
+    Every answer here is about what is true this second, so there is
+    no case where holding on to one is right.
+    """
+    if request.path.startswith('/api/'):
+        response.headers['Cache-Control'] = 'no-store, must-revalidate'
+    return response
+
+
 # ── helpers ───────────────────────────────────────────────────────────────
 
 def configured_distro():
@@ -188,8 +207,12 @@ def favicon():
 
 @app.route('/api/status')
 def api_status():
+    return jsonify(status_payload())
+
+
+def status_payload():
     distro = workspace.selected_distro()
-    return jsonify({
+    return {
         'configured': workspace.is_configured(),
         'distro': distro,
         'distro_label': registry.DISTROS.get(distro),
@@ -204,7 +227,7 @@ def api_status():
         'mirror_present': os.path.isdir(TORVALDS_REPO),
         'submodules': submodules.status(PROJECT_ROOT),
         'oe_checks_revision': submodules.revision(PROJECT_ROOT),
-    })
+    }
 
 
 @app.route('/api/system')
@@ -296,12 +319,15 @@ def api_tests():
     if not registry.is_distro(distro):
         return jsonify({'success': False,
                         'error': 'Unknown distribution'}), 400
+    return jsonify(tests_payload(distro))
 
+
+def tests_payload(distro):
     enabled = workspace.enabled_tests(distro)
     latest = latest_result_per_test()
     ready, why = series_readiness(distro)
     host = host_fitness(distro)
-    return jsonify({
+    return {
         'distro': distro,
         # Not 'host', which the page already uses for the machine's own
         # facts in the header.  This is a verdict about that machine.
@@ -322,7 +348,33 @@ def api_tests():
             }
             for t in registry.tests_for(distro)
         ],
-    })
+    }
+
+
+@app.route('/api/poll')
+def api_poll():
+    """Everything the page re-reads on a timer, in one answer.
+
+    It asked for status, then jobs, then tests, as three requests --
+    and Werkzeug closes the connection after every one of them, so
+    that was three sockets and three server threads every two
+    seconds, each paying for a handshake before it could ask.
+
+    Nothing here depends on anything else here, so there was never a
+    reason for them to be three.
+    """
+    status = status_payload()
+    limit = request.args.get('limit', type=int, default=50)
+    answer = {
+        'status': status,
+        'jobs': store.list(limit=max(1, min(limit, 200))),
+    }
+    # Only once there is something to list.  Before a distro is
+    # chosen there are no tests, and asking costs a readiness check.
+    distro = status.get('distro')
+    if status.get('configured') and registry.is_distro(distro):
+        answer['tests'] = tests_payload(distro)
+    return jsonify(answer)
 
 
 # ── work ──────────────────────────────────────────────────────────────────
