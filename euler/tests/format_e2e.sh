@@ -30,7 +30,9 @@ set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT="$(dirname "$(dirname "${HERE}")")"
 
-MIRROR="${1:-${TORVALDS_REPO:-/home/amd/hemanth/linux}}"
+# The mirror this tool keeps, not one that happened to be on the
+# machine this was written on.
+MIRROR="${1:-${TORVALDS_REPO:-${PROJECT}/.torvalds-linux}}"
 if [ ! -d "${MIRROR}/.git" ] && [ ! -d "${MIRROR}/objects" ]; then
   echo "no mainline mirror at ${MIRROR}" >&2
   echo "pass one as the first argument, or set TORVALDS_REPO" >&2
