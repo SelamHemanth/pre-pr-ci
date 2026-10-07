@@ -4537,6 +4537,44 @@ class TestAnolisOwnWorkSignsItself(unittest.TestCase):
                         block.index('SIGNER_NAME'),
                         'the carrier is signed before the author is tried')
 
+    def test_a_carrier_sign_off_an_earlier_run_added_is_taken_off(self):
+        # This pass used to sign everything, so patches prepared before
+        # the rule existed carry a line the rule says does not belong.
+        p = self.patch(
+            'anolis: configs: something', 'Author <author@example.com>',
+            'Signed-off-by: Author <author@example.com>\n'
+            'Signed-off-by: Carrier <carrier@example.com>\n')
+        self.sh('SIGNER_EMAIL=carrier@example.com\n'
+                'awk -v mail="<${SIGNER_EMAIL}>" \'\n'
+                '  /^---$/ { body = 1 }\n'
+                '  !body && /^Signed-off-by:/ &&\n'
+                '    index(tolower($0), tolower(mail)) { next }\n'
+                '  { print }\n'
+                "' \"%s\" > \"%s.tmp\" && mv \"%s.tmp\" \"%s\"" % (p, p, p, p))
+        with open(p) as f:
+            after = f.read()
+        self.assertNotIn('carrier@example.com', after,
+                         'the carrier is still signing their work')
+        self.assertIn('Signed-off-by: Author <author@example.com>', after,
+                      "the author's own certification was removed")
+        self.assertIn('--- \n file | 1 +'.replace('--- \n', '---\n'), after,
+                      'the diff was touched')
+
+    def test_only_the_configured_signer_is_ever_removed(self):
+        # Everybody else on a backport chain really did handle the
+        # patch, and taking one of those off removes a certification
+        # that was somebody's to make.
+        with open(os.path.join(PROJECT_ROOT, 'anolis', 'prepare.sh')) as f:
+            code = f.read()
+        block = code[code.index('An earlier run of this pass signed'):]
+        block = block[:block.index('if author=')]
+        self.assertIn('SIGNER_EMAIL', block)
+        self.assertIn('/^---$/ { body = 1 }', block,
+                      'the diff is in range of the removal')
+        self.assertIn('anolis_subject_is_out_of_tree',
+                      code[:code.index('An earlier run of this pass signed')],
+                      'backports are in range of the removal too')
+
     def test_the_gate_asks_for_the_author_on_those_and_us_on_the_rest(self):
         with open(os.path.join(PROJECT_ROOT, 'anolis', 'ready.sh')) as f:
             code = f.read()

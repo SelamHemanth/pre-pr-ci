@@ -213,6 +213,24 @@ else
     # the sign-off added to it says that much -- this is who moved it.
     subject=$(sed -n 's/^Subject: \(\[[^]]*\] \)\?//p' "${p}" | head -1)
     if anolis_subject_is_out_of_tree "${subject}"; then
+      # An earlier run of this pass signed these as the carrier, back
+      # when it signed everything.  That line is taken off again --
+      # only the configured signer's own, only above the diff, and
+      # only on these patches: every other sign-off here belongs to
+      # somebody who really did handle the patch, and removing one of
+      # those would be removing their certification.
+      if [ -n "${SIGNER_EMAIL}" ] &&
+         anolis_signed_off_by "${SIGNER_EMAIL}" < "${p}"; then
+        awk -v mail="<${SIGNER_EMAIL}>" '
+          /^---$/ { body = 1 }
+          !body && /^Signed-off-by:/ &&
+            index(tolower($0), tolower(mail)) { next }
+          { print }
+        ' "${p}" > "${p}.tmp" && mv "${p}.tmp" "${p}"
+        echo -e "  ${BLUE}$(basename "${p}")${NC}: Anolis's own work," \
+                "so your Signed-off-by was removed"
+      fi
+
       if author=$(anolis_patch_author "${p}"); then
         SOB_LINE="Signed-off-by: ${author}"
       else
