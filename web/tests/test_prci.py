@@ -4429,6 +4429,89 @@ class TestTheServiceSeesWhatATerminalSees(unittest.TestCase):
         self.assertIn('su - "$ACTUAL_USER"', source)
 
 
+class TestTheAcceptanceCasesKnowWhichKernel(unittest.TestCase):
+    """Which kernel their anck-ci-test is supposed to find running.
+
+    Their get_expect_kver prefers EXPECT_KERNEL_VERSION and otherwise
+    falls back to the newest kernel-headers installed on the machine.
+    On their CI the platform sets it, from the artefact its install_rpm
+    step put there.  We are the platform, so we have to set it too --
+    and the fallback is not harmless: the VM's stock kernel-headers
+    have nothing to do with the series, so every case skips on a
+    mismatch the fallback invented.
+
+    The boot test set it already.  check_kapi and check_dmesg run on
+    their own just as often and examine the same running kernel.
+    """
+
+    def sh(self, script):
+        done = subprocess.run(
+            ['bash', '-c', '. "%s/lib/boot_test.sh"\n%s'
+             % (PROJECT_ROOT, script)],
+            cwd=PROJECT_ROOT, stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL)
+        return done.stdout.decode().strip(), done.returncode
+
+    def rpms(self, *names):
+        where = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, where, ignore_errors=True)
+        for name in names:
+            open(os.path.join(where, name), 'w').close()
+        return where
+
+    def test_the_kernel_package_is_picked_out_of_the_ones_beside_it(self):
+        where = self.rpms(
+            'kernel-6.6.102-0.git.abc.an23.x86_64.rpm',
+            'kernel-debuginfo-6.6.102-0.git.abc.an23.x86_64.rpm',
+            'kernel-devel-6.6.102-0.git.abc.an23.x86_64.rpm',
+            'kernel-headers-6.6.102-0.git.abc.an23.x86_64.rpm')
+        said, _ = self.sh('boot_kernel_rpm_file "%s"' % where)
+        self.assertEqual(os.path.basename(said),
+                         'kernel-6.6.102-0.git.abc.an23.x86_64.rpm')
+
+    def test_nothing_built_means_no_version_to_expect(self):
+        # Better than a wrong one: their fallback at least says what
+        # it did, and a version of ours that was a guess would not.
+        _, rc = self.sh('boot_expected_kver "%s"' % self.rpms())
+        self.assertEqual(rc, 1)
+
+    def test_the_version_is_what_rpm_says_not_what_the_name_looks_like(self):
+        built = os.path.join(
+            PROJECT_ROOT, '.anck-build', 'anck_rpm_build', 'ck-build',
+            'outputs', 'rpmbuild', 'RPMS', 'x86_64')
+        if not os.path.isdir(built):
+            self.skipTest('their anck_rpm_build has not run here')
+        said, rc = self.sh('boot_expected_kver "%s"' % built)
+        if rc != 0:
+            self.skipTest('no kernel RPM in their output directory')
+        # uname -r's shape: version-release.arch, and no .rpm on the end.
+        self.assertRegex(said, r'^\d+\.\d+\.\d+-.+\.\w+$')
+        self.assertNotIn('.rpm', said)
+
+    def test_the_suite_sets_it_before_running_their_suite(self):
+        with open(os.path.join(PROJECT_ROOT, 'anolis', 'cases',
+                               'anck_ci_test.sh')) as f:
+            code = f.read()
+        self.assertLess(code.index('boot_expected_kver'),
+                        code.index('export EXPECT_KERNEL_VERSION='),
+                        'the version is handed over before it is worked out')
+        self.assertLess(code.index('export EXPECT_KERNEL_VERSION='),
+                        code.index('" 2>&1 | tee'),
+                        'their suite runs before the version is set')
+
+    def test_only_one_place_knows_which_rpm_is_the_kernel(self):
+        # The filter used to be written out inside the boot step, and
+        # the acceptance cases needed the same answer.
+        for name in (os.path.join('lib', 'boot_test.sh'),
+                     os.path.join('anolis', 'cases', 'anck_ci_test.sh')):
+            with open(os.path.join(PROJECT_ROOT, name)) as f:
+                code = f.read()
+            self.assertEqual(
+                code.count("! -name '*debuginfo*'"),
+                1 if name.endswith('boot_test.sh') else 0,
+                '%s has its own idea of which RPM is the kernel' % name)
+
+
 class TestAnolisOwnWorkSignsItself(unittest.TestCase):
     """Whose Signed-off-by goes on an Anolis patch.
 

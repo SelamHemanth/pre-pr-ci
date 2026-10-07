@@ -127,6 +127,32 @@ if ! vm_ssh true >/dev/null 2>&1; then
   exit "${CASE_ERROR}"
 fi
 
+# What their check_kernel_version compares uname -r against.
+#
+# Their platform sets this from the artefact it installed, and we are
+# the platform here, so it comes from the kernel RPM their
+# anck_rpm_build produced.  Left unset, their get_expect_kver falls
+# back to the newest kernel-headers installed on the VM -- the
+# distro's stock kernel, nothing to do with the series -- and then
+# every case skips on a mismatch that fallback invented.  The boot
+# test already set it when it ran; the other two cases run on their
+# own just as often, and need it just as much.
+# shellcheck source=../../lib/boot_test.sh
+. "${WORKDIR:-$(dirname "${ANOLIS_DIR}")}/lib/boot_test.sh"
+
+if [ -z "${EXPECT_KERNEL_VERSION:-}" ]; then
+  if rpm_dir=$(bash "${ANOLIS_DIR}/an_tone.sh" --rpm-dir 2>/dev/null) &&
+     EXPECT_KERNEL_VERSION=$(boot_expected_kver "${rpm_dir}"); then
+    export EXPECT_KERNEL_VERSION
+    echo "  -> expecting ${EXPECT_KERNEL_VERSION}," \
+         "from the RPM their anck_rpm_build built"
+  else
+    echo "${SUITE_NAME}: their anck_rpm_build has produced no kernel RPM," >&2
+    echo "  so there is no version to expect and theirs will fall back to" >&2
+    echo "  whatever kernel-headers the VM already had." >&2
+  fi
+fi
+
 # Their check_kapi picks the kabi-whitelist baseline by branch and
 # skips outright if the branch is not one of theirs, so this has to be
 # the branch of the kernel under test rather than whatever is set.

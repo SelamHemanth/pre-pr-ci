@@ -36,6 +36,28 @@ _boot_kernel_release() {
 	rpm -qp --queryformat '%{VERSION}-%{RELEASE}.%{ARCH}' "${rpm_file}" 2>/dev/null
 }
 
+# The series' kernel package in a directory of RPMs -- the kernel
+# itself, not one of the packages built beside it.
+boot_kernel_rpm_file() {
+	find "$1" -name 'kernel-*.rpm' \
+		! -name '*debuginfo*' ! -name '*devel*' ! -name '*headers*' \
+		-type f 2>/dev/null | head -n 1
+}
+
+# What that package will report as uname -r once it is running.
+#
+# Their acceptance suite reads it as EXPECT_KERNEL_VERSION, and the
+# two cases that are not the boot test need it just as much: all three
+# examine the running kernel, so all three have to know which kernel
+# was supposed to come up.
+boot_expected_kver() {
+	local rpm_file
+
+	rpm_file=$(boot_kernel_rpm_file "$1")
+	[ -n "${rpm_file}" ] || return 1
+	_boot_kernel_release "${rpm_file}"
+}
+
 _boot_ensure_sshpass() {
 	if command -v sshpass >/dev/null 2>&1; then
 		return 0
@@ -95,9 +117,7 @@ boot_install_and_reboot() {
 	fi
 
 	local kernel_rpm
-	kernel_rpm=$(find "${rpms_dir}" -name 'kernel-*.rpm' \
-		! -name '*debuginfo*' ! -name '*devel*' ! -name '*headers*' \
-		-type f | head -n 1)
+	kernel_rpm=$(boot_kernel_rpm_file "${rpms_dir}")
 
 	if [ -z "${kernel_rpm}" ]; then
 		BOOT_REASON="No kernel RPM found in ${rpms_dir}"
