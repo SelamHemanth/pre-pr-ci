@@ -4531,27 +4531,73 @@ class TestTheAcceptanceCasesKnowWhichKernel(unittest.TestCase):
         kernel, _ = self.case_env({'LINUX_SRC_PATH': '/somewhere/else'})
         self.assertEqual(kernel, '/somewhere/else')
 
-    def test_the_debug_packages_go_over_only_when_that_case_wants_them(self):
-        # Most of a gigabyte, and only check_kapi reads them.
+    def staging(self):
         with open(os.path.join(PROJECT_ROOT, 'lib', 'boot_test.sh')) as f:
             code = f.read()
-        block = code[code.index('_boot_install_debuginfo() {'):]
-        self.assertIn("[ \"${BOOT_WANT_DEBUGINFO:-no}\" = 'yes' ] || return 0",
-                      block, 'the debug packages are copied unconditionally')
+        block = code[code.index('boot_stage_debuginfo() {'):]
+        return code, block[:block.index('\n}\n')]
 
-        with open(os.path.join(PROJECT_ROOT, 'anolis', 'test.sh')) as f:
-            runner = f.read()
-        self.assertIn('BOOT_WANT_DEBUGINFO="${TEST_CHECK_KAPI:-yes}"', runner,
-                      'the switch is not their own switch')
+    def test_the_whole_of_what_they_install_goes_over_not_just_vmlinux(self):
+        # Sending vmlinux alone is 368M against 750M and gives a wrong
+        # answer: it carries the DWARF of built-in code only, the
+        # modules beside it are stripped, and kabi-dw writes every
+        # symbol it has no type for as asm-- rather than func--.  Their
+        # baseline has func--, so hundreds of whitelist symbols come
+        # back "removed or moved" from a kernel that changed none.
+        _, block = self.staging()
+        self.assertIn("'kernel-debuginfo-common-*.rpm'", block)
+        self.assertIn('rpm -ivh --force', block,
+                      'the modules DWARF is not where libdwfl looks')
+        self.assertNotIn('cpio', block, 'only part of the package arrives')
 
     def test_the_common_package_is_installed_before_the_one_needing_it(self):
-        with open(os.path.join(PROJECT_ROOT, 'lib', 'boot_test.sh')) as f:
-            block = f.read()
-        block = block[block.index('_boot_install_debuginfo() {'):]
-        block = block[:block.index('\n}')]
+        _, block = self.staging()
         self.assertLess(block.index("'kernel-debuginfo-common-*.rpm'"),
                         block.index("'kernel-debuginfo-*.rpm'"),
                         'rpm would refuse the pair in this order')
+
+    def test_a_vm_that_has_them_already_is_left_alone(self):
+        # Near three gigabytes, and they do not change between runs of
+        # the same build.
+        said, _ = self.sh(
+            'vm_ssh() { case "$*" in rpm\\ -q*) return 0 ;; esac; return 1; }\n'
+            'vm_scp() { echo COPIED; }\n'
+            'boot_stage_debuginfo /nowhere 6.6.0-x.x86_64 /dev/null\n'
+            'echo rc=$?')
+        self.assertIn('rc=0', said)
+        self.assertNotIn('COPIED', said, 'they are sent a second time')
+
+    def test_no_debuginfo_built_is_a_refusal_rather_than_a_guess(self):
+        said, _ = self.sh(
+            'vm_ssh() { return 1; }\n'
+            'vm_scp() { echo COPIED; }\n'
+            'boot_stage_debuginfo "%s" 6.6.0-x.x86_64 /dev/null\n'
+            'echo rc=$?' % self.rpms('kernel-6.6.0-x.x86_64.rpm'))
+        self.assertIn('rc=1', said)
+        self.assertNotIn('COPIED', said)
+
+    def test_they_are_sent_only_for_the_case_that_reads_them(self):
+        with open(os.path.join(PROJECT_ROOT, 'anolis', 'cases',
+                               'anck_ci_test.sh')) as f:
+            code = f.read()
+        guard = code[:code.index('boot_stage_debuginfo')]
+        guard = guard[guard.rindex('if ['):]
+        for condition in ('"${CHECK_KAPI:-yes}" != \'no\'',
+                          '"${KERNEL_CI_REPO_BRANCH:-}"',
+                          '"${WANT_CASE}" = \'check_kapi\''):
+            self.assertIn(condition, guard,
+                          'sent for runs that will not report the case')
+        self.assertLess(code.index('boot_stage_debuginfo'),
+                        code.index('" 2>&1 | tee'),
+                        'their suite runs before the debuginfo is there')
+
+    def test_the_boot_step_does_not_pay_for_them(self):
+        # It ran before the case that needs them, and a run of that
+        # case on its own needs them just as much.
+        with open(os.path.join(PROJECT_ROOT, 'lib', 'boot_test.sh')) as f:
+            code = f.read()
+        inside = code[code.index('boot_install_and_reboot() {'):]
+        self.assertNotIn('boot_stage_debuginfo', inside)
 
     def test_only_one_place_knows_which_rpm_is_the_kernel(self):
         # The filter used to be written out inside the boot step, and

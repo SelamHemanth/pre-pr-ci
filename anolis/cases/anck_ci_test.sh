@@ -140,9 +140,11 @@ fi
 # shellcheck source=../../lib/boot_test.sh
 . "${WORKDIR:-$(dirname "${ANOLIS_DIR}")}/lib/boot_test.sh"
 
+RPM_DIR="$(bash "${ANOLIS_DIR}/an_tone.sh" --rpm-dir 2>/dev/null || true)"
+
 if [ -z "${EXPECT_KERNEL_VERSION:-}" ]; then
-  if rpm_dir=$(bash "${ANOLIS_DIR}/an_tone.sh" --rpm-dir 2>/dev/null) &&
-     EXPECT_KERNEL_VERSION=$(boot_expected_kver "${rpm_dir}"); then
+  if [ -n "${RPM_DIR}" ] &&
+     EXPECT_KERNEL_VERSION=$(boot_expected_kver "${RPM_DIR}"); then
     export EXPECT_KERNEL_VERSION
     echo "  -> expecting ${EXPECT_KERNEL_VERSION}," \
          "from the RPM their anck_rpm_build built"
@@ -159,6 +161,27 @@ fi
 if [ -n "${LINUX_SRC_PATH:-}" ]; then
   KERNEL_CI_REPO_BRANCH="$(their_branch_for_kernel "${LINUX_SRC_PATH}" || true)"
   export KERNEL_CI_REPO_BRANCH
+fi
+
+# The debug packages their check_kapi reads the kernel's types out of,
+# which their platform's install_rpm step has already put there.
+#
+# Only when this run is going to report that case, and only when there
+# is a branch for it: they are 750M across the wire and near three
+# gigabytes on the machine, and their check_kapi skips a branch with
+# no kabi baseline anyway, so neither a run of the other two cases nor
+# a branch outside their three pays for them.
+if [ "${CHECK_KAPI:-yes}" != 'no' ] &&
+   [ -n "${KERNEL_CI_REPO_BRANCH:-}" ] &&
+   [ -n "${EXPECT_KERNEL_VERSION:-}" ] &&
+   { [ -z "${WANT_CASE}" ] || [ "${WANT_CASE}" = 'check_kapi' ]; }; then
+  echo "  -> installing their kernel-debuginfo on ${VM_IP}," \
+       "which their check_kapi reads"
+  if ! boot_stage_debuginfo "${RPM_DIR}" "${EXPECT_KERNEL_VERSION}" \
+                            /dev/stderr; then
+    echo "  -> could not install it; their check_kapi will say it" \
+         "cannot find vmlinux and skip"
+  fi
 fi
 
 echo "  -> copying their ${SUITE_NAME} suite to ${VM_IP}"

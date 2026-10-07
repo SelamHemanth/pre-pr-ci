@@ -363,13 +363,6 @@ test_boot_kernel_rpm() {
 
   # Installing the RPM and rebooting are the two steps their tone
   # platform performs before their suite runs; neither is a test.
-  #
-  # Their platform installs the whole artefact set, and their
-  # check_kapi takes vmlinux out of the debug packages in it.  Those
-  # are most of a gigabyte, so they go across only when that case is
-  # going to read them.
-  BOOT_WANT_DEBUGINFO="${TEST_CHECK_KAPI:-yes}"
-  export BOOT_WANT_DEBUGINFO
   echo "  → Installing the RPM on ${VM_IP:-the VM} and rebooting..."
   local rc=0
   boot_install_and_reboot "${rpm_dir}" "${boot_log}" || rc=$?
