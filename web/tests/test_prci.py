@@ -4499,6 +4499,60 @@ class TestTheAcceptanceCasesKnowWhichKernel(unittest.TestCase):
                         code.index('" 2>&1 | tee'),
                         'their suite runs before the version is set')
 
+    def case_env(self, env=None):
+        """What a case sees after the case library has loaded."""
+        done = subprocess.run(
+            ['bash', '-c',
+             '. "%s/anolis/cases/lib.sh" 2>/dev/null\n'
+             'printf "%%s\\n%%s\\n" "${LINUX_SRC_PATH:-}" '
+             '"$(their_branch_for_kernel "${LINUX_SRC_PATH:-}" 2>/dev/null)"'
+             % PROJECT_ROOT],
+            cwd=PROJECT_ROOT, env=dict(os.environ, **(env or {})),
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        lines = done.stdout.decode().split('\n')
+        return lines[0], lines[1] if len(lines) > 1 else ''
+
+    def test_a_case_knows_the_kernel_it_was_configured_with(self):
+        # test.sh exports only VM_IP, and a case is its own process, so
+        # the kernel under test never reached it.  anck_ci_test.sh works
+        # the branch out from that path, and their branch_supported()
+        # then failed -- one of the two places their check_kapi skips
+        # without printing a word about why.
+        if not os.path.exists(os.path.join(PROJECT_ROOT, 'anolis',
+                                           '.configure')):
+            self.skipTest('this checkout is not configured')
+        kernel, branch = self.case_env()
+        self.assertTrue(kernel, 'a case cannot see the configured kernel')
+        self.assertTrue(branch, 'so it has no branch of theirs to name')
+
+    def test_a_caller_can_still_point_a_case_somewhere_else(self):
+        # The reason the case library reads names one at a time instead
+        # of sourcing the config over the top of the environment.
+        kernel, _ = self.case_env({'LINUX_SRC_PATH': '/somewhere/else'})
+        self.assertEqual(kernel, '/somewhere/else')
+
+    def test_the_debug_packages_go_over_only_when_that_case_wants_them(self):
+        # Most of a gigabyte, and only check_kapi reads them.
+        with open(os.path.join(PROJECT_ROOT, 'lib', 'boot_test.sh')) as f:
+            code = f.read()
+        block = code[code.index('_boot_install_debuginfo() {'):]
+        self.assertIn("[ \"${BOOT_WANT_DEBUGINFO:-no}\" = 'yes' ] || return 0",
+                      block, 'the debug packages are copied unconditionally')
+
+        with open(os.path.join(PROJECT_ROOT, 'anolis', 'test.sh')) as f:
+            runner = f.read()
+        self.assertIn('BOOT_WANT_DEBUGINFO="${TEST_CHECK_KAPI:-yes}"', runner,
+                      'the switch is not their own switch')
+
+    def test_the_common_package_is_installed_before_the_one_needing_it(self):
+        with open(os.path.join(PROJECT_ROOT, 'lib', 'boot_test.sh')) as f:
+            block = f.read()
+        block = block[block.index('_boot_install_debuginfo() {'):]
+        block = block[:block.index('\n}')]
+        self.assertLess(block.index("'kernel-debuginfo-common-*.rpm'"),
+                        block.index("'kernel-debuginfo-*.rpm'"),
+                        'rpm would refuse the pair in this order')
+
     def test_only_one_place_knows_which_rpm_is_the_kernel(self):
         # The filter used to be written out inside the boot step, and
         # the acceptance cases needed the same answer.

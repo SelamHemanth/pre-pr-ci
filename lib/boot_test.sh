@@ -58,6 +58,48 @@ boot_expected_kver() {
 	_boot_kernel_release "${rpm_file}"
 }
 
+# The debug packages their check_kapi reads vmlinux out of.
+#
+# Their platform's install_rpm step puts the whole artefact set on the
+# machine -- their comment for this is explicit, 全量安装即在机器上,
+# "fully installed, that is, on the machine" -- and their check_kapi
+# then takes vmlinux from /usr/lib/debug.  Ours installed the kernel
+# and nothing else, so that file was never there and their case
+# skipped, saying only that it could not find it.
+#
+# Not unconditional: these are the better part of a gigabyte and the
+# only case that reads them is check_kapi, so a run with that case
+# switched off does not pay for them.  BOOT_WANT_DEBUGINFO is what
+# anolis/test.sh sets from their own switch.
+_boot_install_debuginfo() {
+	local rpms_dir="$1" boot_log="$2" rpm_file name
+
+	[ "${BOOT_WANT_DEBUGINFO:-no}" = 'yes' ] || return 0
+
+	# debuginfo-common first: the debuginfo package requires it, and
+	# rpm would refuse the pair in the other order.
+	for rpm_file in \
+		$(find "${rpms_dir}" -name 'kernel-debuginfo-common-*.rpm' \
+			-type f 2>/dev/null) \
+		$(find "${rpms_dir}" -name 'kernel-debuginfo-*.rpm' \
+			! -name '*debuginfo-common*' -type f 2>/dev/null)
+	do
+		name=$(basename "${rpm_file}")
+		_boot_log "Copying ${name} to the VM, for their check_kapi..."
+		if ! vm_scp "${rpm_file}" /tmp/ >> "${boot_log}" 2>&1; then
+			_boot_log "Could not copy ${name}; their check_kapi will"
+			_boot_log "say it cannot find vmlinux and skip."
+			return 0
+		fi
+		if ! vm_ssh "rpm -ivh --force /tmp/${name}" \
+			>> "${boot_log}" 2>&1; then
+			_boot_log "Could not install ${name}; their check_kapi will"
+			_boot_log "say it cannot find vmlinux and skip."
+			return 0
+		fi
+	done
+}
+
 _boot_ensure_sshpass() {
 	if command -v sshpass >/dev/null 2>&1; then
 		return 0
@@ -161,6 +203,8 @@ boot_install_and_reboot() {
 		BOOT_REASON="Installing ${rpm_name} on the VM failed"
 		return 1
 	fi
+
+	_boot_install_debuginfo "${rpms_dir}" "${boot_log}"
 
 	if ! vm_ssh "test -f ${vmlinuz_path}" >> "${boot_log}" 2>&1; then
 		BOOT_REASON="No kernel image at ${vmlinuz_path} after install"

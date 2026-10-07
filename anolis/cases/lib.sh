@@ -46,14 +46,31 @@ TONE_CLI_DIR="${ANOLIS_DIR}/tone-cli"
 # overwrite anything the caller had deliberately set in the
 # environment, which is how a case is pointed at a downloaded
 # debuginfo rpm or a kernel other than the configured one.
-if [ -z "${VM_ROOT_PWD:-}" ] && [ -f "${ANOLIS_DIR}/.configure" ]; then
+# LINUX_SRC_PATH is read the same way and for the same reason.  A case
+# is its own process and test.sh exports only VM_IP, so the kernel
+# under test did not reach it -- and anck_ci_test.sh works out
+# KERNEL_CI_REPO_BRANCH from that path.  Without it their
+# branch_supported() fails and their check_kapi skips, which is one of
+# the two places in their suite that skips without saying why.
+#
+# Name by name, and only when the caller has not set one: that keeps
+# the rule the comment above states, which is how a case is pointed at
+# a downloaded debuginfo rpm or at a kernel other than the configured
+# one.
+if [ -f "${ANOLIS_DIR}/.configure" ]; then
   eval "$(
     # shellcheck disable=SC1090
     . "${ANOLIS_DIR}/.configure" >/dev/null 2>&1
-    for _secret in VM_ROOT_PWD HOST_USER_PWD; do
-      printf '%s=%q\n' "${_secret}" "${!_secret:-}"
+    for _name in VM_ROOT_PWD HOST_USER_PWD LINUX_SRC_PATH; do
+      printf '_configured_%s=%q\n' "${_name}" "${!_name:-}"
     done
   )"
+  for _name in VM_ROOT_PWD HOST_USER_PWD LINUX_SRC_PATH; do
+    _from_config="_configured_${_name}"
+    [ -n "${!_name:-}" ] || printf -v "${_name}" '%s' "${!_from_config}"
+    unset "${_from_config}"
+  done
+  unset _name _from_config
 fi
 
 #: Exit statuses, read by anolis/test.sh.  Warning has one of its own
