@@ -23,6 +23,10 @@
 # host version is obtained by running the very command their
 # documentation says to run.  Nothing here is a list we maintain.
 
+# Half their table lives where only a login shell's PATH reaches.
+# shellcheck source=hostpath.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/hostpath.sh"
+
 # ── what the tree is ──────────────────────────────────────────────────
 
 # Their Makefile, not "make kernelversion": this is asked on a page
@@ -84,12 +88,13 @@ _hostcheck_declared() {
 # all of them.
 _hostcheck_ask() {
   local how="$1" binary out
-  # Half of their table is administrative tools that live in sbin, and
-  # a service manager starts this with a narrower PATH than a login
-  # shell has.  Without this the table has six fewer rows in the web
-  # interface than on the command line, for no reason a reader could
-  # work out.
-  local PATH="${PATH}:/usr/local/sbin:/usr/sbin:/sbin"
+  # Half of their table is administrative tools that live where only a
+  # login shell's PATH reaches, and a service manager starts this with
+  # a narrower one.  Without this the table has six fewer rows in the
+  # web interface than on the command line, for no reason a reader
+  # could work out.
+  local PATH="${PATH}"
+  hostpath_ensure
 
   binary=${how%% *}
   command -v "${binary}" >/dev/null 2>&1 || return 1

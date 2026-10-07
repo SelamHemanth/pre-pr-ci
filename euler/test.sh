@@ -53,6 +53,13 @@ KABI_KERNEL_DIR="${SCRIPT_DIR}/kernel"
 # shellcheck source=../lib/torvalds.sh
 . "${WORKDIR}/lib/torvalds.sh"
 
+# Their checks call system programs by name, so they have to see the
+# PATH a terminal here has and not the narrower one a service manager
+# starts us with.
+# shellcheck source=../lib/hostpath.sh
+. "${WORKDIR}/lib/hostpath.sh"
+hostpath_ensure
+
 #: Where each build's object count from its last successful run is kept,
 #: so the next run of it has something to measure against.  Read by
 #: lib/progress.sh, so it is set before sourcing it.

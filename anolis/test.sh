@@ -47,6 +47,13 @@ export VM_IP
 # output is not a terminal so redirected logs stay free of escapes.
 . "${SCRIPT_DIR}/../lib/log.sh"
 
+# Their scripts, and the spec their rpmbuild runs, call system programs
+# by name, so they have to see the PATH a terminal here has and not the
+# narrower one a service manager starts us with.
+# shellcheck source=../lib/hostpath.sh
+. "${WORKDIR}/lib/hostpath.sh"
+hostpath_ensure
+
 # shellcheck source=../lib/vm.sh
 . "${WORKDIR}/lib/vm.sh"
 # shellcheck source=../lib/boot_test.sh

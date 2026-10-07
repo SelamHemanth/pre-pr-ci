@@ -4328,5 +4328,94 @@ class TestHostFitness(unittest.TestCase):
                       'it cannot be reached at all')
 
 
+class TestTheServiceSeesWhatATerminalSees(unittest.TestCase):
+    """The PATH their scripts run under.
+
+    Their anck_build.sh, and the kernel spec its rpmbuild runs, call
+    system programs by name: the last line of their %build is a bare
+    "depmod".  A terminal finds it because the login shell assembled
+    PATH out of the distro's profile; a systemd unit finds it only if
+    the unit happens to list the right directory.  Ours did not, so a
+    6.6 rpm build compiled the entire kernel and then died on
+    "depmod: command not found".
+    """
+
+    def under(self, path, script):
+        """Run script with nothing but the PATH a service manager gives."""
+        done = subprocess.run(
+            ['bash', '-c', '. "%s/lib/hostpath.sh"\n%s'
+             % (PROJECT_ROOT, script)],
+            env={'PATH': path, 'HOME': os.path.expanduser('~')},
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        return done.stdout.decode().strip()
+
+    def narrow(self):
+        """A PATH with the login shell's extra directories taken out.
+
+        Taken from the login shell rather than written down, so this
+        says "narrower than a terminal's" on any host and not just on
+        one that keeps its tools where this one does.
+        """
+        full = self.under(os.environ.get('PATH', '/usr/bin:/bin'),
+                          'hostpath_ensure; printf %s "$PATH"').split(':')
+        keep = [d for d in full if d.endswith(('/bin',))
+                and not d.endswith('sbin')]
+        return ':'.join(keep) or '/usr/bin:/bin'
+
+    def test_a_directory_only_a_login_shell_has_is_added(self):
+        narrow = self.narrow()
+        after = self.under(narrow, 'hostpath_ensure; printf %s "$PATH"')
+        self.assertNotEqual(after, narrow,
+                            'the login shell knew nothing we did not')
+        for part in narrow.split(':'):
+            self.assertIn(part, after.split(':'),
+                          'a directory we were given was dropped')
+
+    def test_what_we_were_given_keeps_its_place_in_front(self):
+        # A suite puts its own shim directory first on purpose -- the
+        # Anolis yum shims are the whole reason their dependency
+        # installs can work here -- so nothing may be inserted ahead.
+        after = self.under('/prci-shims:' + self.narrow(),
+                           'hostpath_ensure; printf %s "$PATH"')
+        self.assertTrue(after.startswith('/prci-shims:'),
+                        'a shim directory lost its place at the front')
+
+    def test_asking_twice_costs_one_login_shell(self):
+        # hostcheck asks once per tool in their table, and a login
+        # shell each time would cost more than the whole question.
+        said = self.under(
+            self.narrow(),
+            'hostpath_ensure; hostpath_ensure; hostpath_ensure\n'
+            'printf %s "$PATH"')
+        self.assertEqual(said.count('/usr/local/bin'), 1,
+                         'a repeated call appended the same entry again')
+
+    def test_no_directory_is_named_in_the_helper(self):
+        # The whole point: where a distro keeps its tools is the
+        # distro's business, and a list here is a list that is wrong
+        # on the next one.
+        with open(os.path.join(PROJECT_ROOT, 'lib', 'hostpath.sh')) as f:
+            source = f.read()
+        code = '\n'.join(line for line in source.splitlines()
+                         if not line.lstrip().startswith('#'))
+        for guess in ('/usr/sbin', '/sbin', '/usr/local/sbin'):
+            self.assertNotIn(guess, code,
+                             'a directory was guessed instead of asked for')
+
+    def test_the_suites_that_run_their_scripts_ask_for_it(self):
+        for script in ('anolis/test.sh', 'euler/test.sh',
+                       'anolis/an_tone.sh'):
+            with open(os.path.join(PROJECT_ROOT, script)) as f:
+                source = f.read()
+            self.assertIn('hostpath_ensure', source,
+                          '%s runs their scripts on a service PATH' % script)
+
+    def test_the_unit_takes_its_path_from_the_login_shell(self):
+        with open(os.path.join(PROJECT_ROOT, 'service.sh')) as f:
+            source = f.read()
+        self.assertIn('Environment="PATH=$SERVICE_PATH"', source)
+        self.assertIn('su - "$ACTUAL_USER"', source)
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)

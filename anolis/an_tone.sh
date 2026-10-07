@@ -507,6 +507,15 @@ _an_tone_env() {
   mkdir -p "${AN_TONE_LOGS}"
   export AN_TONE_LOGS
 
+  # Their anck_build.sh, and the kernel spec its rpmbuild runs, call
+  # system programs by name -- depmod, grubby, kpatch, bpftool.  Those
+  # live where only a login shell's PATH reaches, so when this runs
+  # under the web service rather than from a terminal their %build dies
+  # on "depmod: command not found" with the kernel already built.
+  # shellcheck source=../lib/hostpath.sh
+  . "${PRCI_ROOT}/lib/hostpath.sh"
+  hostpath_ensure
+
   export PATH="${AN_TONE_BIN}:${PATH}"
 
   # The sandbox is this same file re-entered as a script, so it has to

@@ -140,6 +140,22 @@ create_service_file() {
     
     # Find Python path
     PYTHON_PATH=$(which python3)
+
+    # The unit's PATH is only what the unit says, and a list written
+    # here is a list that is wrong somewhere else: the one we had
+    # omitted the directory depmod lives in, so an Anolis rpm build
+    # compiled the whole kernel and then died on the last line of their
+    # %build.  Ask the account's own login shell instead -- that is
+    # where this distro assembles it -- and fall back to ours only if
+    # the shell cannot be asked.
+    SERVICE_PATH=$(su - "$ACTUAL_USER" -c \
+                   'printf "__path__%s\\n" "$PATH"' 2>/dev/null \
+                   | sed -n 's/^__path__//p' | tail -n 1)
+    [ -n "$SERVICE_PATH" ] || SERVICE_PATH="$PATH"
+    case ":$SERVICE_PATH:" in
+        *":$USER_HOME/.local/bin:"*) ;;
+        *) SERVICE_PATH="$USER_HOME/.local/bin:$SERVICE_PATH" ;;
+    esac
     
     # Create service file
     cat > "$SERVICE_FILE" << EOF
@@ -163,7 +179,7 @@ KillMode=mixed
 TimeoutStopSec=60
 
 # Environment
-Environment="PATH=$USER_HOME/.local/bin:/usr/local/bin:/usr/bin:/bin"
+Environment="PATH=$SERVICE_PATH"
 Environment="PYTHONPATH=$PROJECT_ROOT"
 # Without this, log lines sit in Python's buffer instead of reaching journalctl.
 Environment="PYTHONUNBUFFERED=1"
@@ -198,6 +214,7 @@ EOF
     echo "  Project Root: $PROJECT_ROOT"
     echo "  Web Server:   $WEB_DIR/server.py"
     echo "  Python:       $PYTHON_PATH"
+    echo "  PATH:         $SERVICE_PATH"
 }
 
 clone_torvalds() {
