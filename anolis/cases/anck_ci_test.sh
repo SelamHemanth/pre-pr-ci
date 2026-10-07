@@ -40,6 +40,42 @@ set -u
 # and drag the suite down to a warning over it.
 THEIR_CASES='boot_kernel_rpm check_kapi check_dmesg'
 
+# Their suite reports all three in one run, and a row asked about one.
+# The other two still run -- their run() calls all three, and booting
+# once for three answers is the point of doing it that way -- but
+# their verdicts belong to the other rows, and printing them here said
+# "check_kapi: skipped, check_dmesg: passed" under a row that had been
+# asked about neither.
+#
+# Only their marker lines are dropped, and only other cases'.  Every
+# other line goes through untouched and as it arrives: it is what the
+# machine was doing, and it is the reason to be reading this at all.
+their_lines() {
+  awk -v want="$1" -v names="${THEIR_CASES}" '
+    BEGIN { n = split(names, c, " "); for (i = 1; i <= n; i++) known[c[i]] = 1 }
+    {
+      if (want != "" && /^====(PASS|FAIL|SKIP|WARN):/ &&
+          ($2 in known) && $2 != want) next
+      print
+      fflush()
+    }
+  '
+}
+
+# Where the rest of the tool's headings come from, so this reads the
+# same as every other stage and loses its colours off a terminal.
+# shellcheck source=../../lib/log.sh
+. "${WORKDIR:-$(dirname "${ANOLIS_DIR}")}/lib/log.sh"
+
+heading() {
+  echo ""
+  echo -e "${BOLD}${BLUE}==> $*${NC}"
+}
+
+# Set once their output has been shown live, so the cached path knows
+# it still has to show it and a fresh run does not print it twice.
+SHOWN=''
+
 WANT_CASE="${1:-}"
 if [ -n "${WANT_CASE}" ]; then
   case " ${THEIR_CASES} " in
@@ -108,8 +144,14 @@ done
 # Their run() calls check_kernel_version, then check_kapi and
 # check_dmesg with its result.  Handing it the environment their CI
 # would have handed it and calling run() is the whole of it.
-echo "  -> running their suite on ${VM_IP}"
-output=$(vm_ssh "
+#
+# Written to a file as it arrives rather than captured, so that their
+# suite can be read while it is still running: check_kapi builds
+# kabi-dw and compares every symbol, and holding all of that back
+# until it finished left the row looking stuck.
+heading "their ${SUITE_NAME} on ${VM_IP}, as their run() runs it"
+LIVE="${CACHE}.live"
+vm_ssh "
   set -u
   export KERNEL_CI_REPO_BRANCH='${KERNEL_CI_REPO_BRANCH:-}'
   export EXPECT_KERNEL_VERSION='${EXPECT_KERNEL_VERSION:-}'
@@ -122,27 +164,31 @@ output=$(vm_ssh "
   upload_archives() { :; }
   . '${REMOTE_DIR}/run.sh'
   run
-" 2>&1)
+" 2>&1 | tee "${LIVE}" | their_lines "${WANT_CASE}"
 
 vm_ssh "rm -rf ${REMOTE_DIR}" >/dev/null 2>&1 || true
-printf '%s\n' "${output}" > "${CACHE}"
+mv -f "${LIVE}" "${CACHE}"
+output="$(cat "${CACHE}")"
+SHOWN='yes'
 
 fi
 
-printf '%s\n' "${output}"
+# Read out of their earlier run rather than run again; shown here
+# because there was no live run to have shown it.
+[ -n "${SHOWN}" ] || printf '%s\n' "${output}" | their_lines "${WANT_CASE}"
 
 # Only the lines whose second field is one of their case names, so
 # their stderr EXPECT_KERNEL_VERSION warning stays a warning in the
 # log instead of becoming a verdict.
-markers=$(printf '%s\n' "${output}" | awk -v want="${WANT_CASE}" '
-  /^====(PASS|FAIL|SKIP|WARN):/ &&
-  ($2 == "boot_kernel_rpm" || $2 == "check_kapi" || $2 == "check_dmesg") &&
-  (want == "" || $2 == want)')
+markers=$(printf '%s\n' "${output}" \
+          | awk -v want="${WANT_CASE}" -v names="${THEIR_CASES}" '
+  BEGIN { n = split(names, c, " "); for (i = 1; i <= n; i++) known[c[i]] = 1 }
+  /^====(PASS|FAIL|SKIP|WARN):/ && ($2 in known) && (want == "" || $2 == want)')
 
 # Their parse.awk turns their four markers into the words their report
 # shows, so a reader comparing the two sees the same names against the
 # same verdicts.
-echo
+heading "their verdict on ${WANT_CASE:-the suite}"
 printf '%s\n' "${markers}" | awk -f "${SUITE_SRC}/parse.awk"
 
 # Worst of what was asked for, in the order their report treats them:

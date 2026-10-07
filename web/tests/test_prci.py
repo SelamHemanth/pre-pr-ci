@@ -23,6 +23,7 @@ becomes invisible.  That had already happened to euler's check_kabi.
 import ast
 import os
 import re
+import shlex
 import shutil
 import signal
 import stat
@@ -4426,6 +4427,123 @@ class TestTheServiceSeesWhatATerminalSees(unittest.TestCase):
             source = f.read()
         self.assertIn('Environment="PATH=$SERVICE_PATH"', source)
         self.assertIn('su - "$ACTUAL_USER"', source)
+
+
+class TestAnolisOwnWorkSignsItself(unittest.TestCase):
+    """Whose Signed-off-by goes on an Anolis patch.
+
+    Anolis marks work that is theirs, rather than carried in from
+    upstream, by putting the distro's own name at the front of the
+    subject.  In their tree the convention holds exactly: of the last
+    three thousand commits on devel-6.6, every subject marked that way
+    carries no "commit <sha> upstream." line.
+
+    That decides who signs.  A backport is somebody else's work being
+    carried across, and the sign-off this tool adds says that much.
+    Out-of-tree work is the author's own, and the sign-off on it is
+    them certifying the DCO for something they wrote -- which nobody
+    can do for them.  So the pass does not sign those; it only makes
+    sure the author did.
+    """
+
+    def sh(self, script, stdin=''):
+        done = subprocess.run(
+            ['bash', '-c', '. "%s/anolis/outoftree.sh"\n%s'
+             % (PROJECT_ROOT, script)],
+            input=stdin.encode(), cwd=PROJECT_ROOT,
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        return done.stdout.decode().strip(), done.returncode
+
+    def patch(self, subject, author, trailers=''):
+        path = os.path.join(tempfile.mkdtemp(), '0001-x.patch')
+        self.addCleanup(shutil.rmtree, os.path.dirname(path),
+                        ignore_errors=True)
+        with open(path, 'w') as f:
+            f.write('From abc123 Mon Sep 17 00:00:00 2001\n'
+                    'From: %s\nDate: now\nSubject: [PATCH] %s\n\n'
+                    'body\n\n%s---\n file | 1 +\n'
+                    % (author, subject, trailers))
+        return path
+
+    def test_the_mark_is_the_distros_own_name(self):
+        said, _ = self.sh('anolis_out_of_tree_mark')
+        self.assertEqual(said, 'anolis:')
+
+    def test_a_subject_marked_that_way_is_out_of_tree(self):
+        _, rc = self.sh('anolis_subject_is_out_of_tree '
+                        '"anolis: configs: classify amd-pstate"')
+        self.assertEqual(rc, 0)
+
+    def test_a_backport_subject_is_not(self):
+        _, rc = self.sh('anolis_subject_is_out_of_tree '
+                        '"platform/x86: thinkpad_acpi: Fix registration"')
+        self.assertEqual(rc, 1)
+
+    def test_the_mark_has_to_be_at_the_front(self):
+        # A backport that merely mentions the distro further along is
+        # still a backport.
+        _, rc = self.sh('anolis_subject_is_out_of_tree '
+                        '"configs: anolis: not the mark"')
+        self.assertEqual(rc, 1)
+
+    def test_the_author_is_read_off_the_patch(self):
+        p = self.patch('anolis: x', 'A Name <a@example.com>')
+        said, _ = self.sh('anolis_patch_author "%s"' % p)
+        self.assertEqual(said, 'A Name <a@example.com>')
+
+    def test_an_encoded_name_is_decoded_before_it_is_signed(self):
+        # git writes a non-ASCII name RFC 2047-encoded, and a sign-off
+        # carrying "=?utf-8?..." would match nothing and be read by
+        # nobody while still looking like it was there.
+        p = self.patch('anolis: x', '=?utf-8?q?Ilpo_J=C3=A4rvinen?= <i@x.com>')
+        said, _ = self.sh('anolis_patch_author "%s"' % p)
+        self.assertEqual(said, 'Ilpo Järvinen <i@x.com>')
+
+    def test_two_spellings_of_one_person_are_the_same_sign_off(self):
+        # git quotes a display name containing a full stop and %aN does
+        # not, so the pass that writes the line and the gate that looks
+        # for it would otherwise disagree about the same person.
+        quoted = '"P.V.S" <p@example.com>'
+        bare = 'P.V.S <p@example.com>'
+        for form in (quoted, bare):
+            said, _ = self.sh('anolis_identity_email %s' % shlex.quote(form))
+            self.assertEqual(said, 'p@example.com')
+
+        _, rc = self.sh('anolis_signed_off_by p@example.com',
+                        'Signed-off-by: %s\n' % bare)
+        self.assertEqual(rc, 0, 'a sign-off spelled differently was missed')
+
+    def test_a_sign_off_from_somebody_else_is_not_the_authors(self):
+        _, rc = self.sh('anolis_signed_off_by p@example.com',
+                        'Signed-off-by: Someone <other@example.com>\n')
+        self.assertEqual(rc, 1)
+
+    def test_an_address_is_matched_whole(self):
+        # The address goes into a regular expression, and a full stop
+        # left alone there matches any character at all.
+        _, rc = self.sh('anolis_signed_off_by a.b@example.com',
+                        'Signed-off-by: Someone <axb@example.com>\n')
+        self.assertEqual(rc, 1, 'a different address was read as a match')
+
+    def test_the_prepare_pass_signs_out_of_tree_work_for_nobody(self):
+        with open(os.path.join(PROJECT_ROOT, 'anolis', 'prepare.sh')) as f:
+            code = f.read()
+        block = code[code.index('Whose Signed-off-by goes on this one'):]
+        block = block[:block.index('Insert Signed-off-by')]
+        self.assertIn('anolis_subject_is_out_of_tree', block)
+        self.assertIn('anolis_patch_author', block)
+        # The carrier's line belongs to the other branch of that choice.
+        self.assertLess(block.index('anolis_patch_author'),
+                        block.index('SIGNER_NAME'),
+                        'the carrier is signed before the author is tried')
+
+    def test_the_gate_asks_for_the_author_on_those_and_us_on_the_rest(self):
+        with open(os.path.join(PROJECT_ROOT, 'anolis', 'ready.sh')) as f:
+            code = f.read()
+        self.assertIn('anolis_subject_is_out_of_tree', code)
+        self.assertIn('anolis_signed_off_by', code,
+                      'the gate still wants our name on their own work')
+        self.assertIn('SOB_TAG', code, 'a backport no longer needs a carrier')
 
 
 class TestNothingIsWrittenDownThatCanBeAsked(unittest.TestCase):

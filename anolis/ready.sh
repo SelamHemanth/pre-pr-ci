@@ -37,6 +37,10 @@ fi
 : "${SIGNER_NAME:=}"
 : "${SIGNER_EMAIL:=}"
 
+# Which commits are Anolis's own, and so whose sign-off they take.
+# shellcheck source=outoftree.sh
+. "${SCRIPT_DIR}/outoftree.sh"
+
 if [ -z "${LINUX_SRC_PATH}" ] || [ ! -d "${LINUX_SRC_PATH}/.git" ]; then
   echo "LINUX_SRC_PATH is not a git tree"
   exit 1
@@ -64,7 +68,18 @@ while IFS= read -r sha; do
     echo "${sha:0:12} ${subject:0:60}: no ${ANBZ_TAG}"
     exit 1
   fi
-  if ! printf '%s' "${msg}" | grep -qF "${SOB_TAG}"; then
+  # Anolis's own work is signed by whoever wrote it, not by whoever
+  # is carrying it: there is nothing to carry.  So the gate asks for
+  # the author's sign-off on those and for the carrier's on backports,
+  # which is what the prepare pass writes in each case.
+  if anolis_subject_is_out_of_tree "${subject}"; then
+    author="$(anolis_commit_author "${LINUX_SRC_PATH}" "${sha}")"
+    if ! printf '%s' "${msg}" \
+         | anolis_signed_off_by "$(anolis_identity_email "${author}")"; then
+      echo "${sha:0:12} ${subject:0:60}: no Signed-off-by from ${author}"
+      exit 1
+    fi
+  elif ! printf '%s' "${msg}" | grep -qF "${SOB_TAG}"; then
     echo "${sha:0:12} ${subject:0:60}: no Signed-off-by"
     exit 1
   fi

@@ -91,6 +91,51 @@ anck_rpm_build:rpmbuild
 build_perf:perf
 '
 
+# A heading, so a reader scrolling a thousand lines of compiler output
+# can tell what they are looking at and where it started.  Through
+# lib/log.sh, which is where the rest of the tool's headings come from
+# and which drops the colours by itself when this is not a terminal.
+# shellcheck source=../lib/log.sh
+. "${PRCI_ROOT}/lib/log.sh"
+
+_an_tone_heading() {
+  echo ""
+  echo -e "${BOLD}${BLUE}==> $*${NC}"
+}
+
+# Follow a file while something else is writing it.
+#
+# Their anck_build.py sends the whole of a case -- the clone, the
+# dependency installs, the configure step and every line of the
+# compile -- to a log of its own, and prints nothing on stdout while
+# it does it.  So for the best part of an hour there was nothing to
+# see, and then all of it at once after the case was already over.
+#
+# Byte offsets rather than "tail -f": this has to be tellable that the
+# build has finished and still hand over the lines written in the
+# moment before it was, and tail has no way to be asked that.
+_an_tone_follow() {
+  local file="$1" flag="$2" pos=0 size
+
+  while :; do
+    size=$(stat -c %s "${file}" 2>/dev/null) || size=0
+
+    # Their py replaces the log on a retry; following byte 40000 of a
+    # file that is now 12 bytes long would print nothing ever again.
+    [ "${size}" -lt "${pos}" ] && pos=0
+
+    if [ "${size}" -gt "${pos}" ]; then
+      tail -c "+$((pos + 1))" "${file}" 2>/dev/null \
+        | head -c "$((size - pos))"
+      pos=${size}
+    elif [ -e "${flag}" ]; then
+      break
+    fi
+
+    sleep 0.2
+  done
+}
+
 # The branch their run.sh refuses to run check_Kconfig on, taken from
 # the line that refuses it.  Empty if they ever drop the gate, which
 # is then exactly what happens here too.
@@ -633,7 +678,17 @@ an_tone_case() {
   export testcases="${keyword}"
 
   local log="/tmp/anck_${want}.log"
-  rm -f "${log}"
+  # Touched before the follower starts, so there is a file to follow
+  # from the first byte their py writes rather than from whenever it
+  # first got round to creating one.
+  local flag="${log}.finished"
+  rm -f "${log}" "${flag}"
+  : > "${log}"
+
+  _an_tone_heading "their ${want}, as their anck_build.py runs it"
+
+  _an_tone_follow "${log}" "${flag}" &
+  local follower=$!
 
   local out rc=0
   out=$(
@@ -655,11 +710,18 @@ an_tone_case() {
     show_result "${want}" $?
   ) || rc=$?
 
-  # Their build output is the log their py wrote, not stdout.
-  [ -f "${log}" ] && cat "${log}"
-  printf '%s\n' "${out}"
+  # Their build has stopped writing; let the follower drain what is
+  # left and stop, so nothing of theirs is lost between here and the
+  # verdict below.
+  : > "${flag}"
+  wait "${follower}" 2>/dev/null
+  rm -f "${flag}"
 
-  echo
+  # Their show_result's marker, which their run.sh greps for, and then
+  # the same thing through their parse.awk, which is where the word in
+  # their report comes from.
+  _an_tone_heading "their verdict on ${want}"
+  printf '%s\n' "${out}"
   printf '%s\n' "${out}" | awk -f "${AN_TONE_OVERLAY}/parse.awk"
 
   _an_tone_verdict_rc "${out}"

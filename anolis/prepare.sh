@@ -46,6 +46,9 @@ HEAD_ID_FILE="${WORKDIR}/.head_commit_id"
 . "${SCRIPT_DIR}/../lib/log.sh"
 # shellcheck source=../lib/worktree.sh
 . "${SCRIPT_DIR}/../lib/worktree.sh"
+# Which commits are Anolis's own, and so whose sign-off they take.
+# shellcheck source=outoftree.sh
+. "${SCRIPT_DIR}/outoftree.sh"
 # Whether this host can build the tree at all.  Asked here as well as in
 # test.sh, and for the same reason the web interface asks it before
 # offering the button: there is no point preparing a series for a machine
@@ -198,10 +201,36 @@ else
       fi
     fi
 
-    # Insert Signed-off-by before first '---'
-    SOB_LINE="Signed-off-by: ${SIGNER_NAME} <${SIGNER_EMAIL}>"
-    if ! grep -qF "${SOB_LINE}" "${p}"; then
-    awk -v SOB="Signed-off-by: ${SIGNER_NAME} <${SIGNER_EMAIL}>" '
+    # Whose Signed-off-by goes on this one.
+    #
+    # A subject marked as Anolis's own is work with nothing upstream
+    # behind it, and the sign-off on that is the author certifying the
+    # DCO for something they wrote.  Nobody can certify that for them,
+    # so this pass does not: it adds their own, from their own From:
+    # line, and only when they have not signed already.
+    #
+    # A backport is the other case.  It is being carried across, and
+    # the sign-off added to it says that much -- this is who moved it.
+    subject=$(sed -n 's/^Subject: \(\[[^]]*\] \)\?//p' "${p}" | head -1)
+    if anolis_subject_is_out_of_tree "${subject}"; then
+      if author=$(anolis_patch_author "${p}"); then
+        SOB_LINE="Signed-off-by: ${author}"
+      else
+        echo -e "  ${YELLOW}$(basename "${p}")${NC}: no From: line to sign with"
+        SOB_LINE=''
+      fi
+    else
+      SOB_LINE="Signed-off-by: ${SIGNER_NAME} <${SIGNER_EMAIL}>"
+    fi
+
+    # Insert Signed-off-by before first '---'.  Asked by address, not
+    # by the whole line: a sign-off they wrote themselves spells the
+    # name the way they spell it, and matching the line would add a
+    # second one beside it.
+    if [ -n "${SOB_LINE}" ] &&
+       ! anolis_signed_off_by "$(anolis_identity_email "${SOB_LINE}")" \
+         < "${p}"; then
+    awk -v SOB="${SOB_LINE}" '
       BEGIN { inserted=0 }
       {
         if (!inserted && $0 ~ /^---$/) {
