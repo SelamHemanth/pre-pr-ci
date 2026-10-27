@@ -3048,13 +3048,13 @@ class TestWhoSignsWhat(unittest.TestCase):
             set_message=lambda m: setattr(patch, 'message', m))
         args = types.SimpleNamespace(
             signer=self.SIGNER, mirror='/m', kernel='/k',
-            bugzilla='12345', branch='OLK-6.6')
+            bugzilla='12345', branch='OLK-6.6', inclusion='community')
         oe_header.rewrite(patch, args)
         return patch.message
 
     def test_original_work_is_not_signed_for_its_author(self):
         out = self.rewrite(
-            'virt inclusion\ncategory: bugfix\n\n'
+            'community inclusion\ncategory: bugfix\n\n'
             'Body.\n\nSigned-off-by: Author <a@example.com>\n')
         self.assertIn('Signed-off-by: Author', out)
         self.assertNotIn(self.SIGNER, out)
@@ -3063,7 +3063,7 @@ class TestWhoSignsWhat(unittest.TestCase):
         # Writing it out unsigned would only move the failure to their
         # gate, which is the one thing this tool exists to prevent.
         with self.assertRaises(oe_header.Refused) as caught:
-            self.rewrite('virt inclusion\ncategory: bugfix\n\nBody.\n')
+            self.rewrite('community inclusion\ncategory: bugfix\n\nBody.\n')
         self.assertIn('author', str(caught.exception).lower())
 
     def test_a_backport_still_gets_the_carriers_sign_off(self):
@@ -3080,7 +3080,7 @@ class TestWhoSignsWhat(unittest.TestCase):
         import oe_ready
         why = oe_ready.unprepared(
             '/k', 'sha',
-            'subject\n\nvirt inclusion\ncategory: bugfix\n\n'
+            'subject\n\ncommunity inclusion\ncategory: bugfix\n\n'
             'Signed-off-by: Author <a@example.com>\n',
             self.SIGNER, '/m')
         self.assertIsNone(why)
@@ -3088,10 +3088,156 @@ class TestWhoSignsWhat(unittest.TestCase):
     def test_readiness_still_wants_somebody_to_have_signed(self):
         import oe_ready
         why = oe_ready.unprepared(
-            '/k', 'sha', 'subject\n\nvirt inclusion\ncategory: bugfix\n',
+            '/k', 'sha', 'subject\n\ncommunity inclusion\ncategory: bugfix\n',
             self.SIGNER, '/m')
         self.assertIsNotNone(why)
         self.assertIn('Signed-off-by', why)
+
+
+class TestAPatchThatNeverSaidItWasABackport(unittest.TestCase):
+    """A message with no upstream SHA is not a patch with nothing upstream.
+
+    Those are opposite situations wanting opposite headers, and the
+    message alone cannot tell them apart: a cherry-pick that lost its
+    "commit ... upstream." line reads exactly like original work.  What
+    distinguishes them is the subject, which a cherry-pick keeps -- it
+    is the one thing openEuler compares directly -- so it can be looked
+    up and the patch filed as what it actually is.
+
+    Before this, both were refused with the same message telling the
+    author to add the line by hand.
+    """
+
+    MIRROR = os.path.join(PROJECT_ROOT, '.torvalds-linux')
+
+    def setUp(self):
+        euler = os.path.join(PROJECT_ROOT, 'euler')
+        if euler not in sys.path:
+            sys.path.insert(0, euler)
+        global oe_header
+        import oe_header
+        if not os.path.isdir(self.MIRROR):
+            self.skipTest('no mirror to look subjects up in')
+
+    def lookup(self, subject, paths):
+        return oe_header.upstream_by_subject(subject, list(paths), self.MIRROR)
+
+    def test_a_subject_that_is_upstream_is_found(self):
+        found = self.lookup('cpufreq: Make cpufreq_driver->exit() return void',
+                            ['drivers/cpufreq/acpi-cpufreq.c'])
+        self.assertEqual(
+            found, ['b4b1ddc9dfe997a5f492fa3a36487f8e7a5de30d'])
+
+    def test_one_of_the_patch_files_matching_is_enough(self):
+        # The commit touches 28 files and a backport of it need not
+        # carry all of them, so the paths are an "any of these", not a
+        # set to match.
+        found = self.lookup(
+            'cpufreq: Make cpufreq_driver->exit() return void',
+            ['drivers/cpufreq/this-one-is-not-in-it.c',
+             'drivers/cpufreq/cppc_cpufreq.c'])
+        self.assertEqual(
+            found, ['b4b1ddc9dfe997a5f492fa3a36487f8e7a5de30d'])
+
+    def test_a_subject_that_is_not_upstream_is_not_invented(self):
+        found = self.lookup(
+            'x86/configs: make ACPI_PLATFORM_PROFILE built-in in '
+            'openeuler_defconfig',
+            ['arch/x86/configs/openeuler_defconfig'])
+        self.assertEqual(found, [])
+
+    def test_a_near_miss_is_not_a_match(self):
+        # Narrowing the walk uses --grep, which matches a substring.
+        # Only the comparison afterwards decides, or a patch would be
+        # filed against whichever commit merely mentions its subject.
+        found = self.lookup('cpufreq: Make cpufreq_driver->exit() return',
+                            ['drivers/cpufreq/acpi-cpufreq.c'])
+        self.assertEqual(found, [])
+
+    def test_a_subject_upstream_uses_twice_is_reported_not_picked(self):
+        # A fix and its revert, or a series resent.  Writing down
+        # whichever git listed first would put a wrong SHA under a
+        # header that reads as authoritative.
+        found = self.lookup('cpufreq: CPPC: Add support for frequency '
+                            'invariance', ['drivers/cpufreq/cppc_cpufreq.c'])
+        self.assertGreater(len(found), 1)
+
+    def test_a_patch_touching_nothing_upstream_is_not_searched_for(self):
+        self.assertEqual(self.lookup('any subject at all', []), [])
+
+
+class TestWhereANonUpstreamPatchIsFiled(unittest.TestCase):
+    """The tag on a patch openEuler has no upstream commit for.
+
+    It names where the patch came from, which is a fact about the
+    series and not something its wording can be read for.  This used to
+    guess "virt" from the word KABI appearing anywhere in the message.
+    Their tree uses virt for virtualisation work -- arm64, KVM, iommu,
+    vfio -- so that put a cpufreq config change under a header a
+    reviewer then asked about, and KABI patches there are filed under
+    hulk far more often than virt anyway.
+    """
+
+    def setUp(self):
+        euler = os.path.join(PROJECT_ROOT, 'euler')
+        if euler not in sys.path:
+            sys.path.insert(0, euler)
+        global oe_header
+        import oe_header
+        # A real but empty repository, so the subject lookup runs and
+        # finds nothing for the honest reason.  A path that is not a
+        # repository at all is refused with "could not run git", which
+        # is a different answer and the right one for that.
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        subprocess.run(['git', 'init', '-q', self.tmp.name], check=True)
+
+    def rewrite(self, subject, message, inclusion='community'):
+        patch = types.SimpleNamespace(
+            message=message, subject=subject,
+            paths=lambda: ['arch/x86/configs/openeuler_defconfig'],
+            set_message=lambda m: setattr(patch, 'message', m))
+        args = types.SimpleNamespace(
+            signer='Signed-off-by: Carrier <c@example.com>',
+            mirror=self.tmp.name, kernel='/k', bugzilla='12345',
+            branch='OLK-6.6', inclusion=inclusion)
+        summary, _ = oe_header.rewrite(patch, args)
+        return patch.message, summary
+
+    BODY = 'Body.\n\nSigned-off-by: Author <a@example.com>\n'
+
+    def test_the_tag_is_the_one_passed_in(self):
+        out, _ = self.rewrite('x86/configs: enable a thing', self.BODY)
+        self.assertTrue(out.startswith('community inclusion\n'), out[:60])
+
+    def test_mentioning_kabi_does_not_change_where_it_is_filed(self):
+        out, _ = self.rewrite(
+            'x86/configs: enable a thing',
+            'This does not affect KABI.\n\n' + self.BODY)
+        self.assertTrue(out.startswith('community inclusion\n'), out[:60])
+        self.assertNotIn('virt inclusion', out)
+
+    def test_mentioning_kabi_does_not_force_it_to_be_a_bugfix(self):
+        # Forcing bugfix then refused the patch for having no Fixes:
+        # tag, so a wrong guess did not just mislabel it.
+        _, summary = self.rewrite(
+            'x86/configs: enable a thing',
+            'This does not affect KABI.\n\n' + self.BODY)
+        self.assertIn('category: feature', summary)
+
+    def test_a_different_series_can_use_a_different_tag(self):
+        out, _ = self.rewrite('x86/configs: enable a thing', self.BODY,
+                              inclusion='hulk')
+        self.assertTrue(out.startswith('hulk inclusion\n'), out[:60])
+
+    def test_it_gets_their_third_template_and_not_the_backport_one(self):
+        out, _ = self.rewrite('x86/configs: enable a thing', self.BODY)
+        for absent in ('from mainline-', 'CVE: NA', 'Reference: http'):
+            self.assertNotIn(absent, out)
+
+    def test_the_tag_still_has_to_fit_their_inclusion_line(self):
+        self.assertIsNotNone(
+            re.match(r'^\w[\w ]* inclusion\s*$', 'community inclusion'))
 
 
 class TestCleanTree(unittest.TestCase):

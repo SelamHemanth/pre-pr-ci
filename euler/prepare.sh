@@ -180,7 +180,8 @@ else
         --commit "${orig}" \
         --bugzilla "${BUGZILLA_ID}" \
         --signer "${SOB_TAG}" \
-        --branch "${OE_TARGET_BRANCH:-OLK-6.6}" 2>&1); then
+        --branch "${OE_TARGET_BRANCH:-OLK-6.6}" \
+        --inclusion "${OE_INCLUSION_TAG:-community}" 2>&1); then
       # One line of summary, then an optional warning block: a commit
       # that diverges from upstream with nothing in the message to
       # explain it.  Those are usually false positives, so they are

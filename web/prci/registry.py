@@ -291,6 +291,16 @@ CONFIG_FIELDS = {
                               'master'),
                      hint='Decides which architectures are built and which '
                           'KABI whitelist applies'),
+            # Where a patch with no upstream commit behind it is filed.
+            # A free-text field rather than a list: their tree carries
+            # better than thirty of these -- hulk, loongarch, urma, one
+            # per vendor -- and which one a series belongs under is the
+            # submitter's to say.  It used to be guessed from the commit
+            # message, which put a cpufreq config change under "virt".
+            FieldDef('OE_INCLUSION_TAG', 'Inclusion tag', 'text',
+                     required=False, default='community',
+                     hint='The word before "inclusion" for patches that '
+                          'are not backports (community, hulk, ...)'),
         ),
         'build': _COMMON_FIELDS['build'],
         'host': _COMMON_FIELDS['host'],

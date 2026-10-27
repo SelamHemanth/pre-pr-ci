@@ -61,12 +61,6 @@ _UPSTREAM_RES = (
 _FIXES_RE = re.compile(r'^(\s*Fixes:\s+)([0-9a-f]{6,40})(\s*\(.*)$',
                        re.MULTILINE)
 
-#: KABI padding and similar have no upstream equivalent; openEuler files
-#: them under "virt inclusion".  Deliberately not bounded as a word:
-#: these turn up as kabi_reserve, check_kabi and KABI:, and all of them
-#: mean the same thing.
-_KABI_RE = re.compile(r'kabi|kapi', re.IGNORECASE)
-
 #: openEuler-24.03 backports must name the OLK-6.6 commit they came from.
 _CHERRY_PICK_RE = re.compile(
     r'\(cherry-pick from OLK-6\.6 commit [0-9a-f]{12,40}\)')
@@ -114,7 +108,7 @@ _FIX_RE = re.compile(
 _REVERT_RE = re.compile(r'^Revert\b', re.IGNORECASE)
 
 
-def decide_category(subject, message, backport=True):
+def decide_category(subject, message):
     """Work out what this patch is for, the way its author described it.
 
     Returns ``(category, why)``.  The reason is printed, because a
@@ -123,15 +117,6 @@ def decide_category(subject, message, backport=True):
     explicit = _EXPLICIT_RE.search(message)
     if explicit:
         return explicit.group(1), 'the commit message says so'
-
-    # A patch with no upstream commit behind it that touches the kernel
-    # ABI is repairing something.  The only reason openEuler tracks KABI
-    # at all is that a module built against the released kernel has to
-    # keep loading, so a change there is answering a break, whatever the
-    # subject line calls it.  That outranks the wording tests below,
-    # which read "reserve padding" as a feature.
-    if not backport and _KABI_RE.search(subject + '\n' + message):
-        return 'bugfix', 'it changes the kernel ABI'
 
     if _CVE_RE.search(message):
         return 'security', 'the message cites a CVE'
@@ -214,6 +199,20 @@ class Patch(object):
         subject = ' '.join(out)
         return re.sub(r'^\[[^\]]*\]\s*', '', subject)
 
+    def paths(self):
+        """The files the diff touches, as upstream would name them.
+
+        Read off the ``diff --git`` lines rather than the diffstat,
+        which abbreviates long paths with an ellipsis and cannot be
+        turned back into a filename.
+        """
+        found = []
+        for line in self.lines[self.msg_end:]:
+            match = re.match(r'^diff --git a/(\S+) b/(\S+)$', line)
+            if match and match.group(1) not in found:
+                found.append(match.group(1))
+        return found
+
     def set_message(self, message):
         self.lines[self.head_end + 1:self.msg_end] = message.split('\n')
         self.msg_end = next(
@@ -274,6 +273,46 @@ def release_tag(sha, mirror):
     return None
 
 
+def upstream_by_subject(subject, paths, mirror):
+    """Upstream commits whose subject is exactly ``subject``.
+
+    For the patch that is a backport but never said so.  A cherry-pick
+    keeps the subject -- that is the one thing about it openEuler
+    compares directly -- so the subject is enough to find the commit it
+    came from, and once found the patch can be filed as what it is
+    rather than refused for not having said.
+
+    Narrowed by the files the diff touches before the subject is
+    compared.  Reading every commit message in Linus's tree takes the
+    better part of a minute, and a hundred patches of that is the
+    difference between a check people run and one they turn off; the
+    same walk limited to the paths involved is immediate.  A patch
+    whose files are not upstream at all finds nothing, which is the
+    right answer for one.
+
+    Returns every match.  More than one is left for the caller to
+    refuse rather than resolved here by picking: two upstream commits
+    with the same subject are usually a fix and its revert, or a series
+    resent, and writing down whichever git listed first would put a
+    wrong SHA in a header that reads as authoritative.
+    """
+    if not subject or not paths:
+        return []
+
+    # --fixed-strings because a subject is prose: brackets, dots and
+    # stars in it are not operators.  It only narrows the walk; the
+    # comparison below is what decides.
+    found = git(['log', '--all', '--format=%H%x1f%s', '--fixed-strings',
+                 '--grep', subject, '--'] + paths, cwd=mirror)
+
+    out = []
+    for line in found.split('\n'):
+        sha, _, found_subject = line.partition('\x1f')
+        if len(sha) == 40 and found_subject == subject and sha not in out:
+            out.append(sha)
+    return out
+
+
 def upstream_subject(sha, mirror):
     return git(['log', '-1', '--format=%s', sha], cwd=mirror)
 
@@ -300,8 +339,9 @@ def normalise_fixes(message, mirror, kernel, strict=False):
     its SHA is a wrong answer that looks like a right one.
 
     ``strict`` is for the patches their format.py checks the tag on:
-    no mainline or stable inclusion and category: bugfix, which is the
-    KABI case.  There it runs ``git rev-parse`` in the openEuler tree,
+    no mainline or stable inclusion and category: bugfix, which is a
+    patch openEuler wrote itself.  There it runs ``git rev-parse`` in
+    the openEuler tree,
     so the target has to be a commit in *that* tree -- an upstream SHA
     the fork predates resolves in the mirror and fails their check --
     and it must not be a merge.
@@ -439,17 +479,41 @@ def rewrite(patch, args):
     sha = upstream_sha(message)
     cherry_pick = None
     strict_fixes = False
+    recovered = False
+
+    # A message with no upstream SHA is not the same thing as a patch
+    # with no upstream commit behind it.  Asking the mirror by subject
+    # tells the two apart, which is the difference between a backport
+    # whose "commit ... upstream." line was dropped somewhere and
+    # original work -- and they want opposite headers.
+    #
+    if sha is None:
+        candidates = upstream_by_subject(subject, patch.paths(), args.mirror)
+        if len(candidates) == 1:
+            sha, recovered = candidates[0], True
+        elif len(candidates) > 1:
+            raise Refused(
+                'the message names no upstream commit, and %d upstream '
+                'commits share this subject, so which one it came from '
+                'cannot be told from here:\n%s\n'
+                '  Add "commit <40-char sha> upstream." naming the right '
+                'one.' % (len(candidates),
+                          '\n'.join('    %s' % c[:12] for c in candidates)))
 
     if sha is None:
-        if not _KABI_RE.search(subject + '\n' + message):
-            raise Refused(
-                'no upstream commit in the message and nothing marking it '
-                'as a KABI change, so there is no way to tell openEuler '
-                'where this came from.\n'
-                '  Add "commit <40-char sha> upstream." for a backport, or '
-                'write the inclusion header by hand for an original patch.')
-        kind, tag = 'virt', None
-        category, why = decide_category(subject, message, backport=False)
+        # Nothing upstream carries this subject, so it is openEuler's
+        # own: their third template, which has no "from mainline-" and
+        # no commit to reference.
+        #
+        # The tag is whatever the submitter passed and is not guessed
+        # from the subject.  It names where the patch came from, which
+        # is a fact about the series, not something its wording can be
+        # read for -- and reading it wrongly is not a harmless default.
+        # "virt inclusion" is for virtualisation work in their tree, so
+        # putting a cpufreq config change under it has a reviewer asking
+        # why, which is the opposite of what this pass is for.
+        kind, tag = args.inclusion, None
+        category, why = decide_category(subject, message)
 
         # Their rule: a bugfix with no upstream commit behind it has to
         # say what it fixes.  We cannot invent that, and quietly filing
@@ -518,8 +582,16 @@ def rewrite(patch, args):
 
     message = normalise_fixes(message, args.mirror, args.kernel, strict_fixes)
 
-    # sha is None on the virt path, which is what leaves out the
-    # "commit" and "Reference" lines their third template does not have.
+    # The line the patch should have had.  It goes in the body rather
+    # than the header, above the original message, which is where a
+    # backport carries it and where their check_conflict reads it from
+    # when it renders the two commits to compare them.
+    if recovered:
+        message = 'commit %s upstream.\n\n' % sha + message.lstrip('\n')
+
+    # sha is None for a patch with nothing upstream behind it, which is
+    # what leaves out the "commit" and "Reference" lines their third
+    # template does not have.
     header = header_lines(kind, tag, sha, category, args.bugzilla,
                           cherry_pick)
     # The trailing newline is the blank line their templates require
@@ -538,6 +610,10 @@ def rewrite(patch, args):
     if tag:
         described += ' from %s' % tag
     described += ', category: %s (%s)' % (category, why)
+    # Worth saying outright: the patch did not claim to be a backport
+    # and is being filed as one, on the strength of its subject alone.
+    if recovered:
+        described += ', upstream commit %s found by subject' % sha[:12]
     return described + (', %s' % note if note else ''), warning
 
 
@@ -669,7 +745,21 @@ def main():
     parser.add_argument('--signer', required=True,
                         help='the full "Signed-off-by: Name <mail>" line')
     parser.add_argument('--branch', default='OLK-6.6')
+    # The word before "inclusion" names where a patch came from, and
+    # for one that came from nowhere upstream there is no single right
+    # answer: their tree carries hulk, openEuler, community and a
+    # vendor name per vendor, and which of them a series should use is
+    # the submitter's call, not this script's.  Their format.py accepts
+    # any single word there, so this is passed in rather than decided.
+    parser.add_argument('--inclusion', default='community',
+                        help='inclusion tag for a patch with no upstream '
+                             'commit behind it (default: community)')
     args = parser.parse_args()
+
+    if not re.match(r'^\w[\w ]*$', args.inclusion):
+        print('--inclusion must be a word their "<x> inclusion" line can '
+              'hold, not %r' % args.inclusion, file=sys.stderr)
+        return 2
 
     if not os.path.isfile(args.patch):
         print('no such patch: %s' % args.patch, file=sys.stderr)
